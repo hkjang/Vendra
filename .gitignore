@@ -1,0 +1,10 @@
+.env
+.DS_Store
+node_modules/
+web/dist/
+dist/
+coverage/
+*.log
+*.tsbuildinfo
+*.tar.gz
+data/

@@ -1,0 +1,205 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+)
+
+type notificationAdapter struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	URL     string `json:"url"`
+	Enabled bool   `json:"enabled"`
+}
+
+func (a *App) runBackground(ctx context.Context) {
+	if err := a.scheduleNotifications(ctx); err != nil {
+		slog.Error("notification scheduling failed", "error", err)
+	}
+	if err := a.dispatchNotifications(ctx); err != nil {
+		slog.Error("notification dispatch failed", "error", err)
+	}
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := a.scheduleNotifications(ctx); err != nil {
+				slog.Error("notification scheduling failed", "error", err)
+			}
+			if err := a.dispatchNotifications(ctx); err != nil {
+				slog.Error("notification dispatch failed", "error", err)
+			}
+		}
+	}
+}
+
+func (a *App) scheduleNotifications(ctx context.Context) error {
+	_, err := a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
+	 SELECT o.owner_id,o.supplier_id,'contract_expiry',
+	   CASE WHEN o.end_date<=current_date+7 THEN '계약 종료 7일 이내' WHEN o.end_date<=current_date+30 THEN '계약 종료 30일 이내' WHEN o.end_date<=current_date+90 THEN '계약 종료 90일 이내' ELSE '계약 종료 180일 이내' END,
+	   o.title||' ('||o.number||') 계약이 '||to_char(o.end_date,'YYYY-MM-DD')||' 종료됩니다.',
+	   CASE WHEN o.end_date<=current_date+30 THEN 'warning' ELSE 'info' END,'contract',o.id
+	 FROM business_objects o WHERE o.object_type='contract' AND o.deleted_at IS NULL AND o.owner_id IS NOT NULL AND o.status NOT IN('ended','terminated') AND o.end_date BETWEEN current_date AND current_date+180
+	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
+	 SELECT d.uploaded_by,d.supplier_id,'document_expiry',CASE WHEN d.expires_at<=current_date+7 THEN '문서 만료 7일 이내' ELSE '문서 만료 30일 이내' END,
+	 d.name||' 문서가 '||to_char(d.expires_at,'YYYY-MM-DD')||' 만료됩니다.','warning','document',d.id
+	 FROM documents d WHERE d.status='active' AND d.uploaded_by IS NOT NULL AND d.expires_at BETWEEN current_date AND current_date+30
+	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
+	 SELECT o.owner_id,o.supplier_id,'sla_breach','SLA 위반 즉시 조치',o.title||' ('||o.number||') SLA 위반이 등록되었습니다.','critical','issue',o.id
+	 FROM business_objects o WHERE o.object_type='issue' AND o.deleted_at IS NULL AND o.owner_id IS NOT NULL AND o.status NOT IN('closed','resolved') AND lower(COALESCE(o.data->>'issueType',o.data->>'type','')) IN ('sla 위반','sla_violation','sla breach')
+	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
+	 SELECT c.owner_id,c.supplier_id,'contract_amount_exceeded','계약금액 초과',c.title||' 계약금액 '||COALESCE(c.amount,0)||' 대비 발주 누계 '||sum(po.amount)||' 입니다.','critical','contract',c.id
+	 FROM business_objects c JOIN business_objects po ON po.parent_id=c.id AND po.object_type='purchase_order' AND po.deleted_at IS NULL
+	 WHERE c.object_type='contract' AND c.deleted_at IS NULL AND c.owner_id IS NOT NULL AND c.amount IS NOT NULL
+	 GROUP BY c.id HAVING sum(COALESCE(po.amount,0))>c.amount
+	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
+	 SELECT s.owner_id,s.id,'evaluation_due','공급업체 평가 예정',s.name||' 공급업체 평가기간이 시작됩니다.','info','supplier',s.id
+	 FROM suppliers s WHERE s.deleted_at IS NULL AND s.owner_id IS NOT NULL AND CASE WHEN COALESCE(s.metadata->>'nextEvaluationDate','') ~ '^\d{4}-\d{2}-\d{2}$' THEN (s.metadata->>'nextEvaluationDate')::date END BETWEEN current_date AND current_date+30
+	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	var value []byte
+	if err = a.db.QueryRow(ctx, `SELECT value FROM settings WHERE key='notification.adapters'`).Scan(&value); err != nil {
+		return err
+	}
+	var adapters []notificationAdapter
+	if json.Unmarshal(value, &adapters) != nil {
+		return nil
+	}
+	for _, adapter := range adapters {
+		if !adapter.Enabled || adapter.Name == "" {
+			continue
+		}
+		_, err = a.db.Exec(ctx, `INSERT INTO notification_deliveries(notification_id,adapter) SELECT n.id,$1 FROM notifications n WHERE NOT EXISTS(SELECT 1 FROM notification_deliveries d WHERE d.notification_id=n.id AND d.adapter=$1)`, adapter.Name)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) dispatchNotifications(ctx context.Context) error {
+	var value []byte
+	if err := a.db.QueryRow(ctx, `SELECT value FROM settings WHERE key='notification.adapters'`).Scan(&value); err != nil {
+		return err
+	}
+	var adapters []notificationAdapter
+	if json.Unmarshal(value, &adapters) != nil {
+		return nil
+	}
+	byName := map[string]notificationAdapter{}
+	for _, adapter := range adapters {
+		byName[adapter.Name] = adapter
+	}
+	rows, err := a.db.Query(ctx, `SELECT d.id,d.adapter,n.title,n.body,n.severity FROM notification_deliveries d JOIN notifications n ON n.id=d.notification_id WHERE d.status='pending' AND d.attempts<5 ORDER BY d.created_at LIMIT 50`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type item struct{ id, adapter, title, body, severity string }
+	items := []item{}
+	for rows.Next() {
+		var x item
+		if rows.Scan(&x.id, &x.adapter, &x.title, &x.body, &x.severity) == nil {
+			items = append(items, x)
+		}
+	}
+	rows.Close()
+	for _, x := range items {
+		adapter, ok := byName[x.adapter]
+		if !ok || !adapter.Enabled {
+			continue
+		}
+		deliveryErr := deliverNotification(ctx, adapter, x.title, x.body, x.severity)
+		if deliveryErr != nil {
+			_, _ = a.db.Exec(ctx, `UPDATE notification_deliveries SET attempts=attempts+1,response=$2 WHERE id=$1`, x.id, deliveryErr.Error())
+		} else {
+			_, _ = a.db.Exec(ctx, `UPDATE notification_deliveries SET status='delivered',attempts=attempts+1,delivered_at=now(),response='ok' WHERE id=$1`, x.id)
+		}
+	}
+	return nil
+}
+
+func deliverNotification(ctx context.Context, adapter notificationAdapter, title, body, severity string) error {
+	switch adapter.Type {
+	case "log":
+		slog.Info("notification", "adapter", adapter.Name, "title", title, "body", body, "severity", severity)
+		return nil
+	case "slack", "mattermost", "webhook", "email", "sms", "internal_messenger":
+		if adapter.URL == "" {
+			return fmt.Errorf("adapter URL is empty")
+		}
+		payload, _ := json.Marshal(map[string]any{"text": title + "\n" + body, "title": title, "body": body, "severity": severity})
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.URL, bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("adapter returned %d", resp.StatusCode)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported adapter type %s", adapter.Type)
+	}
+}
+
+func (a *App) listNotifications(w http.ResponseWriter, r *http.Request) {
+	p, _ := principalFrom(r.Context())
+	rows, err := a.db.Query(r.Context(), `SELECT id,kind,title,body,severity,object_type,object_id,read_at,created_at FROM notifications WHERE user_id=$1 ORDER BY read_at NULLS FIRST,created_at DESC LIMIT $2`, p.ID, parseLimit(r, 100))
+	if err != nil {
+		writeError(w, 500, "database_error", "알림을 조회하지 못했습니다")
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var id, kind, title, body, severity string
+		var typ, obj *string
+		var read, created any
+		if rows.Scan(&id, &kind, &title, &body, &severity, &typ, &obj, &read, &created) == nil {
+			items = append(items, map[string]any{"id": id, "kind": kind, "title": title, "body": body, "severity": severity, "objectType": typ, "objectId": obj, "readAt": read, "createdAt": created})
+		}
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func (a *App) readNotification(w http.ResponseWriter, r *http.Request) {
+	p, _ := principalFrom(r.Context())
+	tag, err := a.db.Exec(r.Context(), `UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2`, r.PathValue("id"), p.ID)
+	if err != nil || tag.RowsAffected() == 0 {
+		writeError(w, 404, "not_found", "알림을 찾을 수 없습니다")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
