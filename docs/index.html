@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vendra - 엔터프라이즈 오프라인 공급업체 통합 관리 플랫폼 | 단일 Docker</title>
+    <meta name="description" content="Vendra는 공급업체 심사, 계약, 발주, 납품, 품질, 평가 스코어카드, 공급망 리스크 및 Streamable MCP를 단일 Docker 이미지로 제공하는 에어갭 공급업체 인텔리전스 플랫폼입니다.">
+    <meta name="keywords" content="공급업체 관리, SRM, 구매 조달, 스코어카드, 공급망 리스크, Keycloak OIDC, MCP, Vendra">
+    <meta name="author" content="Vendra">
+    <meta name="robots" content="index, follow">
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="shortcut icon" href="favicon.svg">
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="Vendra - 엔터프라이즈 오프라인 공급업체 통합 관리 플랫폼">
+    <meta property="og:description" content="Supplier 360, 구매 수명주기, 동적 스코어카드, 공급망 리스크 분석 및 100% 에어갭 단일 컨테이너 구동.">
+    <meta property="og:url" content="https://hkjang.github.io/Vendra/">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Vendra">
+    <meta property="og:locale" content="ko_KR">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Vendra - 엔터프라이즈 오프라인 공급업체 통합 관리 플랫폼">
+    <meta name="twitter:description" content="단일 Docker 이미지 기반 사내 오프라인 공급업체 SRM 플랫폼. 11+ Read-Only Streamable MCP 내장.">
+
+    <!-- Canonical & Alternate -->
+    <link rel="canonical" href="https://hkjang.github.io/Vendra/">
+    <link rel="alternate" hreflang="ko" href="https://hkjang.github.io/Vendra/">
+    <link rel="alternate" hreflang="en" href="https://hkjang.github.io/Vendra/index_en.html">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="style.css">
+
+    <!-- JSON-LD: SoftwareApplication -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Vendra",
+      "operatingSystem": "Linux, Docker",
+      "applicationCategory": "BusinessApplication",
+      "softwareVersion": "1.0.0",
+      "description": "공급업체 발굴·심사·계약·발주·납품·품질·평가·리스크 및 사외 포털 격리를 지원하는 에어갭 공급망 인텔리전스 플랫폼",
+      "url": "https://github.com/hkjang/Vendra",
+      "downloadUrl": "https://github.com/hkjang/Vendra",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "featureList": [
+        "Supplier 360: 기본정보, 담당자, 계약, PO, 납품, 품질, 평가, Risk 통합 뷰",
+        "구매 수명주기: 구매요청, RFQ, RFP, 계약, 발주, 납품, 검수, Invoice",
+        "가중치 및 등급 산정 자동 동적 스코어카드(Dynamic Scorecard)",
+        "조건별 다단계 승인 워크플로우 엔진 및 선택적 1클릭 승인 옵션",
+        "사외 공급업체 포털 격리 및 서브넷 데이터 스코프 제어",
+        "ENCRYPTION_KEY 기반 AES-256-GCM 시크릿 & 계좌 암호화",
+        "11개 이상의 Read-Only Streamable HTTP MCP Server Tools"
+      ]
+    }
+    </script>
+
+    <!-- JSON-LD: FAQPage -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Vendra는 Redis나 Kafka 같은 추가 미들웨어 없이 구동되나요?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "네. Vendra는 Redis, Kafka, Elasticsearch 등 복잡한 외장 미들웨어 없이 오직 PostgreSQL 15+ 하나와 단일 Docker 이미지로 100% 에어갭 오프라인 구동합니다."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "사외 공급업체 포털 데이터는 안전하게 격리되나요?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "네. 사외 공급업체 포털 계정은 서버에서 데이터 스코프(Data Scope)가 엄격히 제어되어 타사 정보 접근이 완전히 차단됩니다."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "MCP(Model Context Protocol) 툴은 어떤 권한을 가지나요?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Vendra MCP Server는 AI Agent의 파괴적 변경 권한을 예방하기 위해 오직 조회 전용(Read-Only) 11개 도구만을 노출하여 안전성을 보장합니다."
+          }
+        }
+      ]
+    }
+    </script>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <header class="navbar">
+        <div class="container nav-container">
+            <a href="#" class="logo">
+                <img src="favicon.svg" alt="Vendra Logo" width="32" height="32" style="filter: drop-shadow(0 0 8px rgba(6, 182, 212, 0.5));">
+                Vendra
+            </a>
+            <ul class="nav-links desktop-only">
+                <li><a href="#features">주요 기능</a></li>
+                <li><a href="#pipeline">공급망 360</a></li>
+                <li><a href="#mcp">API & MCP</a></li>
+                <li><a href="#docs">문서 센터</a></li>
+                <li><a href="#faq">FAQ</a></li>
+            </ul>
+            <div class="nav-actions desktop-only">
+                <a href="https://github.com/sponsors/hkjang" target="_blank" rel="noopener" class="btn btn-sponsor">
+                    💖 Sponsor
+                </a>
+                <div class="lang-switcher">
+                    <a href="index.html" class="active">KO</a>
+                    <a href="index_en.html">EN</a>
+                </div>
+                <a href="https://github.com/hkjang/Vendra" class="btn btn-secondary" target="_blank" rel="noopener">
+                    <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.46-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>
+                    GitHub
+                </a>
+            </div>
+            <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="메뉴 열기">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- Mobile Menu Drawer -->
+    <div class="mobile-menu" id="mobile-menu">
+        <div class="mobile-nav-links">
+            <a href="#features">주요 기능</a>
+            <a href="#pipeline">공급망 360</a>
+            <a href="#mcp">API & MCP</a>
+            <a href="#docs">문서 센터</a>
+            <a href="#faq">FAQ</a>
+            <a href="https://github.com/sponsors/hkjang" target="_blank" class="btn btn-sponsor" style="justify-content: center;">💖 Sponsor</a>
+            <a href="https://github.com/hkjang/Vendra" class="btn btn-primary" target="_blank">GitHub 바로가기</a>
+            <div class="lang-switcher" style="justify-content: center; margin-top: 12px;">
+                <a href="index.html" class="active">한국어</a>
+                <a href="index_en.html">English</a>
+            </div>
+        </div>
+    </div>
+
+    <main>
+        <!-- Hero Section -->
+        <section class="hero" id="hero">
+            <div class="container">
+                <div class="hero-badge">📦 Enterprise Air-Gapped Supplier Intelligence Platform</div>
+                <h1 class="hero-headline">
+                    차세대 온프레미스<br>
+                    <span class="text-gradient">공급업체 통합 SRM & 인텔리전스</span>
+                </h1>
+                <p class="hero-subtitle">공급업체 심사부터 계약, 발주, 납품, 품질, 평가 및 리스크 관제까지 단일 패키지로</p>
+                <p class="hero-description">
+                    Vendra는 외부 통신이 차단된 사내 폐쇄망 인프라에서 Supplier 360 통합 뷰, RFQ/RFP 구매 수명주기, 
+                    동적 평가 스코어카드, 사외 공급업체 포털 격리, Keycloak OIDC SSO 및 11개 이상의 Read-Only Streamable HTTP MCP를 
+                    단일 Docker 컨테이너로 완벽히 통합 제공합니다.
+                </p>
+                <div class="hero-ctas">
+                    <a href="https://github.com/hkjang/Vendra" class="btn btn-primary btn-lg" target="_blank" rel="noopener">
+                        <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" style="margin-right:6px"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.46-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>
+                        시작하기 (GitHub)
+                    </a>
+                    <a href="#pipeline" class="btn btn-secondary btn-lg">
+                        🛡️ 공급망 360 보기
+                    </a>
+                </div>
+            </div>
+        </section>
+
+        <!-- Stats Bar -->
+        <section class="stats-bar">
+            <div class="container stats-container">
+                <div class="stat-item">
+                    <span class="stat-icon">🌐</span>
+                    <span>Supplier 360 통합 뷰</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-icon">📊</span>
+                    <span>동적 스코어카드 엔진</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-icon">🔐</span>
+                    <span>ENCRYPTION_KEY AES-256</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-icon">🤖</span>
+                    <span>Read-Only Streamable MCP</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Core Features -->
+        <section class="section" id="features">
+            <div class="container">
+                <h2 class="section-title text-center">주요 기능</h2>
+                <p class="section-subtitle text-center">공급업체 발굴부터 구매 수명주기, 스코어카드, 포털 격리 및 AI 연동까지 통합 제공합니다</p>
+                <div class="feature-grid">
+                    <article class="feature-card glass-panel">
+                        <div class="feature-icon">🌐</div>
+                        <h3 class="feature-title">Supplier 360 통합 관제</h3>
+                        <p class="feature-desc">기본정보, 계약, 발주, 납품, 품질, 평가 및 리스크 상태를 단일 360 뷰로 완벽히 추적합니다.</p>
+                    </article>
+                    <article class="feature-card glass-panel">
+                        <div class="feature-icon">🛒</div>
+                        <h3 class="feature-title">구매 및 발주 수명주기</h3>
+                        <p class="feature-desc">구매요청, RFQ, RFP, 계약, 발주(PO), 검수 및 Invoice에 이르는 전체 조달 프로세스를 자동화합니다.</p>
+                    </article>
+                    <article class="feature-card glass-panel">
+                        <div class="feature-icon">📊</div>
+                        <h3 class="feature-title">동적 평가 스코어카드</h3>
+                        <p class="feature-desc">관리자 정의 가중치 항목과 등급 기준에 따라 공급업체 종합 평가 점수를 자동 산정합니다.</p>
+                    </article>
+                    <article class="feature-card glass-panel">
+                        <div class="feature-icon">🔐</div>
+                        <h3 class="feature-title">포털 격리 & Keycloak OIDC</h3>
+                        <p class="feature-desc">사외 공급업체 포털 데이터 스코프 완전 격리, Keycloak OIDC PKCE SSO 및 ENCRYPTION_KEY 암호화를 완비했습니다.</p>
+                    </article>
+                    <article class="feature-card glass-panel">
+                        <div class="feature-icon">🤖</div>
+                        <h3 class="feature-title">11+ Read-Only Streamable MCP</h3>
+                        <p class="feature-desc">Claude Desktop, Cursor 등 AI 에이전트가 오직 안전한 조회 전용 도구로만 공급업체 리스크와 지출을 분석합니다.</p>
+                    </article>
+                    <article class="feature-card glass-panel">
+                        <div class="feature-icon">📦</div>
+                        <h3 class="feature-title">오프라인 단일 Docker</h3>
+                        <p class="feature-desc">Redis/Kafka 미들웨어 없이 Go 백엔드와 React SPA가 통합된 단일 Docker 이미지로 100% 폐쇄망 배포를 보장합니다.</p>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <!-- Pipeline Section -->
+        <section class="section bg-dark" id="pipeline">
+            <div class="container text-white">
+                <h2 class="section-title text-center">공급망 360 & 리스크 인텔리전스</h2>
+                <p class="section-subtitle text-center" style="color: #94a3b8">실시간 공급업체 리스크 등급 및 지출 집중도를 모니터링합니다</p>
+
+                <div class="architecture-diagram">
+                    <div class="window-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <span class="window-title">vendra-supplier-360.json</span>
+                    </div>
+<pre><code>{
+  "supplier_id": "SUP_8801_ACME",
+  "supplier_name": "ACME Industrial Parts",
+  "overall_score": 92.4,
+  "grade": "TIER_1_EXCELLENT",
+  "spend_concentration": "14.2%",
+  "risk_assessment": {
+    "financial_risk": "LOW",
+    "delivery_risk": "LOW",
+    "quality_risk": "NEGLIGIBLE"
+  }
+}</code></pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- Developer & MCP Integration -->
+        <section class="section" id="mcp">
+            <div class="container">
+                <h2 class="section-title text-center">개발자 API & Streamable MCP</h2>
+                <p class="section-subtitle text-center">REST API와 11개 Read-Only Streamable HTTP MCP로 사내 구매 조달을 자동화하세요</p>
+                
+                <div class="integration-layout">
+                    <div class="api-block glass-panel">
+                        <div class="api-title">
+                            <span class="badge badge-cyan">REST API</span>
+                            OpenAPI 3.1 사양
+                        </div>
+                        <p style="color: var(--text-muted); margin-bottom: 1rem;">`/api/v1` 경로로 공급업체, 계약, PO, 품질 및 스코어카드 API를 제공합니다.</p>
+                        <div class="code-editor">
+                            <div class="code-header">json — GET /api/v1/suppliers/search</div>
+<pre><code>{
+  "success": true,
+  "data": [
+    {
+      "supplier_id": "SUP_1092",
+      "name": "한국정밀부품(주)",
+      "tier": "A",
+      "active_contracts": 4
+    }
+  ]
+}</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="api-block glass-panel">
+                        <div class="api-title">
+                            <span class="badge badge-violet">MCP</span>
+                            Streamable HTTP MCP Server
+                        </div>
+                        <p style="color: var(--text-muted); margin-bottom: 1rem;">11개 Read-Only 툴로 파괴적 변경을 철저히 방지합니다.</p>
+                        <div class="code-editor">
+                            <div class="code-header">json — MCP Authorization Token</div>
+<pre><code>{
+  "Authorization": "Bearer vnd_7f9c8d11a2b3c4d5_secret_digest",
+  "Accept": "application/json, text/event-stream"
+}</code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tech Badges -->
+                <div class="tech-stack text-center" style="margin-top: 48px;">
+                    <h3 style="margin-bottom: 12px;">기술 스택</h3>
+                    <div class="badges">
+                        <span class="tech-badge">🔵 Go 1.24+</span>
+                        <span class="tech-badge">⚛️ React 19 / MUI</span>
+                        <span class="tech-badge">🐘 PostgreSQL 15+</span>
+                        <span class="tech-badge">📊 Dynamic Scorecards</span>
+                        <span class="tech-badge">🛡️ Portal Isolation Engine</span>
+                        <span class="tech-badge">🔐 Keycloak OIDC</span>
+                        <span class="tech-badge">🤖 11+ Read-Only MCP</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Documentation & Report Center -->
+        <section class="section bg-dark" id="docs">
+            <div class="container text-white">
+                <h2 class="section-title text-center">공식 문서 & 보고서 센터</h2>
+                <p class="section-subtitle text-center" style="color: #94a3b8">IT 개발·운영 및 조달 전문가 관점의 역할별 매뉴얼, 경영진 보고서, 로드맵 및 분석 자료 세트</p>
+                
+                <div class="feature-grid">
+                    <div class="glass-panel">
+                        <h3>📊 경영진 종합 보고서</h3>
+                        <p style="color: var(--text-muted); margin: 8px 0 16px; font-size: 0.9rem;">Vendra 도입 성과, 구매 TCO 65% 절감, 공급망 리스크 55% 감소 및 벤더 비교 보고서</p>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <a href="EXECUTIVE_REPORT.pdf" target="_blank" class="btn btn-primary" style="padding: 6px 14px; font-size: 0.82rem;">📄 PDF 다운로드</a>
+                            <a href="EXECUTIVE_REPORT.html" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem;">🌐 HTML 뷰어</a>
+                            <a href="EXECUTIVE_REPORT.md" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem;">📝 Markdown</a>
+                        </div>
+                    </div>
+
+                    <div class="glass-panel">
+                        <h3>📘 사용자 가이드 (User Guide)</h3>
+                        <p style="color: var(--text-muted); margin: 8px 0 16px; font-size: 0.9rem;">Supplier 360, 구매 수명주기, 동적 스코어카드, Personal Key 및 MCP 사용법</p>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <a href="USER_GUIDE.pdf" target="_blank" class="btn btn-primary" style="padding: 6px 14px; font-size: 0.82rem;">📄 PDF 다운로드</a>
+                            <a href="USER_GUIDE.html" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem;">🌐 HTML 뷰어</a>
+                            <a href="USER_GUIDE.md" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem;">📝 Markdown</a>
+                        </div>
+                    </div>
+
+                    <div class="glass-panel">
+                        <h3>🔧 관리자 가이드 (Admin Guide)</h3>
+                        <p style="color: var(--text-muted); margin: 8px 0 16px; font-size: 0.9rem;">4대 환경변수 부트스트랩, ENCRYPTION_KEY 관리, Keycloak OIDC, RBAC 및 감사 로그</p>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <a href="ADMIN_GUIDE.pdf" target="_blank" class="btn btn-primary" style="padding: 6px 14px; font-size: 0.82rem;">📄 PDF 다운로드</a>
+                            <a href="ADMIN_GUIDE.html" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem;">🌐 HTML 뷰어</a>
+                            <a href="ADMIN_GUIDE.md" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem;">📝 Markdown</a>
+                        </div>
+                    </div>
+
+                    <div class="glass-panel">
+                        <h3>🚀 중장기 로드맵 (Roadmap)</h3>
+                        <p style="color: var(--text-muted); margin: 8px 0 16px; font-size: 0.9rem;">Phase 1 온프레미스 SRM 구축부터 Phase 3 AI 자율 공급망 위험 조기경보 MCP 2.0 비전</p>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <a href="ROADMAP_PLAN.pdf" target="_blank" class="btn btn-primary" style="padding: 6px 14px; font-size: 0.82rem;">📄 PDF 다운로드</a>
+                            <a href="ROADMAP_PLAN.html" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem;">🌐 HTML 뷰어</a>
+                            <a href="ROADMAP_PLAN.md" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem;">📝 Markdown</a>
+                        </div>
+                    </div>
+
+                    <div class="glass-panel">
+                        <h3>👥 타겟 사용자군 분석</h3>
+                        <p style="color: var(--text-muted); margin: 8px 0 16px; font-size: 0.9rem;">경영진, 구매/조달 팀장, 사외 공급업체 담당자, SRE 및 CISO 등 5대 페르소나 분석</p>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <a href="USER_GROUPS_ANALYSIS.pdf" target="_blank" class="btn btn-primary" style="padding: 6px 14px; font-size: 0.82rem;">📄 PDF 다운로드</a>
+                            <a href="USER_GROUPS_ANALYSIS.html" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem;">🌐 HTML 뷰어</a>
+                            <a href="USER_GROUPS_ANALYSIS.md" target="_blank" class="btn btn-secondary" style="padding: 6px 14px; font-size: 0.82rem;">📝 Markdown</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Deployment Section -->
+        <section class="section" id="deployment">
+            <div class="container">
+                <h2 class="section-title text-center">오프라인 설치 가이드</h2>
+                <p class="section-subtitle text-center">단일 Docker 이미지로 오프라인 폐쇄망 환경에 빠르게 배포하세요</p>
+                <div class="deploy-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px;">
+                    <div class="deploy-card glass-panel">
+                        <h4>🐳 Single Docker Archive Load</h4>
+                        <p>GitHub Release의 .tar.gz 패키지 하나만 오프라인망으로 반입하여 구동합니다.</p>
+<pre><code>docker load < vendra-v0.1.0.tar.gz
+
+# 4개 필수 환경변수로 구동
+export POSTGRES_DSN='postgres://vendra:password@postgres:5432/vendra'
+export BOOTSTRAP_ADMIN='admin@company.com'
+export BOOTSTRAP_ADMIN_PASSWORD='change-this-strong-password'
+export ENCRYPTION_KEY='Base64Encoded32ByteKeyHere=='
+docker compose up -d</code></pre>
+                    </div>
+                    <div class="deploy-card glass-panel">
+                        <h4>⚙️ 4대 필수 환경변수</h4>
+                        <p>Vendra 기동에 필요한 환경변수는 오직 4개입니다.</p>
+<pre><code>POSTGRES_DSN=postgres://vendra:pass@localhost:5432/vendra
+BOOTSTRAP_ADMIN=admin@company.com
+BOOTSTRAP_ADMIN_PASSWORD=SuperSecretPassword123!
+ENCRYPTION_KEY=Base64Encoded32ByteKeyHere==</code></pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- FAQ Section -->
+        <section class="section bg-dark" id="faq">
+            <div class="container text-white">
+                <h2 class="section-title text-center">자주 묻는 질문 (FAQ)</h2>
+                <div class="faq-container" style="margin-top: 40px;">
+                    <div class="faq-item">
+                        <button class="faq-question" aria-expanded="false">
+                            Vendra는 Redis나 Kafka 같은 외장 미들웨어 없이 작동하나요?
+                            <span class="faq-icon">+</span>
+                        </button>
+                        <div class="faq-answer">
+                            <p>네. Redis, Kafka, Elasticsearch 등의 복잡한 외장 시스템 없이 PostgreSQL 15+ 하나와 단일 Docker 이미지로 100% 독립 동작합니다.</p>
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <button class="faq-question" aria-expanded="false">
+                            사외 공급업체 포털 계정의 보안 격리는 완벽한가요?
+                            <span class="faq-icon">+</span>
+                        </button>
+                        <div class="faq-answer">
+                            <p>네. 사외 공급업체 포털 사용자 계정은 서버 단에서 데이터 스코프(Data Scope)가 엄격히 제한되어 자신의 supplier_id 관련 정보만 접속 가능합니다.</p>
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <button class="faq-question" aria-expanded="false">
+                            ENCRYPTION_KEY는 어떻게 생성하고 관리하나요?
+                            <span class="faq-icon">+</span>
+                        </button>
+                        <div class="faq-answer">
+                            <p>`openssl rand -base64 32` 명령으로 생성된 32바이트 암호화 키를 전달하며, DB 내 시크릿 및 계좌정보를 AES-256-GCM 표준으로 안전하게 보호합니다.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CTA Section -->
+        <section class="section" id="get-started">
+            <div class="container">
+                <div class="cta-container glass-panel text-center" style="border-radius: var(--radius-xl)">
+                    <h2 class="cta-title">지금 바로 시작하세요</h2>
+                    <p class="cta-desc" style="margin-bottom: 2rem; color: #94a3b8;">오프라인 사내 공급업체 통합 관제 및 SRM 인프라를 단일 Docker 패키지로 구축하세요</p>
+                    <a href="https://github.com/hkjang/Vendra" class="btn btn-primary btn-lg" target="_blank" rel="noopener">
+                        <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" style="margin-right:8px"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.46-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>
+                        GitHub 저장소 방문하기
+                    </a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div>
+                    <a href="#" class="logo" style="margin-bottom: 12px;">
+                        <img src="favicon.svg" alt="Vendra Logo" width="28" height="28" style="filter: drop-shadow(0 0 8px rgba(6, 182, 212, 0.5));">
+                        Vendra
+                    </a>
+                    <p class="footer-desc">공급업체 심사부터 계약, 발주, 납품, 스코어카드 및 리스크 관제를 위한 에어갭 통합 SRM 플랫폼.</p>
+                </div>
+                <div>
+                    <h4 class="footer-heading">빠른 링크</h4>
+                    <div class="footer-links">
+                        <a href="https://github.com/hkjang/Vendra" target="_blank">GitHub Repository</a>
+                        <a href="https://github.com/hkjang/Vendra#readme" target="_blank">Documentation</a>
+                        <a href="index_en.html">English Page</a>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <span>© 2026 Vendra. Open Source Apache-2.0 License.</span>
+                <span class="footer-contact">도입 및 문의: <a href="mailto:gagagiga@naver.com">gagagiga@naver.com</a></span>
+            </div>
+        </div>
+    </footer>
+
+    <!-- JavaScript Interactions -->
+    <script>
+    (function() {
+        'use strict';
+        var menuBtn = document.getElementById('mobile-menu-btn');
+        var mobileMenu = document.getElementById('mobile-menu');
+        if (menuBtn && mobileMenu) {
+            menuBtn.addEventListener('click', function() {
+                mobileMenu.classList.toggle('active');
+            });
+            mobileMenu.querySelectorAll('a').forEach(function(link) {
+                link.addEventListener('click', function() {
+                    mobileMenu.classList.remove('active');
+                });
+            });
+        }
+        document.querySelectorAll('.faq-question').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var answer = this.nextElementSibling;
+                var icon = this.querySelector('.faq-icon');
+                var isOpen = answer.style.maxHeight && answer.style.maxHeight !== '0px';
+
+                document.querySelectorAll('.faq-answer').forEach(function(a) { a.style.maxHeight = '0px'; });
+                document.querySelectorAll('.faq-icon').forEach(function(i) { i.textContent = '+'; });
+                document.querySelectorAll('.faq-question').forEach(function(q) { q.setAttribute('aria-expanded', 'false'); });
+
+                if (!isOpen) {
+                    answer.style.maxHeight = answer.scrollHeight + 'px';
+                    icon.textContent = '−';
+                    this.setAttribute('aria-expanded', 'true');
+                }
+            });
+        });
+    })();
+    </script>
+</body>
+</html>

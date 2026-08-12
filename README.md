@@ -1,6 +1,18 @@
-# Vendra
+<p align="center">
+  <img src="docs/favicon.svg" alt="Vendra Logo" width="90"><br><br>
+  <h1 align="center">Vendra</h1>
+</p>
 
-Vendra는 공급업체 발굴·등록·심사부터 계약, 구매, 발주, 납품, 품질, 평가, 리스크, 비용과 퇴출까지 연결하는 온프레미스 Supplier Intelligence Platform입니다.
+<p align="center">
+  <strong>오프라인 대응 엔터프라이즈 공급업체 통합 SRM & 인텔리전스 플랫폼</strong><br>
+  Supplier 360, 구매 수명주기, 동적 스코어카드, 포털 보안 격리 및 11+ Read-Only MCP 지원.
+</p>
+
+<p align="center">
+  <a href="https://hkjang.github.io/Vendra/">🇰🇷 홍보 페이지</a> · <a href="https://hkjang.github.io/Vendra/index_en.html">🇺🇸 English Page</a> · <a href="https://github.com/sponsors/hkjang">💖 Sponsor</a>
+</p>
+
+---
 
 단일 Go 프로세스가 React UI, REST/OpenAPI API, MCP 서버와 백그라운드 작업을 제공하며 PostgreSQL 외에 Redis, Kafka, Elasticsearch 같은 필수 미들웨어가 없습니다. 런타임은 외부 인터넷 연결 없이 동작합니다.
 
