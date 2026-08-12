@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <!-- Ultra Sharp Electric Gradient -->
+    <linearGradient id="vendra-intense-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f2fe" />
+      <stop offset="50%" stop-color="#7f00ff" />
+      <stop offset="100%" stop-color="#00f5d4" />
+    </linearGradient>
+    <filter id="intense-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4.5" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Completely Transparent Background (No Rectangle Frame) -->
+  <g filter="url(#intense-glow)">
+    <!-- Sharp Hexagonal Diamond Outer Node Ring -->
+    <polygon points="60,8 108,34 108,86 60,112 12,86 12,34" 
+             fill="none" 
+             stroke="url(#vendra-intense-grad)" 
+             stroke-width="5" 
+             stroke-dasharray="16 8" 
+             stroke-linecap="round" />
+    
+    <!-- Bold Sharp Edge V Monogram -->
+    <path d="M 32 30 L 60 96 L 88 30" 
+          fill="none" 
+          stroke="url(#vendra-intense-grad)" 
+          stroke-width="12" 
+          stroke-linecap="round" 
+          stroke-linejoin="miter" 
+          stroke-miterlimit="4" />
+
+    <!-- Center Glowing Supplier Core Pulse -->
+    <circle cx="60" cy="54" r="8" fill="#ffffff" filter="url(#intense-glow)" />
+    <circle cx="60" cy="96" r="6" fill="#00f5d4" />
+    <circle cx="32" cy="30" r="5" fill="#00f2fe" />
+    <circle cx="88" cy="30" r="5" fill="#7f00ff" />
+  </g>
+</svg>
