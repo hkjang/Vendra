@@ -13,10 +13,12 @@ import (
 	"github.com/hkjang/Vendra/internal/config"
 	"github.com/hkjang/Vendra/internal/db"
 	"github.com/hkjang/Vendra/internal/httpapi"
+	"github.com/hkjang/Vendra/internal/observability"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	logStore := observability.DefaultStore()
+	slog.SetDefault(slog.New(observability.NewCaptureHandler(slog.NewJSONHandler(os.Stdout, nil), logStore)))
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("configuration error", "error", err)

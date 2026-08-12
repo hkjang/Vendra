@@ -203,3 +203,13 @@ func (a *App) readNotification(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
+
+func (a *App) readAllNotifications(w http.ResponseWriter, r *http.Request) {
+	p, _ := principalFrom(r.Context())
+	tag, err := a.db.Exec(r.Context(), `UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE user_id=$1 AND read_at IS NULL`, p.ID)
+	if err != nil {
+		writeError(w, 500, "database_error", "알림을 읽음 처리하지 못했습니다")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "updated": tag.RowsAffected()})
+}

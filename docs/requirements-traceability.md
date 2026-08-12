@@ -67,6 +67,6 @@ go test ./cmd/... ./internal/...
 go vet ./cmd/... ./internal/...
 npm run build --prefix web
 npm run lint --prefix web
-sh scripts/offline-release.sh 0.1.0
-gzip -t dist/vendra-v0.1.0.tar.gz
+sh scripts/offline-release.sh 0.2.0
+gzip -t dist/vendra-v0.2.0.tar.gz
 ```

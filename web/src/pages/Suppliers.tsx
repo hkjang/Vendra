@@ -1,6 +1,5 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
-  Activity,
   AlertCircle,
   ArrowLeft,
   ArrowRight,
@@ -10,19 +9,15 @@ import {
   ClipboardCheck,
   Download,
   FileText,
-  Filter,
   Globe2,
   Mail,
   MapPin,
   MoreHorizontal,
-  Network,
   Phone,
   Plus,
   Search,
   ShieldAlert,
-  SlidersHorizontal,
   Upload,
-  Users,
 } from "lucide-react";
 import {
   Link,
@@ -40,33 +35,38 @@ import {
   PageHeader,
   RiskBadge,
   ScoreRing,
-  statusTone,
 } from "../components";
+import { statusTone } from "../status";
 import { BusinessObject, Supplier } from "../types";
 
 export default function Suppliers() {
   const [params, setParams] = useSearchParams();
-  const [items, setItems] = useState<Supplier[]>([]);
-  const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
   const [view, setView] = useState<"table" | "cards">("table");
   const q = params.get("q") || "";
   const status = params.get("status") || "";
   const risk = params.get("risk") || "";
+  const requestKey = `${q}\u0000${status}\u0000${risk}`;
+  const [result, setResult] = useState<{ key: string; items: Supplier[] }>({
+    key: "",
+    items: [],
+  });
   const load = useCallback(() => {
-    setLoading(true);
-    api<{ items: Supplier[] }>(
+    return api<{ items: Supplier[] }>(
       `/api/v1/suppliers?q=${encodeURIComponent(q)}&status=${status}&risk=${risk}`,
-    )
-      .then((x) => setItems(x.items))
-      .finally(() => setLoading(false));
-  }, [q, status, risk]);
-  useEffect(load, [load]);
+    ).then((response) => setResult({ key: requestKey, items: response.items }));
+  }, [q, requestKey, status, risk]);
+  useEffect(() => {
+    void load();
+  }, [load]);
   function set(key: string, value: string) {
     const n = new URLSearchParams(params);
-    value ? n.set(key, value) : n.delete(key);
+    if (value) n.set(key, value);
+    else n.delete(key);
     setParams(n);
   }
+  const loading = result.key !== requestKey;
+  const items = loading ? [] : result.items;
   return (
     <div className="page">
       <PageHeader
@@ -74,16 +74,10 @@ export default function Suppliers() {
         title="공급업체"
         description="후보 발굴부터 거래 중단까지 공급업체의 전체 생명주기를 관리합니다."
         actions={
-          <>
-            <button className="button secondary">
-              <Upload />
-              가져오기
-            </button>
-            <button className="button" onClick={() => setModal(true)}>
-              <Plus />
-              공급업체 등록
-            </button>
-          </>
+          <button className="button" onClick={() => setModal(true)}>
+            <Plus />
+            공급업체 등록
+          </button>
         }
       />
       <div className="toolbar">
@@ -112,10 +106,6 @@ export default function Suppliers() {
           <option>HIGH</option>
           <option>CRITICAL</option>
         </select>
-        <button className="button ghost">
-          <SlidersHorizontal />
-          필터
-        </button>
         <div className="view-toggle">
           <button
             className={view === "table" ? "active" : ""}
@@ -1403,6 +1393,9 @@ function ScreeningPanel({ supplierId }: { supplierId: string }) {
       ]).then(([t, s]) => {
         setTemplates(t.items);
         setScreenings(s.items);
+        const current = s.items.find((item) => item.status !== "completed");
+        setScores(current?.responses || {});
+        setComments(current?.comments || "");
         if (!selectedTemplate && t.items[0]) setSelectedTemplate(t.items[0].id);
       }),
     [supplierId, selectedTemplate],
@@ -1522,7 +1515,7 @@ function ScreeningPanel({ supplierId }: { supplierId: string }) {
             <Field label="심사 의견">
               <textarea
                 rows={3}
-                value={comments || active.comments || ""}
+                value={comments}
                 onChange={(e) => setComments(e.target.value)}
               />
             </Field>

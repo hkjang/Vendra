@@ -456,6 +456,21 @@ func (a *App) listAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 
+func (a *App) listServerLogs(w http.ResponseWriter, r *http.Request) {
+	if a.logs == nil {
+		writeJSON(w, 200, map[string]any{"items": []any{}, "stats": map[string]int{}, "capacity": 0})
+		return
+	}
+	items, stats := a.logs.Query(r.URL.Query().Get("level"), r.URL.Query().Get("query"), parseLimit(r, 200))
+	writeJSON(w, 200, map[string]any{
+		"items":       items,
+		"stats":       stats,
+		"capacity":    a.logs.Capacity(),
+		"startedAt":   a.logs.StartedAt(),
+		"generatedAt": time.Now().UTC(),
+	})
+}
+
 func (a *App) listScorecards(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(r.Context(), `SELECT id,name,evaluation_type,active,criteria,grade_rules,created_at,updated_at FROM scorecard_templates ORDER BY active DESC,name`)
 	if err != nil {

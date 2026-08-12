@@ -16,6 +16,7 @@ import {
   Truck,
   Upload,
   Users,
+  X,
 } from "lucide-react";
 import { api, date, money, patch, post, Principal, put, Version } from "../api";
 import {
@@ -26,8 +27,8 @@ import {
   Logo,
   Modal,
   RiskBadge,
-  statusTone,
 } from "../components";
+import { statusTone } from "../status";
 import { BusinessObject, Supplier } from "../types";
 import { DocumentUpload } from "./Suppliers";
 
@@ -54,6 +55,19 @@ type PortalEvaluation = {
   completedAt: string;
 };
 
+const portalSections = new Set([
+  "home",
+  "rfq",
+  "contract",
+  "purchase_order",
+  "delivery",
+  "invoice",
+  "evaluation",
+  "issue",
+  "contacts",
+  "profile",
+]);
+
 export default function Portal({
   user,
   version,
@@ -70,7 +84,12 @@ export default function Portal({
   const [work, setWork] = useState<BusinessObject[]>();
   const [sourcing, setSourcing] = useState<SourcingItem[]>();
   const [evaluations, setEvaluations] = useState<PortalEvaluation[]>();
-  const [section, setSection] = useState("home");
+  const [section, setSection] = useState(() => {
+    const initial = window.location.hash.slice(1);
+    return portalSections.has(initial) ? initial : "home";
+  });
+  const [mobileNav, setMobileNav] = useState(false);
+  const [help, setHelp] = useState(false);
   const load = useCallback(() => {
     Promise.all([
       api<{ supplier: Supplier; user: Principal }>("/api/v1/portal/profile"),
@@ -87,9 +106,40 @@ export default function Portal({
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    const syncSection = () => {
+      const next = window.location.hash.slice(1);
+      if (portalSections.has(next)) setSection(next);
+    };
+    window.addEventListener("hashchange", syncSection);
+    window.addEventListener("popstate", syncSection);
+    return () => {
+      window.removeEventListener("hashchange", syncSection);
+      window.removeEventListener("popstate", syncSection);
+    };
+  }, []);
+  useEffect(() => {
+    if (!mobileNav) return;
+    const overflow = document.body.style.overflow;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileNav(false);
+    };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", close);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener("keydown", close);
+    };
+  }, [mobileNav]);
   if (!profile || !work || !sourcing || !evaluations)
     return <Loading label="공급업체 포털을 준비하는 중" />;
   const s = profile.supplier;
+  const selectSection = (next: string) => {
+    setSection(next);
+    if (window.location.hash !== `#${next}`) {
+      window.history.pushState(null, "", `#${next}`);
+    }
+  };
   const nav = [
     { id: "home", label: "홈", icon: LayoutDashboard },
     { id: "rfq", label: "견적 · 입찰", icon: ReceiptText },
@@ -104,8 +154,20 @@ export default function Portal({
   ];
   return (
     <div className="portal-shell">
-      <aside>
-        <Logo />
+      <a className="skip-link" href="#portal-main">
+        본문으로 바로가기
+      </a>
+      <aside className={mobileNav ? "mobile-open" : ""}>
+        <div className="portal-aside-head">
+          <Logo />
+          <button
+            className="icon-button portal-mobile-close"
+            onClick={() => setMobileNav(false)}
+            aria-label="포털 메뉴 닫기"
+          >
+            <X />
+          </button>
+        </div>
         <div className="portal-company">
           <span className="company-avatar large">{s.name.slice(0, 2)}</span>
           <div>
@@ -118,7 +180,10 @@ export default function Portal({
             <button
               key={n.id}
               className={section === n.id ? "active" : ""}
-              onClick={() => setSection(n.id)}
+              onClick={() => {
+                selectSection(n.id);
+                setMobileNav(false);
+              }}
             >
               <n.icon />
               {n.label}
@@ -126,7 +191,7 @@ export default function Portal({
           ))}
         </nav>
         <footer>
-          <button>
+          <button onClick={() => setHelp(true)}>
             <HelpCircle />
             도움말
           </button>
@@ -137,9 +202,20 @@ export default function Portal({
           <span>Vendra Supplier Portal {version.version}</span>
         </footer>
       </aside>
-      <main>
+      {mobileNav && (
+        <div
+          className="portal-scrim"
+          onClick={() => setMobileNav(false)}
+          role="presentation"
+        />
+      )}
+      <main id="portal-main" tabIndex={-1}>
         <header>
-          <button className="icon-button">
+          <button
+            className="icon-button"
+            onClick={() => setMobileNav(true)}
+            aria-label="포털 메뉴 열기"
+          >
             <Menu />
           </button>
           <div>
@@ -151,7 +227,7 @@ export default function Portal({
           <PortalHome
             supplier={s}
             work={[...work, ...sourcing]}
-            setSection={setSection}
+            setSection={selectSection}
           />
         ) : section === "profile" ? (
           <CompanyProfile supplier={s} onSaved={load} />
@@ -170,6 +246,17 @@ export default function Portal({
           />
         )}
       </main>
+      {help && (
+        <Modal title="Vendra Supplier Portal 도움말" onClose={() => setHelp(false)}>
+          <div className="portal-help">
+            <p><b>견적 · 입찰</b> 초대된 RFQ/RFP 응답을 임시 저장하거나 최종 제출합니다.</p>
+            <p><b>계약 · 발주</b> 내부 담당자가 전달한 내용을 확인하고 수신 상태를 기록합니다.</p>
+            <p><b>납품 · Invoice</b> 관련 발주를 선택해 실적과 증빙 정보를 등록합니다.</p>
+            <p><b>자료 제출</b> 문서는 체크섬과 버전, 다운로드 이력과 함께 보관됩니다.</p>
+            <p><b>빠른 이동</b> 모바일에서는 상단 메뉴 버튼으로 모든 포털 업무로 이동합니다.</p>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -422,10 +509,15 @@ function PortalSourcing({
   onSaved: () => void;
 }) {
   const [selected, setSelected] = useState<SourcingItem>();
-  async function decline(item: SourcingItem) {
-    const reason = window.prompt("참여 거절 사유를 입력하세요.");
-    if (reason === null) return;
-    await post(`/api/v1/portal/sourcing/${item.id}/decline`, { reason });
+  const [declining, setDeclining] = useState<SourcingItem>();
+  const [declineReason, setDeclineReason] = useState("");
+  async function decline() {
+    if (!declining) return;
+    await post(`/api/v1/portal/sourcing/${declining.id}/decline`, {
+      reason: declineReason,
+    });
+    setDeclining(undefined);
+    setDeclineReason("");
     onSaved();
   }
   return (
@@ -465,7 +557,7 @@ function PortalSourcing({
               {!item.response && item.status !== "closed" && (
                 <button
                   className="button ghost danger-text"
-                  onClick={() => decline(item)}
+                  onClick={() => setDeclining(item)}
                 >
                   참여 거절
                 </button>
@@ -497,6 +589,40 @@ function PortalSourcing({
             onSaved();
           }}
         />
+      )}
+      {declining && (
+        <Modal
+          title="견적 · 입찰 참여 거절"
+          description={`${declining.number} · ${declining.title}`}
+          onClose={() => setDeclining(undefined)}
+        >
+          <Field label="거절 사유" required>
+            <textarea
+              rows={5}
+              value={declineReason}
+              onChange={(event) => setDeclineReason(event.target.value)}
+              placeholder="내부 담당자가 후속 조치를 판단할 수 있도록 사유를 입력하세요."
+              autoFocus
+            />
+          </Field>
+          <div className="form-actions">
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => setDeclining(undefined)}
+            >
+              취소
+            </button>
+            <button
+              type="button"
+              className="button danger"
+              onClick={() => void decline()}
+              disabled={!declineReason.trim()}
+            >
+              참여 거절 확정
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );

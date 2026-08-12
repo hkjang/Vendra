@@ -68,7 +68,7 @@ export function can(user: Principal, permission: string) {
 }
 
 export function money(value?: number | null) {
-  if (value == null) return "—";
+  if (value == null || !Number.isFinite(value)) return "—";
   return new Intl.NumberFormat("ko-KR", {
     style: "currency",
     currency: "KRW",
@@ -78,9 +78,12 @@ export function money(value?: number | null) {
 
 export function date(value?: string | null) {
   if (!value) return "—";
+  // PostgreSQL may serialize UTC offsets as `+00`; browsers require `+00:00`.
+  const parsed = new Date(value.replace(/([+-]\d{2})$/, "$1:00"));
+  if (Number.isNaN(parsed.getTime())) return "—";
   return new Intl.DateTimeFormat("ko-KR", {
     year: "numeric",
     month: "short",
     day: "numeric",
-  }).format(new Date(value));
+  }).format(parsed);
 }

@@ -18,8 +18,8 @@ import {
   Modal,
   PageHeader,
   RiskBadge,
-  statusTone,
 } from "../components";
+import { statusTone } from "../status";
 import { BusinessObject, Supplier } from "../types";
 
 type Participant = {
@@ -63,37 +63,10 @@ export default function SourcingWorkspace() {
   const [committee, setCommittee] = useState<CommitteeMember[]>([]);
   const [invite, setInvite] = useState(false);
   const [appoint, setAppoint] = useState(false);
-  async function evaluate(response: Comparison) {
-    const technical = window.prompt(
-      `${response.supplierName} 기술평가 점수(0~100)`,
-      String(response.technicalScore || 80),
-    );
-    if (technical === null) return;
-    const fit = window.prompt("요구사항 적합도 점수(0~100)", "80");
-    if (fit === null) return;
-    await post(`/api/v1/sourcing/responses/${response.responseId}/evaluate`, {
-      scores: { technical: Number(technical), fit: Number(fit) },
-      comment: "Sourcing Workspace 평가",
-    });
-    load();
-  }
-  async function select(
-    response: Comparison,
-    selectionType: "preferred" | "final",
-  ) {
-    const label =
-      selectionType === "preferred" ? "우선협상대상" : "최종 공급업체";
-    const reason = window.prompt(
-      `${response.supplierName}을(를) ${label}으로 선정하는 사유`,
-    );
-    if (reason === null) return;
-    await post(`/api/v1/sourcing/${id}/select`, {
-      responseId: response.responseId,
-      selectionType,
-      reason,
-    });
-    load();
-  }
+  const [decision, setDecision] = useState<{
+    response: Comparison;
+    mode: "evaluate" | "preferred" | "final";
+  }>();
   const load = useCallback(
     () =>
       Promise.all([
@@ -216,20 +189,26 @@ export default function SourcingWorkspace() {
                           <button
                             className="icon-button"
                             title="평가위원 점수 입력"
-                            onClick={() => evaluate(x)}
+                            onClick={() =>
+                              setDecision({ response: x, mode: "evaluate" })
+                            }
                           >
                             <Gavel />
                           </button>
                           <button
                             className="icon-button"
                             title="우선협상대상 선정"
-                            onClick={() => select(x, "preferred")}
+                            onClick={() =>
+                              setDecision({ response: x, mode: "preferred" })
+                            }
                           >
                             <CheckCircle2 />
                           </button>
                           <button
                             className="button compact"
-                            onClick={() => select(x, "final")}
+                            onClick={() =>
+                              setDecision({ response: x, mode: "final" })
+                            }
                           >
                             최종 선정
                           </button>
@@ -320,6 +299,17 @@ export default function SourcingWorkspace() {
           onSaved={() => {
             setAppoint(false);
             load();
+          }}
+        />
+      )}
+      {decision && (
+        <SourcingDecision
+          sourcingId={id || ""}
+          decision={decision}
+          onClose={() => setDecision(undefined)}
+          onSaved={() => {
+            setDecision(undefined);
+            void load();
           }}
         />
       )}
@@ -422,6 +412,9 @@ type SourcingQuestion = {
 function SourcingQuestions({ sourcingId }: { sourcingId: string }) {
   const [items, setItems] = useState<SourcingQuestion[]>();
   const [question, setQuestion] = useState("");
+  const [answering, setAnswering] = useState<SourcingQuestion>();
+  const [answerText, setAnswerText] = useState("");
+  const [savingAnswer, setSavingAnswer] = useState(false);
   const load = useCallback(
     () =>
       api<{ items: SourcingQuestion[] }>(
@@ -441,14 +434,21 @@ function SourcingQuestions({ sourcingId }: { sourcingId: string }) {
     setQuestion("");
     load();
   }
-  async function answer(item: SourcingQuestion) {
-    const value = window.prompt("공급업체에 전달할 답변", item.answer || "");
-    if (!value) return;
-    await api(`/api/v1/sourcing/questions/${item.id}/answer`, {
-      method: "PATCH",
-      body: JSON.stringify({ answer: value }),
-    });
-    load();
+  async function answer(e: FormEvent) {
+    e.preventDefault();
+    if (!answering || !answerText.trim()) return;
+    setSavingAnswer(true);
+    try {
+      await api(`/api/v1/sourcing/questions/${answering.id}/answer`, {
+        method: "PATCH",
+        body: JSON.stringify({ answer: answerText.trim() }),
+      });
+      setAnswering(undefined);
+      setAnswerText("");
+      await load();
+    } finally {
+      setSavingAnswer(false);
+    }
   }
   return (
     <section className="card sourcing-questions">
@@ -483,8 +483,12 @@ function SourcingQuestions({ sourcingId }: { sourcingId: string }) {
             <blockquote>{item.answer}</blockquote>
           ) : item.supplierName ? (
             <button
+              type="button"
               className="button secondary compact"
-              onClick={() => answer(item)}
+              onClick={() => {
+                setAnswering(item);
+                setAnswerText(item.answer || "");
+              }}
             >
               답변 등록
             </button>
@@ -496,6 +500,39 @@ function SourcingQuestions({ sourcingId }: { sourcingId: string }) {
           title="등록된 질의응답이 없습니다"
           description="첫 안내를 등록하세요."
         />
+      )}
+      {answering && (
+        <Modal
+          title="공식 답변 등록"
+          description={`${answering.supplierName || answering.askedBy}의 질문에 답변합니다. 등록한 내용은 참여업체에 공개됩니다.`}
+          onClose={() => setAnswering(undefined)}
+        >
+          <form onSubmit={answer}>
+            <div className="question-preview">{answering.question}</div>
+            <Field label="답변" required>
+              <textarea
+                rows={6}
+                value={answerText}
+                onChange={(event) => setAnswerText(event.target.value)}
+                placeholder="정확하고 명확한 공식 답변을 입력하세요."
+                autoFocus
+                required
+              />
+            </Field>
+            <div className="form-actions">
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setAnswering(undefined)}
+              >
+                취소
+              </button>
+              <button className="button" disabled={savingAnswer || !answerText.trim()}>
+                {savingAnswer ? "등록 중…" : "답변 등록"}
+              </button>
+            </div>
+          </form>
+        </Modal>
       )}
     </section>
   );
@@ -509,6 +546,126 @@ function Score({ value }: { value?: number }) {
         {value?.toFixed(0) || "—"}
       </span>
     </td>
+  );
+}
+
+function SourcingDecision({
+  sourcingId,
+  decision,
+  onClose,
+  onSaved,
+}: {
+  sourcingId: string;
+  decision: {
+    response: Comparison;
+    mode: "evaluate" | "preferred" | "final";
+  };
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [technical, setTechnical] = useState(
+    decision.response.technicalScore ?? 80,
+  );
+  const [fit, setFit] = useState(80);
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const selecting = decision.mode !== "evaluate";
+  const title = selecting
+    ? decision.mode === "preferred"
+      ? "우선협상대상 선정"
+      : "최종 공급업체 선정"
+    : "평가위원 점수 입력";
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      if (decision.mode === "evaluate") {
+        await post(
+          `/api/v1/sourcing/responses/${decision.response.responseId}/evaluate`,
+          { scores: { technical, fit }, comment },
+        );
+      } else {
+        await post(`/api/v1/sourcing/${sourcingId}/select`, {
+          responseId: decision.response.responseId,
+          selectionType: decision.mode,
+          reason: comment,
+        });
+      }
+      onSaved();
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal
+      title={title}
+      description={`${decision.response.supplierName} · 현재 종합점수 ${decision.response.finalScore?.toFixed(1) || "미산정"}`}
+      onClose={onClose}
+    >
+      <form onSubmit={submit}>
+        {!selecting && (
+          <div className="form-grid">
+            <Field label="기술평가 점수" required hint="0~100점">
+              <input
+                type="number"
+                min="0"
+                max="100"
+                value={technical}
+                onChange={(event) => setTechnical(Number(event.target.value))}
+                required
+                autoFocus
+              />
+            </Field>
+            <Field label="요구사항 적합도" required hint="0~100점">
+              <input
+                type="number"
+                min="0"
+                max="100"
+                value={fit}
+                onChange={(event) => setFit(Number(event.target.value))}
+                required
+              />
+            </Field>
+          </div>
+        )}
+        <Field
+          label={selecting ? "선정 사유" : "평가 의견"}
+          required={selecting}
+          hint="판단 근거는 감사 추적을 위해 함께 보존됩니다."
+        >
+          <textarea
+            rows={5}
+            value={comment}
+            onChange={(event) => setComment(event.target.value)}
+            required={selecting}
+            autoFocus={selecting}
+            placeholder={
+              selecting
+                ? "가격 외 품질·납기·위험·기술 평가를 포함한 선정 사유"
+                : "기술점수와 적합도 판단 근거"
+            }
+          />
+        </Field>
+        <div className="form-actions">
+          <button type="button" className="button secondary" onClick={onClose}>
+            취소
+          </button>
+          <button
+            className="button"
+            disabled={
+              busy ||
+              (selecting && !comment.trim()) ||
+              technical < 0 ||
+              technical > 100 ||
+              fit < 0 ||
+              fit > 100
+            }
+          >
+            {busy ? "저장 중…" : selecting ? "선정 확정" : "평가 저장"}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 function InviteSourcing({

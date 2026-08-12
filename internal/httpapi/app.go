@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hkjang/Vendra/internal/config"
+	"github.com/hkjang/Vendra/internal/observability"
 	"github.com/hkjang/Vendra/internal/security"
 )
 
@@ -31,6 +32,7 @@ type App struct {
 	vault     *security.Vault
 	auth      authService
 	audit     auditor
+	logs      *observability.Store
 	staticDir string
 }
 
@@ -42,7 +44,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, staticDir s
 	if err := bootstrapAdmin(ctx, pool, cfg.BootstrapAdmin, cfg.BootstrapAdminPassword); err != nil {
 		return nil, fmt.Errorf("bootstrap administrator: %w", err)
 	}
-	app := &App{db: pool, vault: vault, auth: authService{db: pool}, audit: auditor{db: pool}, staticDir: staticDir}
+	app := &App{db: pool, vault: vault, auth: authService{db: pool}, audit: auditor{db: pool}, logs: observability.DefaultStore(), staticDir: staticDir}
 	go app.runBackground(ctx)
 	return app, nil
 }
@@ -78,6 +80,7 @@ func (a *App) registerAPI(m *http.ServeMux) {
 	m.HandleFunc("POST /api/v1/me/api-keys/{id}/rotate", a.rotateAPIKey)
 	m.HandleFunc("DELETE /api/v1/me/api-keys/{id}", a.revokeAPIKey)
 	m.HandleFunc("GET /api/v1/me/notifications", a.listNotifications)
+	m.HandleFunc("POST /api/v1/me/notifications/read-all", a.readAllNotifications)
 	m.HandleFunc("POST /api/v1/me/notifications/{id}/read", a.readNotification)
 
 	m.HandleFunc("GET /api/v1/dashboard", require("dashboard.read", a.dashboard))
@@ -155,6 +158,7 @@ func (a *App) registerAPI(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/admin/lifecycle", require("*", a.listLifecycle))
 	m.HandleFunc("PUT /api/v1/admin/lifecycle/{entityType}", require("*", a.putLifecycle))
 	m.HandleFunc("GET /api/v1/admin/audit", require("audit.read", a.listAudit))
+	m.HandleFunc("GET /api/v1/admin/logs", require("*", a.listServerLogs))
 	m.HandleFunc("GET /api/v1/admin/scorecards", require("*", a.listScorecards))
 	m.HandleFunc("POST /api/v1/admin/scorecards", require("*", a.createScorecard))
 	m.HandleFunc("GET /api/v1/admin/screening-templates", require("*", a.listScreeningTemplates))

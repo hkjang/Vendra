@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   Navigate,
   Route,
@@ -9,7 +9,6 @@ import {
 import {
   AlertCircle,
   BarChart3,
-  Bell,
   Bot,
   Boxes,
   Building2,
@@ -21,7 +20,6 @@ import {
   FileText,
   Gauge,
   Gavel,
-  KeyRound,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -33,10 +31,8 @@ import {
   Search,
   Settings,
   ShieldCheck,
-  Sparkles,
   Truck,
   UserRound,
-  Users,
   X,
 } from "lucide-react";
 import { api, can, post, Principal, Version } from "./api";
@@ -52,8 +48,17 @@ import Portal from "./pages/Portal";
 import SupplierNetwork from "./pages/SupplierNetwork";
 import NotificationCenter from "./NotificationCenter";
 import SourcingWorkspace from "./pages/Sourcing";
+import CommandPalette, { QuickNavigationItem } from "./CommandPalette";
 
 type Session = { user: Principal; version: Version };
+
+async function fetchSession(): Promise<Session> {
+  const [user, version] = await Promise.all([
+    api<Principal>("/api/v1/me"),
+    api<Version>("/api/version"),
+  ]);
+  return { user, version };
+}
 
 export default function App() {
   const location = useLocation();
@@ -61,11 +66,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const load = useCallback(async () => {
     try {
-      const [user, version] = await Promise.all([
-        api<Principal>("/api/v1/me"),
-        api<Version>("/api/version"),
-      ]);
-      setSession({ user, version });
+      setSession(await fetchSession());
     } catch {
       setSession(null);
     } finally {
@@ -73,8 +74,21 @@ export default function App() {
     }
   }, []);
   useEffect(() => {
-    load();
-  }, [load]);
+    let active = true;
+    fetchSession()
+      .then((next) => {
+        if (active) setSession(next);
+      })
+      .catch(() => {
+        if (active) setSession(null);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   if (loading)
     return (
       <div className="boot">
@@ -353,7 +367,7 @@ type NavItem = {
 };
 const navGroups: { label: string; items: NavItem[] }[] = [
   {
-    label: "Overview",
+    label: "개요",
     items: [
       {
         label: "대시보드",
@@ -370,7 +384,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     ],
   },
   {
-    label: "Supplier",
+    label: "공급업체",
     items: [
       {
         label: "공급업체",
@@ -393,7 +407,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     ],
   },
   {
-    label: "Procurement",
+    label: "구매",
     items: [
       {
         label: "구매요청",
@@ -411,7 +425,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     ],
   },
   {
-    label: "Contract & Purchase",
+    label: "계약 · 매입",
     items: [
       {
         label: "계약",
@@ -452,7 +466,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     ],
   },
   {
-    label: "Quality",
+    label: "품질",
     items: [
       {
         label: "품질 · CAPA",
@@ -469,7 +483,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     ],
   },
   {
-    label: "Intelligence",
+    label: "인텔리전스",
     items: [
       {
         label: "Spend 분석",
@@ -487,7 +501,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     ],
   },
   {
-    label: "Workspace",
+    label: "내 업무",
     items: [
       {
         label: "내 승인함",
@@ -509,17 +523,71 @@ function Shell({
   const { user, version } = session;
   const location = useLocation();
   const navigate = useNavigate();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   const [mobile, setMobile] = useState(false);
   const [profile, setProfile] = useState(false);
+  const [commandPalette, setCommandPalette] = useState(false);
   const [search, setSearch] = useState("");
   const [toast, setToast] = useState("");
+  const navigation = useRef<HTMLElement>(null);
   const groups = navGroups
     .map((g) => ({
       ...g,
       items: g.items.filter((i) => !i.permission || can(user, i.permission)),
     }))
     .filter((g) => g.items.length);
+  const quickItems: QuickNavigationItem[] = [
+    ...groups.flatMap((group) =>
+      group.items.map((item) => ({
+        label: item.label,
+        path: item.path,
+        group: group.label,
+      })),
+    ),
+    { label: "개인화 및 키 관리", path: "/profile", group: "계정" },
+    ...(can(user, "*")
+      ? [
+          { label: "서비스 관리", path: "/admin", group: "관리자" },
+          { label: "사용자 · 권한", path: "/admin/users", group: "관리자" },
+          { label: "Workflow", path: "/admin/workflow", group: "관리자" },
+          { label: "평가 · Risk 규칙", path: "/admin/scorecard", group: "관리자" },
+          { label: "Lifecycle", path: "/admin/lifecycle", group: "관리자" },
+          { label: "감사로그", path: "/admin/audit", group: "관리자" },
+          { label: "서버 로그", path: "/admin/logs", group: "관리자" },
+        ]
+      : []),
+  ];
+  useEffect(() => {
+    const openPalette = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandPalette(true);
+      }
+    };
+    window.addEventListener("keydown", openPalette);
+    return () => window.removeEventListener("keydown", openPalette);
+  }, []);
+  useEffect(() => {
+    if (!mobile) return;
+    const overflow = document.body.style.overflow;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobile(false);
+    };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", close);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener("keydown", close);
+    };
+  }, [mobile]);
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "auto" });
+    window.requestAnimationFrame(() => {
+      navigation.current
+        ?.querySelector<HTMLButtonElement>('button[aria-current="page"]')
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  }, [location.pathname]);
   function submitSearch(e: FormEvent) {
     e.preventDefault();
     if (search.trim())
@@ -527,17 +595,24 @@ function Shell({
   }
   return (
     <div className={`app-shell ${collapsed ? "collapsed" : ""}`}>
+      <a className="skip-link" href="#main-content">
+        본문으로 바로가기
+      </a>
       <aside className={mobile ? "mobile-open" : ""}>
         <div className="aside-head">
-          <Logo compact={collapsed} />
-          <button className="mobile-close" onClick={() => setMobile(false)}>
+          <Logo compact={collapsed && !mobile} />
+          <button
+            className="mobile-close"
+            onClick={() => setMobile(false)}
+            aria-label="메뉴 닫기"
+          >
             <X />
           </button>
         </div>
-        <nav>
+        <nav className="main-navigation" ref={navigation} aria-label="주 메뉴">
           {groups.map((group) => (
             <div className="nav-group" key={group.label}>
-              <span>{collapsed ? "" : group.label}</span>
+              <span>{collapsed && !mobile ? "" : group.label}</span>
               {group.items.map((item) => (
                 <button
                   key={item.path}
@@ -550,6 +625,15 @@ function Shell({
                     )
                       ? "active"
                       : ""
+                  }
+                  aria-current={
+                    item.path === "/"
+                      ? location.pathname === "/"
+                        ? "page"
+                        : undefined
+                      : location.pathname.startsWith(item.path)
+                        ? "page"
+                        : undefined
                   }
                   onClick={() => {
                     navigate(item.path);
@@ -573,7 +657,17 @@ function Shell({
               <b>서비스 관리</b>
             </button>
           )}
-          <button onClick={() => setCollapsed((v) => !v)} className="collapse">
+          <button
+            onClick={() =>
+              setCollapsed((value) => {
+                const next = !value;
+                writeSidebarCollapsed(next);
+                return next;
+              })
+            }
+            className="collapse"
+            aria-expanded={!collapsed}
+          >
             {collapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
             <b>메뉴 접기</b>
           </button>
@@ -584,7 +678,11 @@ function Shell({
       )}
       <section className="workspace">
         <header className="topbar">
-          <button className="menu-toggle" onClick={() => setMobile(true)}>
+          <button
+            className="menu-toggle"
+            onClick={() => setMobile(true)}
+            aria-label="메뉴 열기"
+          >
             <Menu />
           </button>
           <form className="global-search" onSubmit={submitSearch}>
@@ -593,11 +691,24 @@ function Shell({
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="공급업체, 계약, 발주, 이슈 검색"
+              aria-label="통합 검색"
             />
-            <kbd>⌘ K</kbd>
+            <button
+              type="button"
+              className="search-shortcut"
+              onClick={() => setCommandPalette(true)}
+              aria-label="빠른 이동 열기"
+            >
+              <kbd>{shortcutLabel()}</kbd>
+            </button>
           </form>
           <div className="top-actions">
-            <button className="icon-button" title="명령 팔레트">
+            <button
+              className="icon-button"
+              title="빠른 이동 (Ctrl/⌘ K)"
+              aria-label="빠른 이동"
+              onClick={() => setCommandPalette(true)}
+            >
               <Command />
             </button>
             <NotificationCenter />
@@ -659,7 +770,7 @@ function Shell({
             </div>
           </div>
         </header>
-        <main className="main-content">
+        <main className="main-content" id="main-content" tabIndex={-1}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/suppliers" element={<Suppliers />} />
@@ -703,6 +814,13 @@ function Shell({
         </main>
       </section>
       {toast && <Toast message={toast} onClose={() => setToast("")} />}
+      {commandPalette && (
+        <CommandPalette
+          items={quickItems}
+          onNavigate={(path) => navigate(path)}
+          onClose={() => setCommandPalette(false)}
+        />
+      )}
     </div>
   );
 }
@@ -720,3 +838,23 @@ const objectPages = [
   { path: "/invoices", type: "invoice" },
   { path: "/payments", type: "payment" },
 ];
+
+function readSidebarCollapsed() {
+  try {
+    return localStorage.getItem("vendra.sidebar.collapsed") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeSidebarCollapsed(value: boolean) {
+  try {
+    localStorage.setItem("vendra.sidebar.collapsed", String(value));
+  } catch {
+    // Storage can be disabled; the current session still behaves normally.
+  }
+}
+
+function shortcutLabel() {
+  return /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ K" : "Ctrl K";
+}

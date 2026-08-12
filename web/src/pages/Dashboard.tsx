@@ -8,7 +8,6 @@ import {
   CheckCircle2,
   CircleDollarSign,
   FileText,
-  MoreHorizontal,
   Sparkles,
   TrendingUp,
   Users,
@@ -22,8 +21,8 @@ import {
   PageHeader,
   RiskBadge,
   ScoreRing,
-  statusTone,
 } from "../components";
+import { statusTone } from "../status";
 import { BusinessObject, DashboardData } from "../types";
 
 export default function Dashboard() {
@@ -53,10 +52,10 @@ export default function Dashboard() {
         description="주요 공급업체 지표와 오늘 조치가 필요한 업무를 한눈에 확인하세요."
         actions={
           <>
-            <button className="button secondary">
+            <span className="button secondary static-control">
               <CalendarClock />
               기간: 최근 12개월
-            </button>
+            </span>
             <Link className="button" to="/suppliers">
               공급업체 보기
               <ArrowRight />
@@ -170,9 +169,7 @@ export default function Dashboard() {
               <p className="eyebrow">Spend concentration</p>
               <h2>구매금액 Top 공급업체</h2>
             </div>
-            <button className="icon-button">
-              <MoreHorizontal />
-            </button>
+            <Link to="/suppliers">전체 보기</Link>
           </div>
           {data!.topSuppliers.length ? (
             <div className="rank-list">

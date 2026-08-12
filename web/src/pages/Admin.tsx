@@ -1,21 +1,24 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   Activity,
   AlertCircle,
   Bot,
-  Braces,
-  Check,
   ChevronRight,
   ClipboardCheck,
-  Database,
+  Download,
   FileText,
   GitBranch,
   KeyRound,
   Layers3,
   LockKeyhole,
   Network,
+  Pause,
+  Play,
   Plus,
+  RefreshCw,
   Save,
+  Search,
+  Server,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
@@ -31,8 +34,8 @@ import {
   Loading,
   Modal,
   PageHeader,
-  statusTone,
 } from "../components";
+import { statusTone } from "../status";
 
 type Setting = {
   key: string;
@@ -52,6 +55,7 @@ const sections = [
   { id: "integrations", label: "연동 · 알림", icon: Network },
   { id: "ai", label: "AI 모델", icon: Bot },
   { id: "audit", label: "감사로그", icon: Activity },
+  { id: "logs", label: "서버 로그", icon: Server },
 ];
 export default function Admin({ notify }: { notify: (s: string) => void }) {
   const location = useLocation();
@@ -97,6 +101,7 @@ function AdminSection({
   if (current === "scorecard") return <Scorecards />;
   if (current === "lifecycle") return <Lifecycle />;
   if (current === "audit") return <Audit />;
+  if (current === "logs") return <ServerLogs />;
   return <SettingsPanel category={current} notify={notify} />;
 }
 
@@ -1647,6 +1652,9 @@ type LifecycleItem = {
 function Lifecycle() {
   const [items, setItems] = useState<LifecycleItem[]>();
   const [entityType, setEntityType] = useState("supplier");
+  const [adding, setAdding] = useState(false);
+  const [newCode, setNewCode] = useState("");
+  const [codeError, setCodeError] = useState("");
   useEffect(() => {
     api<{ items: LifecycleItem[] }>("/api/v1/admin/lifecycle").then((x) =>
       setItems(x.items),
@@ -1666,19 +1674,24 @@ function Lifecycle() {
       ),
     );
   }
-  function addState() {
-    const code = window
-      .prompt("변경되지 않는 상태 코드 (예: renewed)")
-      ?.trim()
+  function addState(event: FormEvent) {
+    event.preventDefault();
+    const code = newCode
+      .trim()
       .toLowerCase()
       .replace(/[^a-z0-9_]/g, "_");
+    if (!code) {
+      setCodeError("영문 소문자, 숫자 또는 밑줄로 상태 코드를 입력하세요.");
+      return;
+    }
     if (
-      !code ||
       loadedItems.some(
         (item) => item.entityType === entityType && item.code === code,
       )
-    )
+    ) {
+      setCodeError("이미 사용 중인 상태 코드입니다.");
       return;
+    }
     setItems([
       ...loadedItems,
       {
@@ -1691,6 +1704,9 @@ function Lifecycle() {
         enabled: true,
       },
     ]);
+    setAdding(false);
+    setNewCode("");
+    setCodeError("");
   }
   async function save() {
     await put(`/api/v1/admin/lifecycle/${entityType}`, {
@@ -1717,7 +1733,10 @@ function Lifecycle() {
           </p>
         </div>
         <div className="header-actions">
-          <button className="button secondary" onClick={addState}>
+          <button
+            className="button secondary"
+            onClick={() => setAdding(true)}
+          >
             <Plus />
             상태 추가
           </button>
@@ -1821,6 +1840,44 @@ function Lifecycle() {
         상태 코드는 API와 감사로그의 불변 식별자입니다. 이름과 색상, 순서는
         자유롭게 변경할 수 있습니다.
       </div>
+      {adding && (
+        <Modal
+          title="Lifecycle 상태 추가"
+          description={`${entityType} 업무에 사용할 변경되지 않는 상태 코드를 등록합니다.`}
+          onClose={() => setAdding(false)}
+        >
+          <form onSubmit={addState}>
+            <Field
+              label="상태 코드"
+              hint="영문 소문자, 숫자, 밑줄(_)만 사용합니다. 예: renewed"
+              required
+            >
+              <input
+                value={newCode}
+                onChange={(event) => {
+                  setNewCode(event.target.value);
+                  setCodeError("");
+                }}
+                placeholder="renewed"
+                pattern="[A-Za-z0-9_]+"
+                autoFocus
+                required
+              />
+            </Field>
+            {codeError && <div className="form-error">{codeError}</div>}
+            <div className="form-actions">
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setAdding(false)}
+              >
+                취소
+              </button>
+              <button className="button">상태 추가</button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1938,4 +1995,222 @@ function Audit() {
       )}
     </div>
   );
+}
+
+type ServerLog = {
+  id: number;
+  occurredAt: string;
+  level: "DEBUG" | "INFO" | "WARN" | "ERROR";
+  message: string;
+  attributes: Record<string, unknown>;
+};
+type ServerLogResponse = {
+  items: ServerLog[];
+  stats: {
+    retained: number;
+    debug: number;
+    info: number;
+    warning: number;
+    error: number;
+  };
+  capacity: number;
+  startedAt: string;
+  generatedAt: string;
+};
+
+function ServerLogs() {
+  const [data, setData] = useState<ServerLogResponse>();
+  const [level, setLevel] = useState("ALL");
+  const [query, setQuery] = useState("");
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [expanded, setExpanded] = useState<number>();
+  const [loadError, setLoadError] = useState("");
+  const load = useCallback(async () => {
+    const params = new URLSearchParams({ level, query, limit: "300" });
+    try {
+      const result = await api<ServerLogResponse>(
+        `/api/v1/admin/logs?${params}`,
+      );
+      setData(result);
+      setLoadError("");
+    } catch (error) {
+      setLoadError(
+        error instanceof Error ? error.message : "서버 로그를 조회하지 못했습니다.",
+      );
+    }
+  }, [level, query]);
+  useEffect(() => {
+    const initial = window.setTimeout(() => void load(), 200);
+    if (!autoRefresh) return () => window.clearTimeout(initial);
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
+  }, [autoRefresh, load]);
+  if (!data && !loadError) return <Loading label="서버 로그를 불러오는 중" />;
+  const items = data?.items || [];
+  const stats = data?.stats || {
+    retained: 0,
+    debug: 0,
+    info: 0,
+    warning: 0,
+    error: 0,
+  };
+  function exportLogs() {
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `vendra-server-logs-${new Date().toISOString().replaceAll(":", "-")}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  return (
+    <div className="admin-card server-logs-card">
+      <header>
+        <div>
+          <h2>서버 로그</h2>
+          <p>
+            현재 Vendra 프로세스의 구조화 로그를 실시간으로 확인합니다. 민감한
+            속성은 수집 단계에서 마스킹됩니다.
+          </p>
+        </div>
+        <div className="log-header-actions">
+          <button
+            className={`button secondary ${autoRefresh ? "active" : ""}`}
+            onClick={() => setAutoRefresh((value) => !value)}
+            aria-pressed={autoRefresh}
+          >
+            {autoRefresh ? <Pause /> : <Play />}
+            {autoRefresh ? "자동 갱신 중" : "자동 갱신"}
+          </button>
+          <button className="button secondary" onClick={() => void load()}>
+            <RefreshCw />새로고침
+          </button>
+          <button
+            className="button secondary"
+            onClick={exportLogs}
+            disabled={!items.length}
+          >
+            <Download />JSON
+          </button>
+        </div>
+      </header>
+      <div className="log-stats" aria-label="서버 로그 요약">
+        <div>
+          <span>보관 중</span>
+          <strong>{stats.retained.toLocaleString()}</strong>
+          <small>최대 {data?.capacity.toLocaleString() || 0}건</small>
+        </div>
+        <div className="info">
+          <span>INFO</span>
+          <strong>{stats.info.toLocaleString()}</strong>
+        </div>
+        <div className="warning">
+          <span>WARN</span>
+          <strong>{stats.warning.toLocaleString()}</strong>
+        </div>
+        <div className="error">
+          <span>ERROR</span>
+          <strong>{stats.error.toLocaleString()}</strong>
+        </div>
+      </div>
+      <div className="log-toolbar">
+        <div className="search-box">
+          <Search />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="메시지, Request ID, 경로, 컴포넌트 검색"
+            aria-label="서버 로그 검색"
+          />
+        </div>
+        <select
+          value={level}
+          onChange={(event) => setLevel(event.target.value)}
+          aria-label="로그 레벨"
+        >
+          <option value="ALL">전체 레벨</option>
+          <option value="ERROR">ERROR</option>
+          <option value="WARN">WARN</option>
+          <option value="INFO">INFO</option>
+          <option value="DEBUG">DEBUG</option>
+        </select>
+        <span className="log-updated" aria-live="polite">
+          {data?.generatedAt
+            ? `${logTime(data.generatedAt)} 갱신`
+            : "갱신 대기"}
+        </span>
+      </div>
+      {loadError && (
+        <div className="form-error">
+          <AlertCircle />
+          {loadError}
+        </div>
+      )}
+      <div className="server-log-list" role="log" aria-live="polite">
+        {items.map((item) => {
+          const requestID = String(item.attributes.request_id || "");
+          const path = String(item.attributes.path || "");
+          const isExpanded = expanded === item.id;
+          return (
+            <button
+              className={`server-log-row ${item.level.toLowerCase()} ${isExpanded ? "expanded" : ""}`}
+              key={item.id}
+              onClick={() => setExpanded(isExpanded ? undefined : item.id)}
+              aria-expanded={isExpanded}
+            >
+              <time dateTime={item.occurredAt}>{logTime(item.occurredAt)}</time>
+              <span className={`log-level ${item.level.toLowerCase()}`}>
+                {item.level}
+              </span>
+              <span className="log-message">
+                <b>{item.message}</b>
+                {(path || requestID) && (
+                  <small>
+                    {path}
+                    {path && requestID ? " · " : ""}
+                    {requestID && `Request ${requestID}`}
+                  </small>
+                )}
+                {isExpanded && (
+                  <code>{JSON.stringify(item.attributes, null, 2)}</code>
+                )}
+              </span>
+              <ChevronRight />
+            </button>
+          );
+        })}
+        {!items.length && !loadError && (
+          <Empty
+            icon={<Server />}
+            title="조건에 맞는 서버 로그가 없습니다"
+            description="검색어 또는 로그 레벨을 변경해 보세요. 새 로그는 자동 갱신 시 표시됩니다."
+          />
+        )}
+      </div>
+      <div className="log-retention-note">
+        <Server />
+        <span>
+          UI에는 현재 프로세스의 최근 로그만 순환 보관합니다. 장기 보관은 Docker
+          로그 드라이버 또는 중앙 로그 수집기를 사용하세요.
+          {data?.startedAt && ` 프로세스 시작: ${logTime(data.startedAt)}`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function logTime(value: string) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
 }

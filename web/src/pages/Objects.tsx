@@ -11,7 +11,6 @@ import {
   Search,
   Send,
   ShieldAlert,
-  SlidersHorizontal,
 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, date, money, post } from "../api";
@@ -23,8 +22,8 @@ import {
   Modal,
   PageHeader,
   RiskBadge,
-  statusTone,
 } from "../components";
+import { statusTone } from "../status";
 import { BusinessObject, Supplier } from "../types";
 
 const configs: Record<
@@ -147,19 +146,21 @@ function ObjectList({ type }: { type: string }) {
   const [params, setParams] = useSearchParams();
   const q = params.get("q") || "";
   const status = params.get("status") || "";
-  const [items, setItems] = useState<BusinessObject[]>([]);
-  const [loading, setLoading] = useState(true);
+  const requestKey = `${c.endpoint}\u0000${q}\u0000${status}`;
+  const [result, setResult] = useState<{
+    key: string;
+    items: BusinessObject[];
+  }>({ key: "", items: [] });
   const [modal, setModal] = useState(false);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const load = useCallback(() => {
-    setLoading(true);
-    api<{ items: BusinessObject[] }>(
+    return api<{ items: BusinessObject[] }>(
       `${c.endpoint}?q=${encodeURIComponent(q)}&status=${status}`,
-    )
-      .then((x) => setItems(x.items))
-      .finally(() => setLoading(false));
-  }, [c.endpoint, q, status]);
-  useEffect(load, [load]);
+    ).then((response) => setResult({ key: requestKey, items: response.items }));
+  }, [c.endpoint, q, requestKey, status]);
+  useEffect(() => {
+    void load();
+  }, [load]);
   useEffect(() => {
     api<{ items: Supplier[] }>("/api/v1/suppliers?limit=500")
       .then((x) => setSuppliers(x.items))
@@ -167,9 +168,12 @@ function ObjectList({ type }: { type: string }) {
   }, []);
   function set(key: string, v: string) {
     const n = new URLSearchParams(params);
-    v ? n.set(key, v) : n.delete(key);
+    if (v) n.set(key, v);
+    else n.delete(key);
     setParams(n);
   }
+  const loading = result.key !== requestKey;
+  const items = loading ? [] : result.items;
   return (
     <div className="page">
       <PageHeader
@@ -201,10 +205,6 @@ function ObjectList({ type }: { type: string }) {
           <option value="completed">완료</option>
           <option value="rejected">반려</option>
         </select>
-        <button className="button ghost">
-          <SlidersHorizontal />
-          필터
-        </button>
       </div>
       {loading ? (
         <Loading />
@@ -611,20 +611,25 @@ function NewObject({
 function SearchPage() {
   const [params, setParams] = useSearchParams();
   const q = params.get("q") || "";
-  const [items, setItems] = useState<Record<string, string>[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{
+    query: string;
+    items: Record<string, string>[];
+  }>({ query: "", items: [] });
   useEffect(() => {
-    if (q.length < 2) {
-      setItems([]);
-      return;
-    }
-    setLoading(true);
+    if (q.length < 2) return;
+    let active = true;
     api<{ items: Record<string, string>[] }>(
       `/api/v1/search?q=${encodeURIComponent(q)}`,
     )
-      .then((x) => setItems(x.items))
-      .finally(() => setLoading(false));
+      .then((response) => {
+        if (active) setResult({ query: q, items: response.items });
+      });
+    return () => {
+      active = false;
+    };
   }, [q]);
+  const loading = q.length >= 2 && result.query !== q;
+  const items = result.query === q ? result.items : [];
   return (
     <div className="page">
       <PageHeader
@@ -878,7 +883,6 @@ function SpendPage() {
   });
   const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
   useEffect(() => {
-    setItems(undefined);
     const grouping = groupBy === "supplier" ? "" : groupBy;
     api<{ items: SpendRow[] }>(
       `/api/v1/spend?groupBy=${grouping}&from=${from}&to=${to}&limit=300`,
@@ -905,14 +909,20 @@ function SpendPage() {
               aria-label="시작일"
               type="date"
               value={from}
-              onChange={(e) => setFrom(e.target.value)}
+              onChange={(e) => {
+                setItems(undefined);
+                setFrom(e.target.value);
+              }}
             />
             <span>–</span>
             <input
               aria-label="종료일"
               type="date"
               value={to}
-              onChange={(e) => setTo(e.target.value)}
+              onChange={(e) => {
+                setItems(undefined);
+                setTo(e.target.value);
+              }}
             />
           </div>
         }
@@ -966,7 +976,10 @@ function SpendPage() {
                 <button
                   key={value}
                   className={groupBy === value ? "active" : ""}
-                  onClick={() => setGroupBy(value)}
+                  onClick={() => {
+                    setItems(undefined);
+                    setGroupBy(value);
+                  }}
                 >
                   {label}
                 </button>
