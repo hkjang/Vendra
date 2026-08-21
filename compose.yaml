@@ -1,6 +1,6 @@
 services:
   vendra:
-    image: vendra:v0.6.0
+    image: vendra:v0.6.1
     restart: unless-stopped
     ports:
       - "8080:8080"

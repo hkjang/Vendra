@@ -658,3 +658,101 @@ func TestListUsersIsBoundedSearchableAndHonestAboutTruncation(t *testing.T) {
 		t.Errorf("an unmatched search returned %d users", items)
 	}
 }
+
+// TestSourcingQuestionsHideCompetitorIdentity checks the confidentiality a
+// sealed tender depends on: a bidder may read shared answers without learning
+// who else was invited.
+func TestSourcingQuestionsHideCompetitorIdentity(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	newSupplier := func(number, name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES($1,$2,$3,'active')
+			ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`, number, name, number).Scan(&id); err != nil {
+			t.Fatalf("seed supplier: %v", err)
+		}
+		return id
+	}
+	mine := newSupplier("SUP-QA-MINE", "우리 회사")
+	rival := newSupplier("SUP-QA-RIVAL", "경쟁 회사")
+
+	hash, err := app.hashPassword(ctx, "PortalPassphrase!2026")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	const portalEmail = "qa-portal@vendra.test"
+	var portalID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,supplier_id,status) VALUES($1,'우리 담당자',$2,'supplier',$3,'active')
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,supplier_id=excluded.supplier_id RETURNING id`, portalEmail, hash, mine).Scan(&portalID); err != nil {
+		t.Fatalf("seed portal user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user' ON CONFLICT DO NOTHING`, portalID); err != nil {
+		t.Fatalf("assign portal role: %v", err)
+	}
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,created_by) VALUES('rfq','RFQ-QA-1','QA 검증 견적요청','open',$1) RETURNING id`, adminID).Scan(&rfqID); err != nil {
+		t.Fatalf("seed rfq: %v", err)
+	}
+	for _, supplierID := range []string{mine, rival} {
+		if _, err := pool.Exec(ctx, `INSERT INTO sourcing_participants(sourcing_id,supplier_id,status) VALUES($1,$2,'invited') ON CONFLICT DO NOTHING`, rfqID, supplierID); err != nil {
+			t.Fatalf("seed participant: %v", err)
+		}
+	}
+	// The rival asks a question every participant can read.
+	if _, err := pool.Exec(ctx, `INSERT INTO sourcing_questions(sourcing_id,supplier_id,asked_by,question,visibility) VALUES($1,$2,$3,'경쟁사가 올린 공개 질문','participants')`, rfqID, rival, adminID); err != nil {
+		t.Fatalf("seed rival question: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO sourcing_questions(sourcing_id,supplier_id,asked_by,question,visibility) VALUES($1,$2,$3,'우리가 올린 질문','participants')`, rfqID, mine, portalID); err != nil {
+		t.Fatalf("seed own question: %v", err)
+	}
+	// A buyer announcement has no supplier and stays attributed.
+	if _, err := pool.Exec(ctx, `INSERT INTO sourcing_questions(sourcing_id,asked_by,question,visibility) VALUES($1,$2,'구매팀 공지','participants')`, rfqID, adminID); err != nil {
+		t.Fatalf("seed announcement: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_questions WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_participants WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, portalEmail)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number IN ('SUP-QA-MINE','SUP-QA-RIVAL')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email IN ($1,$2)`, portalEmail, testAdminEmail)
+	portal := sessionCookieFrom(t, postLogin(t, handler, portalEmail, "PortalPassphrase!2026", "203.0.113.90:5000"))
+	w := doRequest(t, handler, http.MethodGet, "/api/v1/portal/sourcing/"+rfqID+"/questions", portal)
+	if w.Code != http.StatusOK {
+		t.Fatalf("questions returned %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	// The rival's question must be readable but unattributed.
+	if !strings.Contains(body, "경쟁사가 올린 공개 질문") {
+		t.Error("a participant-visible question was hidden entirely")
+	}
+	if strings.Contains(body, "경쟁 회사") || strings.Contains(body, rival) {
+		t.Errorf("a bidder learned who else was invited: %s", body)
+	}
+	// Their own question keeps its attribution, and the buyer announcement too.
+	if !strings.Contains(body, "우리 회사") {
+		t.Error("the bidder's own question lost its attribution")
+	}
+	if !strings.Contains(body, "구매팀 공지") {
+		t.Error("the buyer announcement was hidden")
+	}
+
+	// An internal reviewer must still see who asked what.
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.91:5000"))
+	internal := doRequest(t, handler, http.MethodGet, "/api/v1/sourcing/"+rfqID+"/questions", admin)
+	if internal.Code != http.StatusOK {
+		t.Fatalf("internal questions returned %d: %s", internal.Code, internal.Body.String())
+	}
+	if !strings.Contains(internal.Body.String(), "경쟁 회사") {
+		t.Error("internal reviewers lost the asker attribution they need")
+	}
+}

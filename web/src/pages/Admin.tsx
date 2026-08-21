@@ -227,6 +227,7 @@ function OIDC({
         clientId: d.get("clientId"),
         scopes: String(d.get("scopes")).split(" ").filter(Boolean),
         autoCreate: d.get("autoCreate") === "on",
+        requireVerifiedEmail: d.get("requireVerifiedEmail") === "on",
         defaultRole: d.get("defaultRole"),
       },
       secretValue: d.get("clientSecret") || undefined,
@@ -329,6 +330,21 @@ function OIDC({
             type="checkbox"
             name="autoCreate"
             defaultChecked={Boolean(current.autoCreate)}
+          />
+        </label>
+        <label className="toggle-row">
+          <span>
+            <b>검증된 이메일만 허용</b>
+            <small>
+              Keycloak이 <code>email_verified</code>를 보내지 않는 경우에만
+              끄세요. 끄면 이메일을 자유롭게 설정할 수 있는 공급자에서 기존
+              계정을 가로챌 수 있습니다.
+            </small>
+          </span>
+          <input
+            type="checkbox"
+            name="requireVerifiedEmail"
+            defaultChecked={current.requireVerifiedEmail !== false}
           />
         </label>
         <div className="form-actions">

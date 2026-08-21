@@ -4,6 +4,7 @@
 
 - Local password: bcrypt(DefaultCost). 본인은 `POST /api/v1/me/password`로, 관리자는 `POST /api/v1/admin/users/{id}/password`로 교체합니다. 두 경로 모두 대상 사용자의 세션을 폐기하며(본인 변경은 요청한 세션만 유지) 실패한 로그인 이력도 함께 지웁니다.
 - OIDC: Discovery, Authorization Code, PKCE S256, state, nonce, issuer/audience/signature verification
+- OIDC 계정 연결: 이미 연결된 `oidc_subject`는 그 자체로 계정을 특정하므로 이메일 검증이 필요 없습니다. 반면 **이메일로 기존 계정에 연결하거나 새 계정을 만드는 경로**는 공급자의 이메일 클레임을 신뢰하는 지점이므로 `email_verified`가 참이어야 합니다. 사용자가 이메일을 임의로 설정할 수 있는 공급자에서 관리자 계정을 포함한 기존 계정을 가로채는 것을 막습니다. `oidc.requireVerifiedEmail` 기본값은 켜짐이며, 해당 클레임을 보내지 않는 공급자에 한해 관리자 화면에서 끌 수 있습니다. 거부는 `oidc_unverified_email` 감사 이벤트로 남습니다.
 - Session: random 256-bit bearer, database에는 SHA-256 hash만 저장, HttpOnly/SameSite cookie
 - API key: `vnd_` prefix, 생성 시 한 번만 표시, hash 저장, Scope/만료/폐기/회전
 - Brute force protection: `login_attempts`에 실패 이력을 남기고 계정과 발신 IP 각각에 임계값을 적용합니다. 잠긴 동안에는 자격증명을 확인하지 않고 `429 too_many_attempts`와 `Retry-After`를 반환하며, 로그인에 성공하면 해당 계정의 실패 이력을 지웁니다.
@@ -34,6 +35,7 @@
 - RBAC permissions support exact, domain wildcard(`supplier.*`) and read wildcard(`*.read`).
 - Data Scope is `own`, `department`, `division`, `company`.
 - Supplier Portal requests are forced to the user's supplier ID regardless of client input.
+- 소싱 Q&A는 참여업체 공개 질문이라도 포털에서는 질문자 업체·담당자를 가립니다. 답변은 모두 읽을 수 있지만 함께 초대된 경쟁사를 알 수 없으며, 본인 질문과 구매팀 공지는 출처가 표시됩니다. 내부 검토자에게는 전체 출처가 보입니다.
 - MCP 도구는 공급업체 포털 계정을 거부합니다. 모든 도구는 조직 범위로 결과를 좁히는 교차 공급업체 조회이므로 포털 격리를 담고 있지 않습니다. 기본 `supplier_user` 역할은 `portal.*`뿐이라 권한 게이트에서도 막히지만, 관리자가 조회 권한을 부여하더라도 사용자 유형만으로 차단됩니다.
 - MCP 오류 응답은 의도된 거부 사유만 전달하고, 드라이버 오류나 캐스트 실패 같은 내부 결함은 로그로만 남깁니다.
 - Amount fields are removed unless the Principal has the domain amount permission or wildcard.
