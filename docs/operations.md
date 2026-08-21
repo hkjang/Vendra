@@ -35,8 +35,9 @@ Embedded, ordered SQL migrations run inside a PostgreSQL transaction at startup.
 |---|---|---|
 | `expiredSessionDays` | 7 | 만료 시각이 지난 `sessions` 행 |
 | `loginAttemptDays` | 30 | `login_attempts` 로그인 시도 이력 |
+| `formDraftDays` | 60 | 제출되지 않고 방치된 입력 자동 저장 |
 
-만료된 세션은 이미 인증에 사용할 수 없으므로 삭제해도 동작이 바뀌지 않습니다. 업무 데이터, 감사로그와 알림은 이 스윕이 건드리지 않습니다.
+만료된 세션은 이미 인증에 사용할 수 없으므로 삭제해도 동작이 바뀌지 않습니다. 업무 데이터, 감사로그와 알림은 이 스윕이 건드리지 않습니다. 임시저장은 사용자당 최근 50건만 유지되며, 정상 등록 시에는 즉시 삭제됩니다.
 
 ## Productivity data
 

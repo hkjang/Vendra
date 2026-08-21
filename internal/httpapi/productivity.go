@@ -15,6 +15,12 @@ import (
 
 var productivityKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9:_-]{1,120}$`)
 
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// maxFormDraftsPerUser bounds autosave. Draft keys are client-chosen, so without
+// a cap one account could keep writing new ones until the table is the database.
+const maxFormDraftsPerUser = 50
+
 type workInboxItem struct {
 	Key          string  `json:"key"`
 	Kind         string  `json:"kind"`
@@ -304,8 +310,11 @@ func (a *App) updateWorkItemState(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "database_error", "업무 상태를 저장하지 못했습니다")
 			return
 		}
-		if in.State == "done" && strings.HasPrefix(key, "notification:") {
-			_, err = tx.Exec(r.Context(), `UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2`, strings.TrimPrefix(key, "notification:"), p.ID)
+		// The key pattern allows any word after the prefix, but the column is a
+		// uuid: a malformed one made the cast fail and rolled back every other
+		// item in the batch. Skip what cannot be a notification id.
+		if id, ok := strings.CutPrefix(key, "notification:"); ok && in.State == "done" && uuidPattern.MatchString(id) {
+			_, err = tx.Exec(r.Context(), `UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2`, id, p.ID)
 			if err != nil {
 				writeError(w, 500, "database_error", "알림 상태를 저장하지 못했습니다")
 				return
@@ -551,6 +560,12 @@ func (a *App) putFormDraft(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, 500, "database_error", "임시저장에 실패했습니다")
 		return
+	}
+	// Keep only the most recently touched drafts. Autosave is a convenience, so
+	// dropping the oldest is preferable to refusing to save the current one.
+	if _, err := a.db.Exec(r.Context(), `DELETE FROM user_form_drafts WHERE user_id=$1 AND draft_key NOT IN (
+		SELECT draft_key FROM user_form_drafts WHERE user_id=$1 ORDER BY updated_at DESC LIMIT $2)`, p.ID, maxFormDraftsPerUser); err != nil {
+		logDB(err)
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "updatedAt": time.Now()})
 }
