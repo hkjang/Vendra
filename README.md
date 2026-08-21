@@ -68,10 +68,13 @@ go run ./cmd/vendra
 
 프론트 개발 서버가 필요하면 별도 터미널에서 `cd web && npm run dev`를 실행합니다. `/api`와 `/mcp`는 로컬 `:8080`으로 프록시됩니다.
 
-PostgreSQL이 필요한 통합 테스트는 환경변수를 지정할 때만 실행됩니다. `VENDRA_TEST_DSN`은 로그인 잠금과 보존 정책을, `VENDRA_TEST_MIGRATE_DSN`은 다중 인스턴스 동시 마이그레이션을 검증하며 후자는 빈 데이터베이스를 요구합니다.
+PostgreSQL이 필요한 통합 테스트는 환경변수를 지정할 때만 실행됩니다. `VENDRA_TEST_DSN`은 API 동작 전반을, `VENDRA_TEST_MIGRATE_DSN`은 다중 인스턴스 동시 마이그레이션을, `VENDRA_TEST_UPGRADE_DSN`은 데이터가 있는 구버전 스키마의 업그레이드를 검증합니다. 뒤의 두 개는 각각 빈 데이터베이스를 요구합니다.
 
 ```bash
-VENDRA_TEST_DSN="postgres://..." VENDRA_TEST_MIGRATE_DSN="postgres://.../empty" go test ./cmd/... ./internal/...
+VENDRA_TEST_DSN="postgres://..." \
+VENDRA_TEST_MIGRATE_DSN="postgres://.../empty1" \
+VENDRA_TEST_UPGRADE_DSN="postgres://.../empty2" \
+  go test ./cmd/... ./internal/...
 ```
 
 ## API와 MCP
