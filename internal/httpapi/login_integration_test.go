@@ -1301,3 +1301,109 @@ func TestSupplyRelationshipRespectsScope(t *testing.T) {
 		t.Errorf("an in-scope relationship returned %d, want 201", got)
 	}
 }
+
+// TestSupplierInvitesRespectScope covers the two paths that bind a supplier to
+// something the caller creates. An unchecked id on either one hands access to a
+// supplier the caller cannot see.
+func TestSupplierInvitesRespectScope(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var mine, other string
+	for _, seed := range []struct {
+		name string
+		dest *string
+	}{{"초대검증 본부", &mine}, {"초대검증 타본부", &other}} {
+		if err := pool.QueryRow(ctx, `INSERT INTO organizations(name,path) VALUES($1,'/') ON CONFLICT DO NOTHING RETURNING id`, seed.name).Scan(seed.dest); err != nil {
+			if err := pool.QueryRow(ctx, `SELECT id FROM organizations WHERE name=$1`, seed.name).Scan(seed.dest); err != nil {
+				t.Fatalf("seed org: %v", err)
+			}
+		}
+	}
+	newSupplier := func(number, name, org string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status,organization_id) VALUES($1,$2,$1,'active',$3)
+			ON CONFLICT(supplier_number) DO UPDATE SET organization_id=excluded.organization_id RETURNING id`, number, name, org).Scan(&id); err != nil {
+			t.Fatalf("seed supplier: %v", err)
+		}
+		return id
+	}
+	inScope := newSupplier("SUP-INV-MINE", "우리 공급사", mine)
+	outOfScope := newSupplier("SUP-INV-OTHER", "타 본부 공급사", other)
+
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('inv_dept_buyer','초대검증 구매','["supplier.read","supplier.update","rfq.read","rfq.update","rfq.create"]','department',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions,data_scope='department' RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	const email = "inv-buyer@vendra.test"
+	const password = "InvitePassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,organization_id) VALUES($1,'초대 검증자',$2,'internal','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,organization_id=excluded.organization_id,status='active' RETURNING id`, email, hash, mine).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, roleID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,owner_id,organization_id,created_by) VALUES('rfq','RFQ-INV-1','초대 검증 견적','open',$1,$2,$1) RETURNING id`, userID, mine).Scan(&rfqID); err != nil {
+		t.Fatalf("seed rfq: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_participants WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM invitations WHERE email LIKE 'invitee-%@vendra.test'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='inv_dept_buyer'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number IN ('SUP-INV-MINE','SUP-INV-OTHER')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM organizations WHERE name IN ('초대검증 본부','초대검증 타본부')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	token := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.180:5000"))
+	post := func(path string, payload map[string]any) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(payload)
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	// A portal invitation bound to a supplier the inviter cannot see.
+	if got := post("/api/v1/invitations", map[string]any{"email": "invitee-out@vendra.test", "supplierId": outOfScope}).Code; got != http.StatusForbidden {
+		t.Errorf("inviting into an out-of-scope supplier returned %d, want 403", got)
+	}
+	var invited int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM invitations WHERE supplier_id=$1`, outOfScope).Scan(&invited); err != nil {
+		t.Fatalf("count invitations: %v", err)
+	}
+	if invited != 0 {
+		t.Error("an invitation was written for a supplier the inviter cannot see")
+	}
+	if got := post("/api/v1/invitations", map[string]any{"email": "invitee-in@vendra.test", "supplierId": inScope}).Code; got != http.StatusCreated {
+		t.Errorf("an in-scope invitation returned %d, want 201", got)
+	}
+
+	// Pulling an out-of-scope supplier into the caller's own tender.
+	if got := post("/api/v1/sourcing/"+rfqID+"/participants", map[string]any{"supplierIds": []string{outOfScope}}).Code; got != http.StatusForbidden {
+		t.Errorf("inviting an out-of-scope supplier to a tender returned %d, want 403", got)
+	}
+	var participants int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sourcing_participants WHERE supplier_id=$1`, outOfScope).Scan(&participants); err != nil {
+		t.Fatalf("count participants: %v", err)
+	}
+	if participants != 0 {
+		t.Error("an out-of-scope supplier was added to the tender")
+	}
+	if got := post("/api/v1/sourcing/"+rfqID+"/participants", map[string]any{"supplierIds": []string{inScope}}).Code; got != http.StatusOK {
+		t.Errorf("an in-scope tender invitation returned %d, want 200", got)
+	}
+}

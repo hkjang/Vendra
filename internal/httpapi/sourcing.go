@@ -61,6 +61,15 @@ func (a *App) addSourcingParticipants(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "초대할 공급업체를 선택하세요")
 		return
 	}
+	// sourcingObject checked the RFQ; the suppliers being invited need the same
+	// treatment, or a buyer can pull a supplier outside their scope into their
+	// tender and hand that supplier portal visibility of it.
+	for _, supplierID := range in.SupplierIDs {
+		if !a.supplierScopeAllowed(r, supplierID) {
+			writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어난 공급업체입니다")
+			return
+		}
+	}
 	tx, err := a.db.Begin(r.Context())
 	if err != nil {
 		writeError(w, 500, "database_error", "초대를 저장하지 못했습니다")
