@@ -144,6 +144,19 @@ func (a *App) objectScopeAllowed(r *http.Request, organizationID, supplierID str
 	return supplierID == "" || a.supplierScopeAllowed(r, supplierID)
 }
 
+// pendingApproval reports the approval already in flight for an object, if any.
+func (a *App) pendingApproval(ctx context.Context, objectID string) (string, bool) {
+	var id string
+	if a.db.QueryRow(ctx, `SELECT id FROM workflow_instances WHERE object_id=$1 AND status='pending' ORDER BY created_at LIMIT 1`, objectID).Scan(&id) != nil {
+		return "", false
+	}
+	return id, true
+}
+
+func writeAlreadySubmitted(w http.ResponseWriter, instanceID string) {
+	writeJSON(w, 200, map[string]any{"status": "pending_approval", "workflowApplied": true, "instanceId": instanceID, "alreadySubmitted": true})
+}
+
 func (a *App) createObject(objectType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := principalFrom(r.Context())
@@ -307,10 +320,11 @@ func (a *App) submitObject(objectType string) http.HandlerFunc {
 		// Submitting again while an approval is already running used to open a
 		// second one: each showed separately in approvers' inboxes, and clearing
 		// one left the others pending against a request that had already moved.
-		// A repeat submit now returns the approval that is already in flight.
-		var openInstance string
-		if a.db.QueryRow(r.Context(), `SELECT id FROM workflow_instances WHERE object_id=$1 AND status='pending' ORDER BY created_at LIMIT 1`, id).Scan(&openInstance) == nil {
-			writeJSON(w, 200, map[string]any{"status": "pending_approval", "workflowApplied": true, "instanceId": openInstance, "alreadySubmitted": true})
+		// This read is only the fast path — a partial unique index on
+		// workflow_instances is what actually guarantees one, because concurrent
+		// submits can all pass a check that happens before the insert.
+		if openInstance, found := a.pendingApproval(r.Context(), id); found {
+			writeAlreadySubmitted(w, openInstance)
 			return
 		}
 		definitionID, steps, err := a.matchingWorkflow(r, objectType, current)
@@ -322,6 +336,13 @@ func (a *App) submitObject(objectType string) http.HandlerFunc {
 		var instanceID string
 		err = a.db.QueryRow(r.Context(), `INSERT INTO workflow_instances(definition_id,object_type,object_id,requested_by,context) VALUES($1,$2,$3,$4,$5) RETURNING id`, definitionID, objectType, id, p.ID, raw(map[string]any{"steps": json.RawMessage(steps)})).Scan(&instanceID)
 		if err != nil {
+			// Losing the race to another submit is the expected outcome, not a
+			// failure: report the approval that won.
+			if openInstance, found := a.pendingApproval(r.Context(), id); found {
+				writeAlreadySubmitted(w, openInstance)
+				return
+			}
+			logDB(err)
 			writeError(w, 500, "workflow_failed", "승인 절차를 시작하지 못했습니다")
 			return
 		}
