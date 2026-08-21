@@ -18,10 +18,46 @@ export function Loading({ label='불러오는 중' }: { label?:string }) { retur
 
 export function Badge({ children, tone='neutral' }: { children:ReactNode; tone?:'neutral'|'success'|'warning'|'danger'|'info'|'purple' }) { return <span className={`badge ${tone}`}>{children}</span> }
 
+const FOCUSABLE='a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+
 export function Modal({ title, description, children, onClose, wide=false }: { title:string;description?:string;children:ReactNode;onClose:()=>void;wide?:boolean }) {
   const ref=useRef<HTMLDivElement>(null)
   const titleId=useId()
-  useEffect(()=>{const previous=document.activeElement as HTMLElement|null;const overflow=document.body.style.overflow;const f=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose()};document.addEventListener('keydown',f);document.body.style.overflow='hidden';ref.current?.focus();return()=>{document.removeEventListener('keydown',f);document.body.style.overflow=overflow;previous?.focus()}},[onClose])
+  // Capture the opener during render. By the time effects run, a field marked
+  // autoFocus has already taken focus, so reading activeElement there recorded
+  // an input inside the dialog and closing it restored nothing.
+  const opener=useRef<HTMLElement|null>(null)
+  if(opener.current===null)opener.current=document.activeElement as HTMLElement|null
+  useEffect(()=>{
+    const dialog=ref.current
+    const previous=opener.current
+    const overflow=document.body.style.overflow
+    // aria-modal promises focus stays inside the dialog. Without containment Tab
+    // walks onto the page behind it, where the content is inert to the eye but
+    // not to the keyboard.
+    const onKeyDown=(e:KeyboardEvent)=>{
+      if(e.key==='Escape'){onClose();return}
+      if(e.key!=='Tab'||!dialog)return
+      const targets=[...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(el=>el.offsetParent!==null||el===document.activeElement)
+      if(!targets.length){e.preventDefault();dialog.focus();return}
+      const first=targets[0],last=targets[targets.length-1]
+      if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
+      else if(e.shiftKey&&(document.activeElement===first||document.activeElement===dialog)){e.preventDefault();last.focus()}
+    }
+    document.addEventListener('keydown',onKeyDown)
+    document.body.style.overflow='hidden'
+    // A field marked autoFocus has already claimed focus during mount; stealing
+    // it back to the container would undo that.
+    if(!dialog?.contains(document.activeElement))dialog?.focus()
+    return()=>{
+      document.removeEventListener('keydown',onKeyDown)
+      document.body.style.overflow=overflow
+      // Restore on the next frame: removing the dialog resets focus to <body>,
+      // and doing it inline loses the race, dropping a keyboard user at the top
+      // of the page instead of on the control they opened.
+      requestAnimationFrame(()=>{if(previous?.isConnected)previous.focus()})
+    }
+  },[onClose])
   return <div className="modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className={`modal ${wide?'wide':''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={ref}><header><div><h2 id={titleId}>{title}</h2>{description&&<p>{description}</p>}</div><button type="button" className="icon-button" onClick={onClose} aria-label="닫기"><X/></button></header><div className="modal-body">{children}</div></div></div>
 }
 

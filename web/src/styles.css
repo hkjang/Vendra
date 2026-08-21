@@ -13,7 +13,7 @@
   --nav: #0b1220;
   --nav2: #111a2b;
   --ink: #172033;
-  --muted: #697386;
+  --muted: #677184;
   --line: #e3e7ee;
   --primary: #5b5bd6;
   --primary-dark: #4747bc;
@@ -132,7 +132,7 @@ kbd {
   letter-spacing: 0.13em;
   font-size: 12px !important;
   font-weight: 800;
-  color: #7575d8;
+  color: #6666c9;
   margin-bottom: 8px !important;
 }
 .button {
@@ -350,7 +350,7 @@ kbd {
   font-weight: 800;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: #5f6b80;
+  color: #717d92;
   padding: 7px 12px;
 }
 .nav-group button,
@@ -399,7 +399,7 @@ kbd {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 .aside-foot .collapse {
-  color: #68758a;
+  color: #717e93;
 }
 .workspace {
   min-width: 0;
@@ -425,7 +425,7 @@ kbd {
   left: 11px;
   top: 9px;
   width: 17px;
-  color: #8a93a3;
+  color: #687181;
 }
 .global-search input {
   height: 36px;
@@ -531,7 +531,7 @@ kbd {
 }
 .profile-button small {
   font-size: 12px;
-  color: #8a93a3;
+  color: #687181;
   margin-top: 2px;
 }
 .profile-button > svg {
@@ -1014,7 +1014,7 @@ kbd {
   text-align: left;
   background: #f8f9fb;
   border-bottom: 1px solid var(--line);
-  color: #778193;
+  color: #697385;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 12px;
@@ -1077,7 +1077,7 @@ kbd {
   max-width: 440px;
   font-size: 12px;
   line-height: 1.6;
-  color: #808999;
+  color: #687181;
 }
 .empty .button {
   margin-top: 12px;
@@ -1096,7 +1096,7 @@ kbd {
   font-size: 13px;
 }
 .supplier-cell small {
-  color: #808999;
+  color: #687181;
   font-size: 12px;
 }
 .company-avatar {
@@ -1127,7 +1127,7 @@ kbd {
   color: #5c5cc7;
 }
 .grade small {
-  color: #7c8696;
+  color: #677181;
 }
 .back-link {
   border: 0;
@@ -1430,7 +1430,7 @@ kbd {
 }
 .kpi-card small {
   font-size: 12px;
-  color: #8a93a3;
+  color: #687181;
   padding-bottom: 3px;
 }
 .dashboard-grid {
@@ -1712,7 +1712,7 @@ kbd {
 }
 .supplier-card header small {
   font-size: 12px;
-  color: #8a93a3;
+  color: #687181;
 }
 .supplier-card-metrics {
   display: flex;
@@ -2141,7 +2141,7 @@ kbd {
 .spend-kpis span {
   display: flex;
   flex-direction: column;
-  color: #7c8696;
+  color: #677181;
   font-size: 12px;
 }
 .spend-kpis strong {
@@ -2166,7 +2166,7 @@ kbd {
 }
 .spend-bars small {
   font-size: 12px;
-  color: #8a93a3;
+  color: #687181;
 }
 .spend-bars em {
   font-size: 12px;
@@ -2465,7 +2465,7 @@ kbd {
 }
 .chat-welcome > p {
   font-size: 12px;
-  color: #7c8696;
+  color: #677181;
 }
 .prompt-grid {
   display: grid;
@@ -2541,7 +2541,7 @@ kbd {
 }
 .message small {
   display: block;
-  color: #8a93a3;
+  color: #687181;
   margin-top: 10px;
   border-top: 1px solid #dfe3e9;
   padding-top: 7px;
@@ -2598,7 +2598,7 @@ kbd {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  color: #778193;
+  color: #697385;
 }
 .chat-input .send {
   background: #5b5bd6;
@@ -2708,7 +2708,7 @@ kbd {
 .settings-card p,
 .admin-card header p {
   font-size: 12px;
-  color: #7c8696;
+  color: #677181;
   margin-bottom: 0;
 }
 .profile-hero-avatar {
@@ -2781,7 +2781,7 @@ kbd {
 }
 .key-list small {
   font-size: 12px;
-  color: #8a93a3;
+  color: #687181;
 }
 .key-list .badge {
   margin-right: 4px;
@@ -2927,7 +2927,7 @@ kbd {
 }
 .raw-settings small {
   font-size: 12px;
-  color: #8a93a3;
+  color: #687181;
 }
 .raw-settings textarea {
   font: 12px monospace;
@@ -3065,7 +3065,7 @@ kbd {
 }
 .scorecard-rule small {
   font-size: 12px;
-  color: #8a93a3;
+  color: #687181;
 }
 .criteria-list {
   display: grid;
@@ -3117,7 +3117,7 @@ kbd {
 }
 .lifecycle-flow small {
   font-size: 12px;
-  color: #8a93a3;
+  color: #687181;
 }
 .lifecycle-flow svg {
   width: 15px;
@@ -3421,7 +3421,7 @@ kbd {
 }
 .profile-company-head p {
   font-size: 12px;
-  color: #7c8696;
+  color: #677181;
 }
 
 @media (max-width: 1100px) {
@@ -3494,6 +3494,10 @@ kbd {
     border: 0;
     background: transparent;
     place-items: center;
+    /* These are the primary navigation controls on a phone and were 31x21,
+       under the 24x24 minimum for a touch target. */
+    min-width: 40px;
+    min-height: 40px;
   }
   .mobile-close {
     margin-left: auto;
@@ -3572,9 +3576,23 @@ kbd {
   .settings-layout > aside,
   .admin-layout > aside {
     display: flex;
-    overflow: auto;
+    overflow-x: auto;
     position: static;
     max-height: none;
+    /* A grid item defaults to min-width:auto, so the nav grew to fit every
+       button instead of scrolling inside its column and pushed the whole
+       administration screen sideways on a phone. */
+    min-width: 0;
+  }
+  .settings-layout > section,
+  .admin-layout > section {
+    min-width: 0;
+  }
+  /* Administration tables are wider than a phone. Let the card scroll them
+     sideways instead of dragging the whole page along, which pushed the
+     navigation and header off screen. */
+  .admin-card {
+    overflow-x: auto;
   }
   .settings-layout > aside button,
   .admin-layout > aside button {
@@ -3602,6 +3620,9 @@ kbd {
   }
   .portal-mobile-close {
     display: grid;
+    place-items: center;
+    min-width: 40px;
+    min-height: 40px;
   }
   .portal-scrim {
     position: fixed;
@@ -3725,7 +3746,7 @@ kbd {
   background: transparent;
   border-radius: 7px;
   padding: 9px 13px;
-  color: #687385;
+  color: #656f81;
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
@@ -4047,7 +4068,7 @@ kbd {
 }
 .network-canvas > svg > g > text {
   font-size: 12px;
-  fill: #7c8696;
+  fill: #677181;
 }
 .network-node {
   cursor: pointer;
@@ -4079,7 +4100,7 @@ kbd {
 .network-node text.node-grade {
   font-size: 12px !important;
   font-weight: 600;
-  fill: #7c8696 !important;
+  fill: #677181 !important;
 }
 .network-hint {
   position: absolute;
@@ -4089,7 +4110,7 @@ kbd {
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 7px 10px;
-  color: #7c8696;
+  color: #677181;
   font-size: 12px;
 }
 .network-empty {
@@ -4122,7 +4143,7 @@ kbd {
 }
 .network-company p {
   font-size: 12px;
-  color: #7c8696;
+  color: #677181;
   margin: 0;
 }
 .network-risk {
@@ -4155,7 +4176,7 @@ kbd {
   border-bottom: 1px solid #edf0f4;
 }
 .network-inspector dt {
-  color: #7c8696;
+  color: #677181;
 }
 .network-inspector dd {
   font-weight: 700;
@@ -4342,7 +4363,7 @@ kbd {
   font-size: 14px;
 }
 .command-results small {
-  color: #7c8696;
+  color: #677181;
   font-size: 12px;
 }
 .command-empty {
@@ -4352,7 +4373,7 @@ kbd {
   justify-content: center;
   flex-direction: column;
   gap: 7px;
-  color: #7c8696;
+  color: #677181;
   text-align: center;
 }
 .command-empty svg {
@@ -4663,4 +4684,24 @@ kbd {
   margin: 0;
   flex: 1;
   min-width: 240px;
+}
+
+/* A focusable handle inside a clickable table row. It carries no click handler
+   of its own: Enter and Space dispatch a click that bubbles to the row, so the
+   keyboard reaches the same action as the mouse without a second code path. */
+.row-action {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.row-action:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+  border-radius: 6px;
 }
