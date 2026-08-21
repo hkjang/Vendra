@@ -35,6 +35,7 @@
 - RBAC permissions support exact, domain wildcard(`supplier.*`) and read wildcard(`*.read`).
 - Data Scope is `own`, `department`, `division`, `company`.
 - Supplier Portal requests are forced to the user's supplier ID regardless of client input.
+- 입찰 비교표는 제출 완료된 응답만 포함합니다. 공급업체가 제출 없이 저장한 초안의 금액과 품목은 구매자에게 보이지 않으며, 낙찰 선정도 제출 완료된 응답만 대상으로 합니다.
 - 소싱 Q&A는 참여업체 공개 질문이라도 포털에서는 질문자 업체·담당자를 가립니다. 답변은 모두 읽을 수 있지만 함께 초대된 경쟁사를 알 수 없으며, 본인 질문과 구매팀 공지는 출처가 표시됩니다. 내부 검토자에게는 전체 출처가 보입니다.
 - MCP 도구는 공급업체 포털 계정을 거부합니다. 모든 도구는 조직 범위로 결과를 좁히는 교차 공급업체 조회이므로 포털 격리를 담고 있지 않습니다. 기본 `supplier_user` 역할은 `portal.*`뿐이라 권한 게이트에서도 막히지만, 관리자가 조회 권한을 부여하더라도 사용자 유형만으로 차단됩니다.
 - MCP 오류 응답은 의도된 거부 사유만 전달하고, 드라이버 오류나 캐스트 실패 같은 내부 결함은 로그로만 남깁니다.
