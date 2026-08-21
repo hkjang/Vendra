@@ -270,3 +270,64 @@ func TestConcurrentUploadsGetDistinctVersions(t *testing.T) {
 		t.Errorf("%d of %d uploads share a version number with another: %v — the version history cannot say which file is which", len(collisions), stored, collisions)
 	}
 }
+
+// TestConcurrentDraftSavesKeepTheirOwnDraft races autosave. The cap added in
+// v0.6.5 deletes everything outside the newest fifty after each save, so a
+// concurrent save could evict a draft that was just written.
+func TestConcurrentDraftSavesKeepTheirOwnDraft(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	_, _ = pool.Exec(ctx, `DELETE FROM user_form_drafts WHERE user_id=$1`, adminID)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM user_form_drafts WHERE user_id=$1`, adminID)
+	})
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	token := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.251:5000"))
+
+	// Sit right at the cap so every save triggers an eviction.
+	for i := 0; i < maxFormDraftsPerUser; i++ {
+		if _, err := pool.Exec(ctx, `INSERT INTO user_form_drafts(user_id,draft_key,payload) VALUES($1,$2,'{}')
+			ON CONFLICT DO NOTHING`, adminID, fmt.Sprintf("filler-%03d", i)); err != nil {
+			t.Fatalf("seed filler: %v", err)
+		}
+	}
+
+	const savers = 16
+	keys := make([]string, savers)
+	var start, done sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < savers; i++ {
+		keys[i] = fmt.Sprintf("racer-%03d", i)
+		done.Add(1)
+		go func(key string) {
+			defer done.Done()
+			body, _ := json.Marshal(map[string]any{"payload": map[string]any{"title": key}})
+			start.Wait()
+			r := httptest.NewRequest(http.MethodPut, "/api/v1/me/drafts/"+key, strings.NewReader(string(body)))
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+			handler.ServeHTTP(httptest.NewRecorder(), r)
+		}(keys[i])
+	}
+	start.Done()
+	done.Wait()
+
+	var kept int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_form_drafts WHERE user_id=$1 AND draft_key=ANY($2)`, adminID, keys).Scan(&kept); err != nil {
+		t.Fatalf("count racers: %v", err)
+	}
+	if kept != savers {
+		t.Errorf("%d of %d concurrently saved drafts survived; a save reported success but the content was evicted", kept, savers)
+	}
+	var total int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_form_drafts WHERE user_id=$1`, adminID).Scan(&total); err != nil {
+		t.Fatalf("count total: %v", err)
+	}
+	if total > maxFormDraftsPerUser {
+		t.Errorf("%d drafts stored, over the %d cap", total, maxFormDraftsPerUser)
+	}
+}
