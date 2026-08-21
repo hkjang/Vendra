@@ -623,13 +623,15 @@ function UsersPanel() {
                 key={u.id}
               >
                 <td>
-                  <span className="supplier-cell">
-                    <span className="avatar">{u.displayName.slice(0, 1)}</span>
-                    <span>
-                      <b>{u.displayName}</b>
-                      <small>{u.email}</small>
+                  <button type="button" className="row-action">
+                    <span className="supplier-cell">
+                      <span className="avatar">{u.displayName.slice(0, 1)}</span>
+                      <span>
+                        <b>{u.displayName}</b>
+                        <small>{u.email}</small>
+                      </span>
                     </span>
-                  </span>
+                  </button>
                 </td>
                 <td>{u.userType}</td>
                 <td>
@@ -674,7 +676,13 @@ function UsersPanel() {
                 key={role.id}
               >
                 <td>
-                  <b>{role.name}</b>
+                  {role.system ? (
+                    <b>{role.name}</b>
+                  ) : (
+                    <button type="button" className="row-action">
+                      <b>{role.name}</b>
+                    </button>
+                  )}
                 </td>
                 <td>
                   <code>{role.code}</code>
