@@ -304,6 +304,15 @@ func (a *App) submitObject(objectType string) http.HandlerFunc {
 			writeJSON(w, 200, map[string]any{"status": "approved", "workflowApplied": false})
 			return
 		}
+		// Submitting again while an approval is already running used to open a
+		// second one: each showed separately in approvers' inboxes, and clearing
+		// one left the others pending against a request that had already moved.
+		// A repeat submit now returns the approval that is already in flight.
+		var openInstance string
+		if a.db.QueryRow(r.Context(), `SELECT id FROM workflow_instances WHERE object_id=$1 AND status='pending' ORDER BY created_at LIMIT 1`, id).Scan(&openInstance) == nil {
+			writeJSON(w, 200, map[string]any{"status": "pending_approval", "workflowApplied": true, "instanceId": openInstance, "alreadySubmitted": true})
+			return
+		}
 		definitionID, steps, err := a.matchingWorkflow(r, objectType, current)
 		if err == pgx.ErrNoRows {
 			_, _ = a.db.Exec(r.Context(), `UPDATE business_objects SET status='approved',updated_at=now() WHERE id=$1`, id)
