@@ -41,7 +41,7 @@
 ```bash
 cp .env.example .env
 openssl rand -base64 32  # 출력값을 ENCRYPTION_KEY에 입력
-docker load < vendra-v0.6.8.tar.gz
+docker load < vendra-v0.6.9.tar.gz
 docker compose up -d
 ```
 
@@ -94,8 +94,8 @@ Git tag `vX.Y.Z`를 push하면 GitHub Actions가 다음 규칙을 강제합니�
 로컬에서도 같은 결과를 만들 수 있습니다.
 
 ```bash
-sh scripts/offline-release.sh 0.6.8
-docker load < dist/vendra-v0.6.8.tar.gz
+sh scripts/offline-release.sh 0.6.9
+docker load < dist/vendra-v0.6.9.tar.gz
 ```
 
 이미지는 UI 정적 파일, timezone/CA 인증서와 Go 서버를 포함합니다. 실행 중 CDN이나 외부 패키지 저장소를 사용하지 않습니다. Keycloak, AI, webhook 등 선택 연동은 관리자 설정에서 비활성 상태가 기본입니다.

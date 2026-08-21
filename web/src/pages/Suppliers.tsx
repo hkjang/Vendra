@@ -87,9 +87,14 @@ export default function Suppliers() {
             value={q}
             onChange={(e) => set("q", e.target.value)}
             placeholder="업체명, 사업자번호, 공급업체 번호 검색"
+            aria-label="업체명, 사업자번호, 공급업체 번호 검색"
           />
         </div>
-        <select value={status} onChange={(e) => set("status", e.target.value)}>
+        <select
+          value={status}
+          onChange={(e) => set("status", e.target.value)}
+          aria-label="상태 필터"
+        >
           <option value="">모든 상태</option>
           <option value="candidate">후보</option>
           <option value="registration">등록</option>
@@ -99,7 +104,11 @@ export default function Suppliers() {
           <option value="improvement">개선 대상</option>
           <option value="suspended">거래 중단</option>
         </select>
-        <select value={risk} onChange={(e) => set("risk", e.target.value)}>
+        <select
+          value={risk}
+          onChange={(e) => set("risk", e.target.value)}
+          aria-label="리스크 등급 필터"
+        >
           <option value="">모든 리스크</option>
           <option>LOW</option>
           <option>MEDIUM</option>
