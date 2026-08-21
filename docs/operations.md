@@ -15,7 +15,7 @@ Request ID로 한 요청의 흐름을 추적할 수 있습니다. UI 검색창�
 
 ## Database migration
 
-Embedded, ordered SQL migrations run inside a PostgreSQL transaction at startup. `schema_migrations` prevents reapplication. 기동 시 PostgreSQL advisory lock을 잡으므로 여러 인스턴스가 동시에 올라와도 마이그레이션은 한 번에 하나씩 적용되고, 나머지 인스턴스는 완료를 기다린 뒤 이미 적용된 버전을 건너뜁니다. Back up before upgrading and never run two different Vendra versions against the same schema during migration.
+Embedded, ordered SQL migrations run inside a PostgreSQL transaction at startup. `schema_migrations` prevents reapplication. 기동 시 PostgreSQL advisory lock을 잡으므로 여러 인스턴스가 동시에 올라와도 마이그레이션은 한 번에 하나씩 적용되고, 나머지 인스턴스는 완료를 기다린 뒤 이미 적용된 버전을 건너뜁니다. Back up before upgrading and never run two different Vendra versions against the same schema during migration. 데이터가 있는 구버전 스키마에서 최신까지 올리는 경로는 통합 테스트로 검증됩니다 — 누적된 중복 승인 정리, 기존 데이터 보존, 신규 설정 시드, 재실행 시 무해함까지 확인합니다.
 
 ## Notification adapters
 
