@@ -55,6 +55,12 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, _ := principalFrom(r.Context())
+	// Global search spans every supplier and narrows by organisation, which is
+	// not how a portal account is isolated. The portal has its own screens.
+	if p.UserType == "supplier" {
+		writeJSON(w, 200, map[string]any{"items": []any{}})
+		return
+	}
 	organizationID := ""
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
@@ -72,18 +78,26 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 			rows.Close()
 		}
 	}
-	rows, _ := a.db.Query(r.Context(), `SELECT id,object_type,number,title,status FROM business_objects WHERE deleted_at IS NULL AND (title ILIKE '%'||$1||'%' OR number ILIKE '%'||$1||'%') AND (vendra_org_in_scope(organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND owner_id=$4::uuid)) ORDER BY updated_at DESC LIMIT 30`, q, p.DataScope, organizationID, p.ID)
-	if rows != nil {
-		for rows.Next() {
-			var id, typ, num, title, status string
-			if rows.Scan(&id, &typ, &num, &title, &status) == nil && (hasPermission(p, typ+".read") || hasPermission(p, "*.read")) {
-				items = append(items, map[string]any{"id": id, "type": typ, "number": num, "title": title, "status": status})
+	// Restrict by object type inside the query. Filtering after a LIMIT dropped
+	// rows the user was allowed to see: a reviewer with only contract.read got
+	// whichever contracts happened to fall inside the newest thirty rows of
+	// every type, and silently lost the rest.
+	if readable := readableObjectTypes(p); len(readable) > 0 {
+		rows, err := a.db.Query(r.Context(), `SELECT id,object_type,number,title,status FROM business_objects WHERE deleted_at IS NULL AND object_type=ANY($5) AND (title ILIKE '%'||$1||'%' OR number ILIKE '%'||$1||'%') AND (vendra_org_in_scope(organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND owner_id=$4::uuid)) ORDER BY updated_at DESC LIMIT 30`, q, p.DataScope, organizationID, p.ID, readable)
+		if err != nil {
+			logDB(err)
+		} else {
+			for rows.Next() {
+				var id, typ, num, title, status string
+				if rows.Scan(&id, &typ, &num, &title, &status) == nil {
+					items = append(items, map[string]any{"id": id, "type": typ, "number": num, "title": title, "status": status})
+				}
 			}
+			rows.Close()
 		}
-		rows.Close()
 	}
 	if hasPermission(p, "supplier.read") || hasPermission(p, "*.read") {
-		rows, _ = a.db.Query(r.Context(), `SELECT c.id,'contact',COALESCE(c.title,''),c.name,'active',c.supplier_id FROM supplier_contacts c JOIN suppliers s ON s.id=c.supplier_id WHERE (c.name ILIKE '%'||$1||'%' OR c.email ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		rows, _ := a.db.Query(r.Context(), `SELECT c.id,'contact',COALESCE(c.title,''),c.name,'active',c.supplier_id FROM supplier_contacts c JOIN suppliers s ON s.id=c.supplier_id WHERE (c.name ILIKE '%'||$1||'%' OR c.email ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
 		if rows != nil {
 			for rows.Next() {
 				var id, typ, num, title, status, supplierID string
@@ -95,7 +109,7 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasPermission(p, "document.read") || hasPermission(p, "*.read") {
-		rows, _ = a.db.Query(r.Context(), `SELECT d.id,d.document_type,d.name,d.status,d.supplier_id FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id WHERE d.name ILIKE '%'||$1||'%' AND ((d.supplier_id IS NULL AND ($2='company' OR d.uploaded_by=$4::uuid)) OR vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		rows, _ := a.db.Query(r.Context(), `SELECT d.id,d.document_type,d.name,d.status,d.supplier_id FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id WHERE d.name ILIKE '%'||$1||'%' AND ((d.supplier_id IS NULL AND ($2='company' OR d.uploaded_by=$4::uuid)) OR vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
 		if rows != nil {
 			for rows.Next() {
 				var id, num, title, status string
@@ -112,7 +126,7 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasPermission(p, "evaluation.read") || hasPermission(p, "*.read") {
-		rows, _ = a.db.Query(r.Context(), `SELECT e.id,COALESCE(t.name,e.evaluation_type),s.name,e.status,e.supplier_id FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id LEFT JOIN scorecard_templates t ON t.id=e.template_id WHERE (s.name ILIKE '%'||$1||'%' OR COALESCE(t.name,e.evaluation_type) ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		rows, _ := a.db.Query(r.Context(), `SELECT e.id,COALESCE(t.name,e.evaluation_type),s.name,e.status,e.supplier_id FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id LEFT JOIN scorecard_templates t ON t.id=e.template_id WHERE (s.name ILIKE '%'||$1||'%' OR COALESCE(t.name,e.evaluation_type) ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
 		if rows != nil {
 			for rows.Next() {
 				var id, title, supplierName, status, supplierID string
