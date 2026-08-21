@@ -2,9 +2,50 @@ package httpapi
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 )
+
+// screeningThresholds is a template's result_rules. A template that omits them
+// leaves every bound at zero, which made "total >= passMin" true for any score:
+// the screening reported PASS and the supplier was approved automatically.
+type screeningThresholds struct {
+	PassMin               float64 `json:"passMin"`
+	ConditionalMin        float64 `json:"conditionalMin"`
+	ReviewMin             float64 `json:"reviewMin"`
+	RequiredFailureResult string  `json:"requiredFailureResult"`
+}
+
+// usable reports whether the bounds can decide an outcome. They must be
+// positive and ordered; anything else cannot distinguish a pass from a failure.
+func (t screeningThresholds) usable() bool {
+	return t.PassMin > 0 && t.PassMin >= t.ConditionalMin && t.ConditionalMin >= t.ReviewMin && t.ReviewMin >= 0
+}
+
+// decide maps a score to a screening result. An unusable rule set never passes
+// anyone; it asks for a human decision and leaves the misconfiguration visible.
+func (t screeningThresholds) decide(total float64, missingRequired bool) string {
+	if !t.usable() {
+		return "REVIEW_REQUIRED"
+	}
+	if missingRequired {
+		if t.RequiredFailureResult != "" {
+			return t.RequiredFailureResult
+		}
+		return "REVIEW_REQUIRED"
+	}
+	switch {
+	case total >= t.PassMin:
+		return "PASS"
+	case total >= t.ConditionalMin:
+		return "CONDITIONAL_PASS"
+	case total >= t.ReviewMin:
+		return "REVIEW_REQUIRED"
+	default:
+		return "REJECT"
+	}
+}
 
 func (a *App) listScreeningTemplates(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(r.Context(), `SELECT id,name,active,items,result_rules,required_document_types,created_at,updated_at FROM screening_templates ORDER BY active DESC,name`)
@@ -41,6 +82,14 @@ func (a *App) createScreeningTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	if decodeJSON(r, &in) != nil || in.Name == "" || in.Items == nil {
 		writeError(w, 400, "validation_error", "이름과 심사항목은 필수입니다")
+		return
+	}
+	// Without ordered, positive bounds the template cannot decide an outcome,
+	// and every screening run against it would ask for a manual review.
+	var thresholds screeningThresholds
+	_ = json.Unmarshal(raw(in.ResultRules), &thresholds)
+	if !thresholds.usable() {
+		writeError(w, 400, "validation_error", "합격 기준은 passMin > conditionalMin > reviewMin >= 0 순서로 지정해야 합니다")
 		return
 	}
 	var id string
@@ -138,28 +187,13 @@ func (a *App) updateScreening(w http.ResponseWriter, r *http.Request) {
 	status := "in_progress"
 	var completed any
 	if in.Complete {
-		var config struct {
-			PassMin               float64 `json:"passMin"`
-			ConditionalMin        float64 `json:"conditionalMin"`
-			ReviewMin             float64 `json:"reviewMin"`
-			RequiredFailureResult string  `json:"requiredFailureResult"`
+		var thresholds screeningThresholds
+		_ = json.Unmarshal(rules, &thresholds)
+		if !thresholds.usable() {
+			slog.Warn("screening template has no usable result thresholds; refusing to pass automatically",
+				"screening_id", r.PathValue("id"), "supplier_id", supplierID, "request_id", requestID(r.Context()))
 		}
-		_ = json.Unmarshal(rules, &config)
-		switch {
-		case missingRequired:
-			result = config.RequiredFailureResult
-			if result == "" {
-				result = "REVIEW_REQUIRED"
-			}
-		case total >= config.PassMin:
-			result = "PASS"
-		case total >= config.ConditionalMin:
-			result = "CONDITIONAL_PASS"
-		case total >= config.ReviewMin:
-			result = "REVIEW_REQUIRED"
-		default:
-			result = "REJECT"
-		}
+		result = thresholds.decide(total, missingRequired)
 		status = "completed"
 		completed = time.Now()
 	}

@@ -837,3 +837,41 @@ func TestGlobalSearchDoesNotLoseResultsToPermissionFiltering(t *testing.T) {
 		t.Errorf("found %d of 3 contracts; the newer issues used to consume the whole limit", contracts)
 	}
 }
+
+// TestScreeningTemplateWithoutThresholdsIsRejected guards supplier qualification:
+// a template that cannot decide an outcome used to pass every screening and
+// approve the supplier automatically.
+func TestScreeningTemplateWithoutThresholdsIsRejected(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.110:5000"))
+
+	post := func(payload map[string]any) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(payload)
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/screening-templates", strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	items := []map[string]any{{"code": "finance", "name": "재무", "weight": 100, "required": true}}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM screening_templates WHERE name LIKE 'THRESHOLD-TEST%'`) })
+
+	// No thresholds at all: this is the shape that auto-approved everyone.
+	if got := post(map[string]any{"name": "THRESHOLD-TEST-none", "items": items}).Code; got != http.StatusBadRequest {
+		t.Errorf("a template with no result rules was accepted with %d", got)
+	}
+	// Inverted bounds cannot separate a pass from a failure either.
+	if got := post(map[string]any{"name": "THRESHOLD-TEST-inverted", "items": items,
+		"resultRules": map[string]any{"passMin": 60, "conditionalMin": 70, "reviewMin": 80}}).Code; got != http.StatusBadRequest {
+		t.Errorf("a template with inverted bounds was accepted with %d", got)
+	}
+	// A well-formed template is still accepted.
+	ok := post(map[string]any{"name": "THRESHOLD-TEST-valid", "items": items,
+		"resultRules": map[string]any{"passMin": 80, "conditionalMin": 70, "reviewMin": 60}})
+	if ok.Code != http.StatusCreated {
+		t.Fatalf("a valid template was rejected with %d: %s", ok.Code, ok.Body.String())
+	}
+}
