@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.4.0 — 2026-08-21
+
+### Added
+
+- 로그인 무차별 대입 방어: 계정과 발신 IP 각각에 실패 임계값·잠금을 적용하고 `429`와 `Retry-After`를 반환하는 `security.login` 설정
+- 로그인 실패(`login_failed`)와 잠금(`login_locked`) 감사 이벤트, `vendra_login_failures_total`·`vendra_login_lockouts_total` 지표
+- 만료 세션과 오래된 로그인 시도 이력을 시간당 정리하는 `maintenance.retention` 보존 정책
+- 비밀번호 변경 `POST /api/v1/me/password`: 현재 비밀번호 확인 후 교체하고 요청한 세션을 제외한 모든 세션 폐기
+- 관리자 비밀번호 재설정 `POST /api/v1/admin/users/{id}/password`: 대상 사용자의 모든 세션을 즉시 폐기하는 자격증명 유출 대응 경로
+- 최소 길이와 문자 종류를 정하는 `security.password` 정책. 사용자 생성, 포털 가입, 변경, 재설정에 공통 적용
+- 개인화 화면의 비밀번호 변경 폼과 서비스 관리 사용자 편집의 재설정 폼
+
+### Improved
+
+- 라우트 단위 코드 분할로 첫 진입 번들 476kB → 271kB(gzip 134kB → 87kB). 공급업체 포털 사용자는 관리자·소싱 화면을 더 이상 내려받지 않습니다
+- 화면 청크 로딩 실패 시 흰 화면 대신 새로고침 안내를 표시하는 오류 경계
+- 알림 어댑터의 `timeoutSeconds` 설정과 통합 호출 전용 HTTP 클라이언트(연결 풀, 상한 타임아웃)
+- 여러 인스턴스가 동시에 기동해도 스키마 마이그레이션이 경쟁하지 않도록 PostgreSQL advisory lock 적용
+- 재현 가능한 오프라인 빌드를 위해 web 의존성을 `latest`에서 lockfile 버전으로 고정
+- `make test`와 개발 문서의 Go 명령이 `web/node_modules`를 컴파일하지 않도록 대상 패키지 지정
+- `VENDRA_TEST_DSN`, `VENDRA_TEST_MIGRATE_DSN`으로 실행하는 PostgreSQL 통합 테스트 추가 (미설정 시 자동 skip)
+
+### Fixed
+
+- IPv6 클라이언트에서 세션 IP가 잘못 기록되던 `RemoteAddr` 파싱 오류
+- 계정이 없을 때 bcrypt 비교를 건너뛰어 응답 시간으로 계정 존재 여부가 노출되던 문제
+- 포트 없는 피어 주소가 감사로그의 `inet` 변환을 실패시킬 수 있던 문제
+- 비밀번호 최소 길이를 바이트로 세어 한글 4자(12바이트)가 "10자 이상"을 통과하던 문제
+- 24자를 넘는 한글 `BOOTSTRAP_ADMIN_PASSWORD`가 bcrypt 72바이트 한도를 넘겨 서비스가 기동하지 못하던 문제. 이제 원인을 설명하는 오류로 즉시 거부합니다
+- 관리자 사용자 생성에 비밀번호 길이 검증이 전혀 없던 문제
+- 응답하지 않는 알림 웹훅이 `http.DefaultClient`의 무제한 대기로 배경 작업을 영구 정지시켜 알림과 정리 작업이 조용히 멈추던 문제
+- 삭제된 화면 청크 요청에 `index.html`을 200으로 응답해 업그레이드 직후 브라우저가 MIME 오류로 실패하던 문제. 이제 404를 반환합니다
+
 ## v0.3.0 — 2026-08-21
 
 ### Added

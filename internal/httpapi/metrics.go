@@ -12,6 +12,8 @@ type httpMetrics struct {
 	errors              atomic.Uint64
 	durationNanoseconds atomic.Uint64
 	inFlight            atomic.Int64
+	loginFailures       atomic.Uint64
+	loginLockouts       atomic.Uint64
 }
 
 var runtimeHTTPMetrics httpMetrics
@@ -52,7 +54,13 @@ vendra_http_requests_in_flight %d
 # TYPE vendra_http_request_duration_seconds summary
 vendra_http_request_duration_seconds_sum %.9f
 vendra_http_request_duration_seconds_count %d
-`, metricLabel(Version), metricLabel(Commit), requests, runtimeHTTPMetrics.errors.Load(), runtimeHTTPMetrics.inFlight.Load(), duration, requests)
+# HELP vendra_login_failures_total Rejected sign-in attempts.
+# TYPE vendra_login_failures_total counter
+vendra_login_failures_total %d
+# HELP vendra_login_lockouts_total Sign-in attempts refused because the account or address is locked out.
+# TYPE vendra_login_lockouts_total counter
+vendra_login_lockouts_total %d
+`, metricLabel(Version), metricLabel(Commit), requests, runtimeHTTPMetrics.errors.Load(), runtimeHTTPMetrics.inFlight.Load(), duration, requests, runtimeHTTPMetrics.loginFailures.Load(), runtimeHTTPMetrics.loginLockouts.Load())
 	if a.db != nil {
 		stats := a.db.Stat()
 		_, _ = fmt.Fprintf(w, `# HELP vendra_postgres_connections PostgreSQL pool connections by state.

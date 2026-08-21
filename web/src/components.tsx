@@ -1,5 +1,5 @@
-import { ReactNode, useEffect, useId, useRef } from 'react'
-import { AlertTriangle, CheckCircle2, Info, LoaderCircle, X, XCircle } from 'lucide-react'
+import { Component, ReactNode, useEffect, useId, useRef } from 'react'
+import { AlertTriangle, CheckCircle2, Info, LoaderCircle, RefreshCw, X, XCircle } from 'lucide-react'
 import { statusTone } from './status'
 
 export function Logo({ compact = false }: { compact?: boolean }) {
@@ -40,4 +40,18 @@ export function Field({ label, children, hint, required=false }: { label:string;
 
 export function Confirm({ title, body, confirmLabel='확인', danger=false, onConfirm, onClose }: { title:string;body:string;confirmLabel?:string;danger?:boolean;onConfirm:()=>void;onClose:()=>void }) {
   return <Modal title={title} onClose={onClose}><div className="confirm-body"><AlertTriangle/><p>{body}</p></div><div className="form-actions"><button type="button" className="button secondary" onClick={onClose}>취소</button><button type="button" className={`button ${danger?'danger':''}`} onClick={onConfirm}>{confirmLabel}</button></div></Modal>
+}
+
+// A page chunk can fail to load when the server has been upgraded while a tab
+// stayed open: the cached index.html points at a hash that no longer exists.
+// Without this boundary React unmounts the whole tree and the user sees a blank
+// screen with no way forward.
+export class PageErrorBoundary extends Component<{ children:ReactNode }, { failed:boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() { return { failed: true } }
+  componentDidCatch(error: Error) { console.error('page failed to render', error) }
+  render() {
+    if (!this.state.failed) return this.props.children
+    return <div className="empty page-error" role="alert"><div className="empty-icon"><AlertTriangle/></div><h3>화면을 불러오지 못했습니다</h3><p>서비스가 업데이트되었을 수 있습니다. 새로고침하면 최신 화면을 불러옵니다.</p><button type="button" className="button" onClick={()=>window.location.reload()}><RefreshCw/>새로고침</button></div>
+  }
 }

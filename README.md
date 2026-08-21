@@ -26,11 +26,13 @@
 - IAM: RBAC, 조직/소유자 Data Scope, 필드 권한, 임시 권한·위임, 공급업체 포털 격리
 - Keycloak OIDC: 관리자 화면에서 Issuer, Client ID, Client Secret만 설정하는 Discovery + Authorization Code + PKCE 연동
 - 개인 키 관리: 개인 API 키 생성, 최소 Scope, 만료, 즉시 폐기 및 원클릭 회전
+- 비밀번호 관리: 본인 변경과 관리자 재설정, 관리자 정의 정책, 변경 시 다른 세션 자동 폐기
 - 문서: 파일시스템 저장, 버전, 만료일, SHA-256 Checksum, 다운로드 감사 추적
 - Intelligence: Spend 집중도, 공급망 Network, 공급업체 추천, OpenAI 호환 AI Analyst
 - Integration: REST/OpenAPI 3.1, 조회 전용 MCP 도구, PostgreSQL Job/Notification Adapter
-- UX: 업무 관제탑, `Ctrl/⌘ K` 빠른 이동, 필터·정렬·열 저장 보기, 일괄 처리, 입력 자동 저장, 반응형 탐색과 접근성 기준
-- 운영: 자동 DB migration, JSON log, 관리자 실시간 로그 뷰어, 알림 센터, liveness/readiness, 비-root/read-only Docker 실행
+- 로그인 보호: 계정·발신지 단위 실패 임계값과 잠금, 계정 열거 방지, 실패·잠금 감사로그와 지표
+- UX: 라우트 단위 지연 로딩, 업무 관제탑, `Ctrl/⌘ K` 빠른 이동, 필터·정렬·열 저장 보기, 일괄 처리, 입력 자동 저장, 반응형 탐색과 접근성 기준
+- 운영: 다중 인스턴스 안전 자동 DB migration, JSON log, 관리자 실시간 로그 뷰어, 알림 센터, liveness/readiness, 비-root/read-only Docker 실행
 
 ## 빠른 시작
 
@@ -39,7 +41,7 @@
 ```bash
 cp .env.example .env
 openssl rand -base64 32  # 출력값을 ENCRYPTION_KEY에 입력
-docker load < vendra-v0.3.0.tar.gz
+docker load < vendra-v0.4.0.tar.gz
 docker compose up -d
 ```
 
@@ -59,12 +61,18 @@ OIDC, AI, 저장소, 알림, Workflow, 평가, Risk와 모든 운영 정책은 �
 ## 개발
 
 ```bash
-go test ./... && go vet ./...
+go test ./cmd/... ./internal/... && go vet ./cmd/... ./internal/...
 cd web && npm ci && npm run lint && npm run build
 go run ./cmd/vendra
 ```
 
 프론트 개발 서버가 필요하면 별도 터미널에서 `cd web && npm run dev`를 실행합니다. `/api`와 `/mcp`는 로컬 `:8080`으로 프록시됩니다.
+
+PostgreSQL이 필요한 통합 테스트는 환경변수를 지정할 때만 실행됩니다. `VENDRA_TEST_DSN`은 로그인 잠금과 보존 정책을, `VENDRA_TEST_MIGRATE_DSN`은 다중 인스턴스 동시 마이그레이션을 검증하며 후자는 빈 데이터베이스를 요구합니다.
+
+```bash
+VENDRA_TEST_DSN="postgres://..." VENDRA_TEST_MIGRATE_DSN="postgres://.../empty" go test ./cmd/... ./internal/...
+```
 
 ## API와 MCP
 
@@ -86,8 +94,8 @@ Git tag `vX.Y.Z`를 push하면 GitHub Actions가 다음 규칙을 강제합니�
 로컬에서도 같은 결과를 만들 수 있습니다.
 
 ```bash
-sh scripts/offline-release.sh 0.3.0
-docker load < dist/vendra-v0.3.0.tar.gz
+sh scripts/offline-release.sh 0.4.0
+docker load < dist/vendra-v0.4.0.tar.gz
 ```
 
 이미지는 UI 정적 파일, timezone/CA 인증서와 Go 서버를 포함합니다. 실행 중 CDN이나 외부 패키지 저장소를 사용하지 않습니다. Keycloak, AI, webhook 등 선택 연동은 관리자 설정에서 비활성 상태가 기본입니다.
@@ -106,6 +114,9 @@ docker run --rm -v vendra_vendra_documents:/data -v "$PWD":/backup alpine tar -c
 ## 보안 운영 메모
 
 - TLS 종료 프록시 뒤에서 운영하고 `security.session.secureCookie`를 켭니다.
+- 로그인 무차별 대입은 `security.login`의 계정·발신지 실패 임계값으로 차단되며, 잠긴 요청은 `429`와 `Retry-After`를 반환합니다.
+- 최소 길이와 문자 종류는 `security.password`에서 정합니다. 자격증명이 유출되면 **서비스 관리 → 사용자**에서 재설정하면 해당 사용자의 모든 세션이 즉시 폐기됩니다.
+- 최초 기동 후 `개인화 및 보안 → 세션 및 보안`에서 Bootstrap 계정 비밀번호를 바꾸고 `BOOTSTRAP_ADMIN_PASSWORD`를 배포 환경에서 제거하세요.
 - Bootstrap 계정으로 조직/역할을 구성한 후 일상 관리용 별도 계정을 사용합니다.
 - API 키는 용도별 최소 Scope와 만료일을 지정하고 정기 회전합니다.
 - 계좌, 계약금액, 평가, Risk, 승인, 권한과 문서 접근 이벤트는 감사로그에서 확인합니다.

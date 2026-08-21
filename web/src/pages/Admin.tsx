@@ -899,7 +899,76 @@ function NewUser({
           </button>
         </div>
       </form>
+      {user && <ResetUserPassword user={user} />}
     </Modal>
+  );
+}
+
+// Rendered outside the edit form because HTML forbids nested forms, and because
+// resetting a password is a separate, immediately-applied action.
+function ResetUserPassword({ user }: { user: User }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string>();
+  const [error, setError] = useState<string>();
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const next = String(new FormData(form).get("newPassword") || "");
+    setError(undefined);
+    setMessage(undefined);
+    setBusy(true);
+    try {
+      const result = await post<{ revokedSessions: number }>(
+        `/api/v1/admin/users/${user.id}/password`,
+        { newPassword: next },
+      );
+      form.reset();
+      setMessage(
+        `비밀번호를 재설정하고 세션 ${result.revokedSessions}개를 폐기했습니다. 새 비밀번호를 안전한 경로로 전달하세요.`,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "재설정하지 못했습니다");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form className="password-reset" onSubmit={submit}>
+      <h3>
+        <LockKeyhole />
+        비밀번호 재설정
+      </h3>
+      <p>
+        {user.email} 계정의 비밀번호를 설정하고 해당 사용자의 모든 세션을 즉시
+        폐기합니다. 자격증명 유출 시 사용하세요.
+      </p>
+      <Field label="새 비밀번호" required hint="10자 이상, 최대 72바이트">
+        <input
+          name="newPassword"
+          type="password"
+          autoComplete="new-password"
+          minLength={10}
+          required
+        />
+      </Field>
+      {message && (
+        <p className="form-notice" role="status">
+          <ShieldCheck />
+          {message}
+        </p>
+      )}
+      {error && (
+        <p className="form-error" role="alert">
+          <AlertCircle />
+          {error}
+        </p>
+      )}
+      <div className="form-actions">
+        <button className="button danger" disabled={busy}>
+          {busy ? "재설정 중" : "재설정하고 세션 폐기"}
+        </button>
+      </div>
+    </form>
   );
 }
 

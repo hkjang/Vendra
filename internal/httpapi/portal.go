@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
-
 	"github.com/hkjang/Vendra/internal/security"
 )
 
@@ -227,8 +225,10 @@ func (a *App) registerSupplierUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request", err.Error())
 		return
 	}
-	if len(in.Password) < 10 {
-		writeError(w, 400, "weak_password", "비밀번호는 10자 이상이어야 합니다")
+	// Check the policy before touching the database, but defer the expensive
+	// bcrypt hash until the invitation is known to be valid.
+	if err := a.passwordPolicy(r.Context()).validate(in.Password); err != nil {
+		writePasswordError(w, err)
 		return
 	}
 	tx, err := a.db.Begin(r.Context())
@@ -254,10 +254,14 @@ func (a *App) registerSupplierUser(w http.ResponseWriter, r *http.Request) {
 		err = tx.QueryRow(r.Context(), `INSERT INTO suppliers(supplier_number,name,business_number,status,email) VALUES($1,$2,$3,'registration',$4) RETURNING id`, number, in.SupplierName, in.BusinessNumber, email).Scan(&id)
 		supplierID = &id
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 	var userID string
 	if err == nil {
-		err = tx.QueryRow(r.Context(), `INSERT INTO users(email,display_name,password_hash,user_type,supplier_id,status) VALUES($1,$2,$3,'supplier',$4,'active') RETURNING id`, email, in.DisplayName, string(hash), *supplierID).Scan(&userID)
+		var hash string
+		if hash, err = a.hashPassword(r.Context(), in.Password); err != nil {
+			writePasswordError(w, err)
+			return
+		}
+		err = tx.QueryRow(r.Context(), `INSERT INTO users(email,display_name,password_hash,user_type,supplier_id,status) VALUES($1,$2,$3,'supplier',$4,'active') RETURNING id`, email, in.DisplayName, hash, *supplierID).Scan(&userID)
 	}
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user'`, userID)

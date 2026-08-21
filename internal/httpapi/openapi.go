@@ -5,6 +5,7 @@ import "net/http"
 func (a *App) openapi(w http.ResponseWriter, r *http.Request) {
 	paths := map[string]any{
 		"/api/v1/me":                                  map[string]any{"get": operation("Identity", "내 프로필 조회"), "patch": operation("Identity", "내 프로필 수정")},
+		"/api/v1/me/password":                         map[string]any{"post": operation("Identity", "내 비밀번호 변경 및 다른 세션 폐기")},
 		"/api/v1/suppliers":                           crudPath("Supplier", "공급업체 목록과 등록"),
 		"/api/v1/suppliers/{id}":                      itemPath("Supplier", "Supplier 360 기본정보"),
 		"/api/v1/suppliers/{id}/activity":             oneID("get", "Supplier", "공급업체 활동 및 감사 이력"),
@@ -69,6 +70,7 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) {
 		"/api/v1/admin/settings/{key}":                keyedPath("key", "put", "Administration", "서비스 설정 저장"),
 		"/api/v1/admin/users":                         crudPath("Administration", "사용자"),
 		"/api/v1/admin/users/{id}":                    oneID("patch", "Administration", "사용자 수정"),
+		"/api/v1/admin/users/{id}/password":           oneID("post", "Administration", "사용자 비밀번호 재설정 및 전체 세션 폐기"),
 		"/api/v1/admin/roles":                         crudPath("Administration", "역할과 권한"),
 		"/api/v1/admin/roles/{id}":                    oneID("patch", "Administration", "역할과 권한 수정"),
 		"/api/v1/admin/organizations":                 crudPath("Administration", "조직"),

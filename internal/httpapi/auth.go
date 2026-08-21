@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"net/netip"
 	"strings"
 	"time"
 
@@ -18,7 +18,10 @@ import (
 
 const sessionCookie = "vendra_session"
 
-type authService struct{ db *pgxpool.Pool }
+type authService struct {
+	db    *pgxpool.Pool
+	audit auditor
+}
 
 type sessionSettings struct {
 	TTLHours     int  `json:"ttlHours"`
@@ -178,9 +181,33 @@ func (a authService) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request", "이메일과 비밀번호를 확인하세요")
 		return
 	}
+	email := strings.ToLower(strings.TrimSpace(in.Email))
+	ip := clientIPValue(r)
+	guard := a.loginProtection(r.Context())
+	now := time.Now()
+	account, address, err := recentFailures(r.Context(), a.db, email, ip, guard.window())
+	if err != nil {
+		logDB(err)
+	} else if retryAfter, locked := guard.retryAfter(account.count, account.last, guard.MaxFailures, now); locked {
+		a.denyLogin(r, email, "account", account.count, retryAfter)
+		writeLoginLocked(w, retryAfter)
+		return
+	} else if retryAfter, locked := guard.retryAfter(address.count, address.last, guard.MaxAddressFailures, now); locked {
+		a.denyLogin(r, email, "address", address.count, retryAfter)
+		writeLoginLocked(w, retryAfter)
+		return
+	}
+
 	var userID, hash string
-	err := a.db.QueryRow(r.Context(), `SELECT id,password_hash FROM users WHERE email=lower($1) AND status='active'`, strings.TrimSpace(in.Email)).Scan(&userID, &hash)
-	if err != nil || hash == "" || bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil {
+	if a.db.QueryRow(r.Context(), `SELECT id,password_hash FROM users WHERE email=$1 AND status='active'`, email).Scan(&userID, &hash) != nil {
+		hash = ""
+	}
+	// Always spend a bcrypt comparison so response timing does not reveal
+	// whether the account exists.
+	if !passwordMatches(hash, in.Password) {
+		recordLoginAttempt(r.Context(), a.db, email, ip, r.UserAgent(), false)
+		runtimeHTTPMetrics.loginFailures.Add(1)
+		a.audit.recordAnonymous(r, "login_failed", "user", userID, email, map[string]any{"reason": "invalid_credentials"})
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "이메일 또는 비밀번호가 올바르지 않습니다")
 		return
 	}
@@ -189,22 +216,55 @@ func (a authService) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "internal_error", "세션을 만들지 못했습니다")
 		return
 	}
-	ip := netip.Addr{}
-	if host := strings.Split(r.RemoteAddr, ":")[0]; host != "" {
-		ip, _ = netip.ParseAddr(host)
-	}
 	var sessionID string
 	sessionConfig := a.sessionSettings(r.Context())
-	expiresAt := time.Now().Add(time.Duration(sessionConfig.TTLHours) * time.Hour)
+	expiresAt := now.Add(time.Duration(sessionConfig.TTLHours) * time.Hour)
 	err = a.db.QueryRow(r.Context(), `INSERT INTO sessions(user_id,token_hash,ip,user_agent,expires_at) VALUES($1,$2,$3,$4,$5) RETURNING id`, userID, security.TokenHash(token), ip, r.UserAgent(), expiresAt).Scan(&sessionID)
 	if err != nil {
+		logDB(err)
 		writeError(w, 500, "internal_error", "세션을 만들지 못했습니다")
 		return
 	}
+	recordLoginAttempt(r.Context(), a.db, email, ip, r.UserAgent(), true)
+	// A successful sign-in clears the account lockout so a legitimate owner is
+	// never held behind an attacker's failed attempts.
+	_, _ = a.db.Exec(r.Context(), `DELETE FROM login_attempts WHERE email=$1 AND NOT succeeded`, email)
 	_, _ = a.db.Exec(r.Context(), `UPDATE users SET last_login_at=now() WHERE id=$1`, userID)
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, Secure: sessionConfig.SecureCookie || requestIsHTTPS(r), SameSite: http.SameSiteLaxMode, MaxAge: sessionConfig.TTLHours * 3600})
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
+
+func (a authService) denyLogin(r *http.Request, email, subject string, failures int, retryAfter time.Duration) {
+	runtimeHTTPMetrics.loginLockouts.Add(1)
+	slog.Warn("login locked", "subject", subject, "email", email, "failures", failures,
+		"retry_after_seconds", int(retryAfter.Seconds()), "request_id", requestID(r.Context()))
+	a.audit.recordAnonymous(r, "login_locked", "user", "", email, map[string]any{
+		"subject": subject, "failures": failures, "retryAfterSeconds": int(retryAfter.Seconds()),
+	})
+}
+
+// passwordMatches runs bcrypt even for unknown accounts, using a hash of the
+// same cost, so failures take a constant amount of work.
+func passwordMatches(hash, password string) bool {
+	if hash == "" {
+		_ = bcrypt.CompareHashAndPassword(timingDecoyHash, []byte(password))
+		return false
+	}
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+}
+
+// timingDecoyHash is a bcrypt.DefaultCost hash of an unguessable value.
+var timingDecoyHash = func() []byte {
+	secret, err := security.RandomToken(32)
+	if err != nil {
+		secret = "vendra-timing-decoy"
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	if err != nil {
+		return []byte("$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy")
+	}
+	return hash
+}()
 
 func (a authService) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {

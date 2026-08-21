@@ -1,13 +1,14 @@
 .PHONY: dev test build image offline-release
 
-VERSION ?= 0.3.0
+VERSION ?= 0.4.0
 IMAGE ?= vendra:v$(VERSION)
 
 dev:
 	go run ./cmd/vendra
 
 test:
-	go test ./...
+	go test ./cmd/... ./internal/...
+	go vet ./cmd/... ./internal/...
 	cd web && npm run build
 
 build:

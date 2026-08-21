@@ -853,6 +853,46 @@ kbd {
   color: #8d5b11;
   border-color: #f6e3b8;
 }
+.form-notice {
+  padding: 11px 13px;
+  background: #eaf7f2;
+  color: #12674f;
+  border: 1px solid #cbe9de;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin: 12px 0;
+}
+.form-notice svg {
+  width: 16px;
+  flex: none;
+}
+.password-form,
+.password-reset {
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+  margin-top: 4px;
+}
+.password-form h3,
+.password-reset h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin: 0 0 4px;
+}
+.password-form h3 svg,
+.password-reset h3 svg {
+  width: 15px;
+}
+.password-form > p,
+.password-reset > p {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 14px;
+}
 
 /* common page */
 .page-header {
@@ -4558,4 +4598,12 @@ kbd {
   .server-log-row .log-message {
     grid-column: 1 / -1;
   }
+}
+
+.page-error {
+  margin: 40px auto;
+  max-width: 420px;
+}
+.page-error .button {
+  margin-top: 16px;
 }

@@ -67,7 +67,7 @@ export default function Profile({
           ) : tab === "keys" ? (
             <KeyManager notify={notify} />
           ) : (
-            <Sessions />
+            <Sessions notify={notify} />
           )}
         </section>
       </div>
@@ -359,7 +359,93 @@ function KeyManager({ notify }: { notify: (s: string) => void }) {
   );
 }
 
-function Sessions() {
+function PasswordForm({ notify }: { notify: (s: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const d = new FormData(form);
+    const next = String(d.get("newPassword") || "");
+    if (next !== String(d.get("confirmPassword") || "")) {
+      setError("새 비밀번호가 서로 일치하지 않습니다.");
+      return;
+    }
+    setError(undefined);
+    setBusy(true);
+    try {
+      const result = await post<{ revokedSessions: number }>(
+        "/api/v1/me/password",
+        {
+          currentPassword: d.get("currentPassword"),
+          newPassword: next,
+        },
+      );
+      form.reset();
+      notify(
+        result.revokedSessions > 0
+          ? `비밀번호를 변경하고 다른 세션 ${result.revokedSessions}개를 로그아웃했습니다.`
+          : "비밀번호를 변경했습니다.",
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "비밀번호를 변경하지 못했습니다");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form className="password-form" onSubmit={submit}>
+      <h3>
+        <ShieldCheck />
+        비밀번호 변경
+      </h3>
+      <p>
+        변경하면 이 브라우저를 제외한 모든 세션이 즉시 로그아웃됩니다. 외부
+        인증(OIDC) 계정은 사용할 수 없습니다.
+      </p>
+      <div className="form-grid">
+        <Field label="현재 비밀번호" required>
+          <input
+            name="currentPassword"
+            type="password"
+            autoComplete="current-password"
+            required
+          />
+        </Field>
+        <div />
+        <Field label="새 비밀번호" required hint="10자 이상, 최대 72바이트">
+          <input
+            name="newPassword"
+            type="password"
+            autoComplete="new-password"
+            required
+          />
+        </Field>
+        <Field label="새 비밀번호 확인" required>
+          <input
+            name="confirmPassword"
+            type="password"
+            autoComplete="new-password"
+            required
+          />
+        </Field>
+      </div>
+      {error && (
+        <p className="form-error" role="alert">
+          <AlertCircle />
+          {error}
+        </p>
+      )}
+      <div className="form-actions">
+        <button className="button" disabled={busy}>
+          {busy ? "변경 중" : "비밀번호 변경"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function Sessions({ notify }: { notify: (s: string) => void }) {
   return (
     <div className="settings-card">
       <div className="settings-card-head">
@@ -404,6 +490,7 @@ function Sessions() {
           SSO 정책은 서비스 관리자가 설정
         </p>
       </div>
+      <PasswordForm notify={notify} />
     </div>
   );
 }
