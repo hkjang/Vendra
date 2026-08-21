@@ -47,7 +47,7 @@ func (a *App) separationOfDuties(ctx context.Context) separationOfDuties {
 }
 
 func (a *App) listWorkflows(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(r.Context(), `SELECT id,name,object_type,enabled,conditions,steps,version,created_by,created_at,updated_at FROM workflow_definitions ORDER BY object_type,name,version DESC`)
+	rows, err := a.db.Query(r.Context(), `SELECT id,name,object_type,enabled,conditions,steps,version,created_by,created_at,updated_at FROM workflow_definitions ORDER BY object_type,name,version DESC LIMIT $1`, parseLimit(r, 300))
 	if err != nil {
 		writeError(w, 500, "database_error", "워크플로를 조회하지 못했습니다")
 		return

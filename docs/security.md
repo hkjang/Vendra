@@ -34,6 +34,8 @@
 - RBAC permissions support exact, domain wildcard(`supplier.*`) and read wildcard(`*.read`).
 - Data Scope is `own`, `department`, `division`, `company`.
 - Supplier Portal requests are forced to the user's supplier ID regardless of client input.
+- MCP 도구는 공급업체 포털 계정을 거부합니다. 모든 도구는 조직 범위로 결과를 좁히는 교차 공급업체 조회이므로 포털 격리를 담고 있지 않습니다. 기본 `supplier_user` 역할은 `portal.*`뿐이라 권한 게이트에서도 막히지만, 관리자가 조회 권한을 부여하더라도 사용자 유형만으로 차단됩니다.
+- MCP 오류 응답은 의도된 거부 사유만 전달하고, 드라이버 오류나 캐스트 실패 같은 내부 결함은 로그로만 남깁니다.
 - Amount fields are removed unless the Principal has the domain amount permission or wildcard.
 - `access_grants` supports resource conditions, valid-from/until and delegated-by for temporary access/delegation.
 - Workflow step role and object conditions enforce approval authority.

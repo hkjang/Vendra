@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -517,5 +519,142 @@ func TestSeparationOfDutiesBlocksSelfApprovalWhenEnabled(t *testing.T) {
 	// Returning for revision hands the request back rather than deciding it.
 	if got := act("return").Code; got != http.StatusOK {
 		t.Errorf("returning one's own request was blocked with %d, want 200", got)
+	}
+}
+
+// TestMCPRefusesSupplierPortalAccounts guards the portal isolation the product
+// depends on. MCP tools scope results by organisation, which portal accounts do
+// not use, so a supplier that reached them would see other suppliers' data.
+func TestMCPRefusesSupplierPortalAccounts(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	const portalEmail = "mcp-portal@vendra.test"
+	const portalPassword = "PortalPassphrase!2026"
+
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-MCP-TEST','MCP 검증 공급사','000-00-00000','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	hash, err := app.hashPassword(ctx, portalPassword)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var portalID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,supplier_id,status) VALUES($1,'MCP 포털 사용자',$2,'supplier',$3,'active')
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,user_type='supplier',supplier_id=excluded.supplier_id,status='active' RETURNING id`, portalEmail, hash, supplierID).Scan(&portalID); err != nil {
+		t.Fatalf("seed portal user: %v", err)
+	}
+	// Deliberately over-grant: an administrator hands this portal account a
+	// company-wide read role. Only the user type should keep it out of MCP.
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('mcp_test_reader','MCP 검증 조회','["supplier.read"]','company',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions,data_scope='company' RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, portalID, roleID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, portalEmail)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='mcp_test_reader'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-MCP-TEST'`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email IN ($1,$2)`, portalEmail, testAdminEmail)
+	portal := sessionCookieFrom(t, postLogin(t, handler, portalEmail, portalPassword, "203.0.113.70:5000"))
+
+	call := func(token string) *httptest.ResponseRecorder {
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_suppliers","arguments":{"query":""}}}`
+		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	w := call(portal)
+	if w.Code != http.StatusOK {
+		t.Fatalf("MCP returned HTTP %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "error") {
+		t.Fatalf("a supplier portal account reached an MCP tool: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "MCP 검증 공급사") {
+		t.Fatal("supplier data was returned to a portal account through MCP")
+	}
+
+	// An internal administrator must still be able to use the same tool.
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.71:5000"))
+	adminResult := call(admin)
+	if adminResult.Code != http.StatusOK || strings.Contains(adminResult.Body.String(), `"isError":true`) {
+		t.Fatalf("MCP broke for an administrator: %d %s", adminResult.Code, adminResult.Body.String())
+	}
+	if !strings.Contains(adminResult.Body.String(), "MCP 검증 공급사") {
+		t.Errorf("administrator did not receive supplier results: %s", adminResult.Body.String())
+	}
+}
+
+func TestListUsersIsBoundedSearchableAndHonestAboutTruncation(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	hash, err := app.hashPassword(ctx, "SeededUser!2026")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	for i := 0; i < 12; i++ {
+		if _, err := pool.Exec(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status) VALUES($1,$2,$3,'internal','active') ON CONFLICT(email) DO NOTHING`,
+			fmt.Sprintf("bulk-%02d@vendra.test", i), fmt.Sprintf("대량 사용자 %02d", i), hash); err != nil {
+			t.Fatalf("seed user %d: %v", i, err)
+		}
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM users WHERE email LIKE 'bulk-%@vendra.test'`) })
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.80:5000"))
+
+	read := func(query string) (items int, truncated bool, limit int) {
+		t.Helper()
+		w := doRequest(t, handler, http.MethodGet, "/api/v1/admin/users?"+query, admin)
+		if w.Code != http.StatusOK {
+			t.Fatalf("listing users returned %d: %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Items     []map[string]any `json:"items"`
+			Truncated bool             `json:"truncated"`
+			Limit     int              `json:"limit"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return len(body.Items), body.Truncated, body.Limit
+	}
+
+	// A small page must report itself as cut off rather than looking complete.
+	items, truncated, limit := read("limit=5")
+	if items != 5 || limit != 5 {
+		t.Fatalf("got %d items with limit %d, want 5/5", items, limit)
+	}
+	if !truncated {
+		t.Error("a truncated page reported truncated=false; the operator would think they saw everyone")
+	}
+	// The extra probe row must never leak into the results.
+	if items > limit {
+		t.Errorf("returned %d items for a limit of %d", items, limit)
+	}
+
+	// Search narrows the set, and a complete page is not flagged as cut off.
+	items, truncated, _ = read("q=" + url.QueryEscape("bulk-03@vendra.test"))
+	if items != 1 {
+		t.Errorf("search returned %d users, want 1", items)
+	}
+	if truncated {
+		t.Error("a complete result was reported as truncated")
+	}
+	if items, _, _ = read("q=" + url.QueryEscape("존재하지 않는 사용자")); items != 0 {
+		t.Errorf("an unmatched search returned %d users", items)
 	}
 }

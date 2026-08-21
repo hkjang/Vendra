@@ -70,7 +70,11 @@ func (a *App) putSetting(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) listUsers(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(r.Context(), `SELECT u.id,u.email,u.display_name,u.user_type,u.status,u.organization_id,u.supplier_id,u.locale,u.timezone,u.last_login_at,u.created_at,COALESCE(jsonb_agg(jsonb_build_object('id',ro.id,'code',ro.code,'name',ro.name)) FILTER(WHERE ro.id IS NOT NULL),'[]') FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id LEFT JOIN roles ro ON ro.id=ur.role_id GROUP BY u.id ORDER BY u.created_at DESC`)
+	// The list is bounded and searchable: an organisation with thousands of
+	// accounts would otherwise serialise all of them into a single response.
+	limit := parseLimit(r, 200)
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	rows, err := a.db.Query(r.Context(), `SELECT u.id,u.email,u.display_name,u.user_type,u.status,u.organization_id,u.supplier_id,u.locale,u.timezone,u.last_login_at,u.created_at,COALESCE(jsonb_agg(jsonb_build_object('id',ro.id,'code',ro.code,'name',ro.name)) FILTER(WHERE ro.id IS NOT NULL),'[]') FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id LEFT JOIN roles ro ON ro.id=ur.role_id WHERE ($1='' OR u.email ILIKE '%'||$1||'%' OR u.display_name ILIKE '%'||$1||'%') GROUP BY u.id ORDER BY u.created_at DESC LIMIT $2`, query, limit+1)
 	if err != nil {
 		writeError(w, 500, "database_error", "사용자를 조회하지 못했습니다")
 		return
@@ -89,7 +93,13 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"id": id, "email": email, "displayName": name, "userType": typ, "status": status, "organizationId": org, "supplierId": supplier, "locale": locale, "timezone": tz, "lastLoginAt": last, "createdAt": created, "roles": rs})
 		}
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	// One extra row was requested so the caller can be told the list is cut off
+	// rather than silently believing it saw everyone.
+	truncated := len(items) > limit
+	if truncated {
+		items = items[:limit]
+	}
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
 func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +198,7 @@ func (a *App) updateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) listRoles(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(r.Context(), `SELECT id,code,name,permissions,data_scope,system,created_at FROM roles ORDER BY system DESC,name`)
+	rows, err := a.db.Query(r.Context(), `SELECT id,code,name,permissions,data_scope,system,created_at FROM roles ORDER BY system DESC,name LIMIT $1`, parseLimit(r, 500))
 	if err != nil {
 		writeError(w, 500, "database_error", "역할을 조회하지 못했습니다")
 		return
@@ -253,7 +263,7 @@ func (a *App) updateRole(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) listOrganizations(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(r.Context(), `SELECT id,name,parent_id,path,created_at FROM organizations ORDER BY path,name`)
+	rows, err := a.db.Query(r.Context(), `SELECT id,name,parent_id,path,created_at FROM organizations ORDER BY path,name LIMIT $1`, parseLimit(r, 500))
 	if err != nil {
 		writeError(w, 500, "database_error", "조직을 조회하지 못했습니다")
 		return
@@ -305,7 +315,7 @@ func (a *App) createOrganization(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) listAccessGrants(w http.ResponseWriter, r *http.Request) {
 	userID := r.URL.Query().Get("userId")
-	rows, err := a.db.Query(r.Context(), `SELECT g.id,g.user_id,u.email,g.permission,g.resource_type,g.resource_id,g.conditions,g.valid_from,g.valid_until,g.delegated_by,g.created_at FROM access_grants g JOIN users u ON u.id=g.user_id WHERE ($1='' OR g.user_id=$1::uuid) ORDER BY g.created_at DESC`, userID)
+	rows, err := a.db.Query(r.Context(), `SELECT g.id,g.user_id,u.email,g.permission,g.resource_type,g.resource_id,g.conditions,g.valid_from,g.valid_until,g.delegated_by,g.created_at FROM access_grants g JOIN users u ON u.id=g.user_id WHERE ($1='' OR g.user_id=$1::uuid) ORDER BY g.created_at DESC LIMIT $2`, userID, parseLimit(r, 500))
 	if err != nil {
 		writeError(w, 500, "database_error", "임시 권한을 조회하지 못했습니다")
 		return

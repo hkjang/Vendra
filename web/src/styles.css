@@ -4651,3 +4651,16 @@ kbd {
 .page-error .button {
   margin-top: 16px;
 }
+
+.admin-list-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.admin-list-controls .form-error {
+  margin: 0;
+  flex: 1;
+  min-width: 240px;
+}
