@@ -77,9 +77,13 @@ func (a *App) scheduleNotifications(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Count only orders for the contract's own supplier. Joining on parent id
+	// alone let an order placed with a different supplier inflate the total, and
+	// parent_id is caller-supplied, so a critical overrun alert could be raised
+	// on a contract the sender has nothing to do with.
 	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
 	 SELECT c.owner_id,c.supplier_id,'contract_amount_exceeded','계약금액 초과',c.title||' 계약금액 '||COALESCE(c.amount,0)||' 대비 발주 누계 '||sum(po.amount)||' 입니다.','critical','contract',c.id
-	 FROM business_objects c JOIN business_objects po ON po.parent_id=c.id AND po.object_type='purchase_order' AND po.deleted_at IS NULL
+	 FROM business_objects c JOIN business_objects po ON po.parent_id=c.id AND po.object_type='purchase_order' AND po.deleted_at IS NULL AND po.supplier_id IS NOT DISTINCT FROM c.supplier_id
 	 WHERE c.object_type='contract' AND c.deleted_at IS NULL AND c.owner_id IS NOT NULL AND c.amount IS NOT NULL
 	 GROUP BY c.id HAVING sum(COALESCE(po.amount,0))>c.amount
 	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
