@@ -341,13 +341,19 @@ function AppointCommittee({
       (x) => setItems(x.items.filter((item) => !current.includes(item.id))),
     );
   }, [current]);
+  const [busy, setBusy] = useState(false);
   async function submit(e: FormEvent) {
     e.preventDefault();
-    await post(`/api/v1/sourcing/${sourcingId}/committee`, {
-      userIds: selected,
-      role: "evaluator",
-    });
-    onSaved();
+    setBusy(true);
+    try {
+      await post(`/api/v1/sourcing/${sourcingId}/committee`, {
+        userIds: selected,
+        role: "evaluator",
+      });
+      onSaved();
+    } finally {
+      setBusy(false);
+    }
   }
   return (
     <Modal
@@ -390,8 +396,8 @@ function AppointCommittee({
           <button type="button" className="button secondary" onClick={onClose}>
             취소
           </button>
-          <button className="button" disabled={!selected.length}>
-            위원 지정
+          <button className="button" disabled={busy || !selected.length}>
+            {busy ? "지정 중…" : "위원 지정"}
           </button>
         </div>
       </form>
@@ -425,14 +431,20 @@ function SourcingQuestions({ sourcingId }: { sourcingId: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+  const [asking, setAsking] = useState(false);
   async function ask(e: FormEvent) {
     e.preventDefault();
-    await post(`/api/v1/sourcing/${sourcingId}/questions`, {
-      question,
-      visibility: "participants",
-    });
-    setQuestion("");
-    load();
+    setAsking(true);
+    try {
+      await post(`/api/v1/sourcing/${sourcingId}/questions`, {
+        question,
+        visibility: "participants",
+      });
+      setQuestion("");
+      await load();
+    } finally {
+      setAsking(false);
+    }
   }
   async function answer(e: FormEvent) {
     e.preventDefault();
@@ -467,7 +479,9 @@ function SourcingQuestions({ sourcingId }: { sourcingId: string }) {
           placeholder="참여업체에 공지할 질문 또는 안내"
           required
         />
-        <button className="button">등록</button>
+        <button className="button" disabled={asking || !question.trim()}>
+          {asking ? "등록 중…" : "등록"}
+        </button>
       </form>
       {items?.map((item) => (
         <article key={item.id}>
@@ -686,12 +700,18 @@ function InviteSourcing({
       "/api/v1/suppliers?status=active&limit=500",
     ).then((x) => setSuppliers(x.items.filter((s) => !current.includes(s.id))));
   }, [current]);
+  const [busy, setBusy] = useState(false);
   async function submit(e: FormEvent) {
     e.preventDefault();
-    await post(`/api/v1/sourcing/${sourcingId}/participants`, {
-      supplierIds: selected,
-    });
-    onSaved();
+    setBusy(true);
+    try {
+      await post(`/api/v1/sourcing/${sourcingId}/participants`, {
+        supplierIds: selected,
+      });
+      onSaved();
+    } finally {
+      setBusy(false);
+    }
   }
   return (
     <Modal
@@ -729,9 +749,9 @@ function InviteSourcing({
           <button type="button" className="button secondary" onClick={onClose}>
             취소
           </button>
-          <button className="button" disabled={!selected.length}>
+          <button className="button" disabled={busy || !selected.length}>
             <Send />
-            {selected.length}개 업체 초대
+            {busy ? "초대 중…" : `${selected.length}개 업체 초대`}
           </button>
         </div>
       </form>

@@ -1275,6 +1275,50 @@ kbd {
 }
 .toast > svg {
   color: #3bd2a3;
+  flex: none;
+  width: 18px;
+}
+.toast > span {
+  /* An error message can be a full sentence; let it wrap instead of clipping. */
+  overflow-wrap: anywhere;
+}
+.toast.error {
+  background: #45141b;
+  border: 1px solid #7d2734;
+}
+.toast.error > svg {
+  color: #ff8b9b;
+}
+.toast.info > svg {
+  color: #8fb6ff;
+}
+/* Stack toasts so a second outcome does not replace the first unread one. */
+.toast-stack {
+  position: fixed;
+  right: 25px;
+  bottom: 25px;
+  z-index: 150;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 10px;
+  align-items: flex-end;
+}
+.toast-stack .toast {
+  position: static;
+  right: auto;
+  bottom: auto;
+}
+@media (max-width: 640px) {
+  .toast-stack {
+    right: 12px;
+    left: 12px;
+    bottom: 12px;
+    align-items: stretch;
+  }
+  .toast-stack .toast {
+    min-width: 0;
+    max-width: none;
+  }
 }
 .toast > button {
   margin-left: auto;
@@ -2786,7 +2830,7 @@ kbd {
   align-items: center;
   gap: 5px;
   font-size: 12px;
-  color: #198063;
+  color: var(--muted);
 }
 .session-row small svg {
   width: 12px;

@@ -3,11 +3,48 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// instanceSteps returns the approval steps an in-flight instance must follow.
+//
+// The steps are snapshotted into workflow_instances.context when the request is
+// submitted. Reading the live definition instead lets an administrator editing a
+// workflow change the rules under approvals that are already in flight: removing
+// a step strands them past the end of the list where no action is accepted, and
+// reordering steps hands the decision to the wrong role. The snapshot is
+// authoritative; the definition is only a fallback for rows written without one.
+func instanceSteps(snapshot, definition []byte) []map[string]any {
+	var context struct {
+		Steps []map[string]any `json:"steps"`
+	}
+	if len(snapshot) > 0 && json.Unmarshal(snapshot, &context) == nil && len(context.Steps) > 0 {
+		return context.Steps
+	}
+	var steps []map[string]any
+	_ = json.Unmarshal(definition, &steps)
+	return steps
+}
+
+// separationOfDuties is the `workflow.separation_of_duties` setting. It defaults
+// to off so that upgrading cannot stall an approval an organisation already
+// routes back to its requester, but procurement controls usually want it on.
+type separationOfDuties struct {
+	BlockSelfApproval bool `json:"blockSelfApproval"`
+}
+
+func (a *App) separationOfDuties(ctx context.Context) separationOfDuties {
+	var policy separationOfDuties
+	var value []byte
+	if a.db.QueryRow(ctx, `SELECT value FROM settings WHERE key='workflow.separation_of_duties'`).Scan(&value) == nil {
+		_ = json.Unmarshal(value, &policy)
+	}
+	return policy
+}
 
 func (a *App) listWorkflows(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(r.Context(), `SELECT id,name,object_type,enabled,conditions,steps,version,created_by,created_at,updated_at FROM workflow_definitions ORDER BY object_type,name,version DESC`)
@@ -131,8 +168,7 @@ func (a *App) listApprovals(w http.ResponseWriter, r *http.Request) {
 		if rows.Scan(&id, &typ, &obj, &status, &step, &context, &requester, &created, &workflow, &steps, &number, &title, &amount, &supplier) != nil {
 			continue
 		}
-		var stepList []map[string]any
-		_ = json.Unmarshal(steps, &stepList)
+		stepList := instanceSteps(context, steps)
 		if step >= len(stepList) {
 			continue
 		}
@@ -193,15 +229,22 @@ func (a *App) workflowAction(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var current int
 	var status, objectType, objectID string
-	var steps []byte
-	var objectOwnerID, objectOrganizationID *string
-	err = tx.QueryRow(r.Context(), `SELECT i.current_step,i.status,i.object_type,i.object_id,d.steps,o.owner_id,o.organization_id FROM workflow_instances i JOIN workflow_definitions d ON d.id=i.definition_id LEFT JOIN business_objects o ON o.id=i.object_id WHERE i.id=$1 FOR UPDATE OF i`, id).Scan(&current, &status, &objectType, &objectID, &steps, &objectOwnerID, &objectOrganizationID)
-	if err == pgx.ErrNoRows || status != "pending" {
-		writeError(w, 409, "not_pending", "이미 처리된 승인입니다")
+	var steps, snapshot []byte
+	var requestedBy, objectOwnerID, objectOrganizationID *string
+	err = tx.QueryRow(r.Context(), `SELECT i.current_step,i.status,i.object_type,i.object_id,d.steps,i.context,i.requested_by,o.owner_id,o.organization_id FROM workflow_instances i JOIN workflow_definitions d ON d.id=i.definition_id LEFT JOIN business_objects o ON o.id=i.object_id WHERE i.id=$1 FOR UPDATE OF i`, id).Scan(&current, &status, &objectType, &objectID, &steps, &snapshot, &requestedBy, &objectOwnerID, &objectOrganizationID)
+	// Check the error before the status: a scan that failed leaves status empty,
+	// which would otherwise be reported as "already processed".
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, 404, "not_found", "승인 요청을 찾을 수 없습니다")
 		return
 	}
 	if err != nil {
+		logDB(err)
 		writeError(w, 500, "database_error", "승인을 처리하지 못했습니다")
+		return
+	}
+	if status != "pending" {
+		writeError(w, 409, "not_pending", "이미 처리된 승인입니다")
 		return
 	}
 	if p.DataScope != "company" {
@@ -214,8 +257,7 @@ func (a *App) workflowAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var stepList []map[string]any
-	_ = json.Unmarshal(steps, &stepList)
+	stepList := instanceSteps(snapshot, steps)
 	if current >= len(stepList) {
 		writeError(w, 409, "invalid_workflow", "워크플로 단계가 올바르지 않습니다")
 		return
@@ -223,6 +265,13 @@ func (a *App) workflowAction(w http.ResponseWriter, r *http.Request) {
 	role, _ := stepList[current]["role"].(string)
 	if role != "" && !principalHasRole(r.Context(), a, p.ID, role) && !hasPermission(p, "*") {
 		writeError(w, 403, "forbidden", "현재 단계의 승인 권한이 없습니다")
+		return
+	}
+	// Approving one's own request is the standard procurement fraud path, so an
+	// administrator can forbid it. Returning for revision stays allowed: it hands
+	// the request back rather than advancing it.
+	if in.Action != "return" && requestedBy != nil && *requestedBy == p.ID && a.separationOfDuties(r.Context()).BlockSelfApproval {
+		writeError(w, 403, "separation_of_duties", "본인이 요청한 건은 승인하거나 반려할 수 없습니다")
 		return
 	}
 	_, err = tx.Exec(r.Context(), `INSERT INTO workflow_actions(instance_id,step,action,actor_id,comment) VALUES($1,$2,$3,$4,NULLIF($5,''))`, id, current, in.Action, p.ID, in.Comment)

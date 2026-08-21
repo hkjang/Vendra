@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  AlertCircle,
   Check,
   CheckCircle2,
   Clock3,
@@ -10,6 +11,7 @@ import {
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { api, date, money, post } from "../api";
+import { errorMessage } from "../toast-context";
 import { Badge, Empty, Loading, Modal, PageHeader } from "../components";
 import { statusTone } from "../status";
 
@@ -84,8 +86,15 @@ export default function Approvals() {
       ),
     );
     const succeeded = results.filter((result) => result.status === "fulfilled").length;
-    const failed = results.length - succeeded;
-    setMessage(failed ? `${succeeded}건 처리, ${failed}건은 권한 또는 상태를 확인해 주세요.` : `${succeeded}건을 처리했습니다.`);
+    const failures = results.filter((result) => result.status === "rejected");
+    // Report why the failures failed. "권한 또는 상태를 확인해 주세요" left the
+    // reviewer guessing which of several causes applied.
+    const reasons = [...new Set(failures.map((f) => errorMessage(f.reason, "처리하지 못했습니다")))];
+    setMessage(
+      failures.length
+        ? `${succeeded}건 처리, ${failures.length}건 실패 — ${reasons.join(" / ")}`
+        : `${succeeded}건을 처리했습니다.`,
+    );
     setBulkBusy(false);
     setBulkAction(undefined);
     setBulkComment("");
@@ -172,12 +181,18 @@ function ApprovalDetail({ item, onDone }: { item: Approval; onDone: () => void }
   const [action, setAction] = useState<string>();
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   async function submit() {
     if (!action) return;
     setBusy(true);
+    setError("");
     try {
       await post(`/api/v1/approvals/${item.id}/actions`, { action, comment });
       onDone();
+    } catch (e) {
+      // Without this the modal simply sat there after a rejected decision and
+      // the reviewer had no idea whether the approval had gone through.
+      setError(errorMessage(e, "결정을 저장하지 못했습니다"));
     } finally {
       setBusy(false);
     }
@@ -187,7 +202,7 @@ function ApprovalDetail({ item, onDone }: { item: Approval; onDone: () => void }
     <dl className="approval-data"><dt>공급업체</dt><dd>{item.supplierName || "—"}</dd><dt>금액</dt><dd>{money(item.amount)}</dd><dt>요청일</dt><dd>{date(item.createdAt)}</dd><dt>승인 역할</dt><dd>{item.currentStepDefinition.role || "지정 사용자"}</dd></dl>
     <div className="approval-context"><h3>검토 체크포인트</h3><p><Check />공급업체 거래상태 및 Risk 등급</p><p><Check />예산과 계약금액의 정합성</p><p><Check />첨부 문서 및 계약 조건</p></div>
     <div className="approval-actions"><button className="button secondary" onClick={() => setAction("return")}><RotateCcw />보완 요청</button><button className="button danger" onClick={() => setAction("reject")}><X />반려</button><button className="button" onClick={() => setAction("approve")}><Check />승인</button></div>
-    {action && <Modal title={`${actionLabel(action)}하시겠습니까?`} onClose={() => setAction(undefined)}><label className="field"><span>검토 의견</span><textarea rows={5} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="결정 사유 또는 요청사항을 남기세요." /></label><div className="form-actions"><button className="button secondary" onClick={() => setAction(undefined)}>취소</button><button className={`button ${action === "reject" ? "danger" : ""}`} disabled={busy || (action !== "approve" && !comment.trim())} onClick={() => void submit()}>{busy ? "처리 중…" : "결정 확정"}</button></div></Modal>}
+    {action && <Modal title={`${actionLabel(action)}하시겠습니까?`} onClose={() => setAction(undefined)}><label className="field"><span>검토 의견</span><textarea rows={5} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="결정 사유 또는 요청사항을 남기세요." /></label>{error && <p className="form-error" role="alert"><AlertCircle />{error}</p>}<div className="form-actions"><button className="button secondary" onClick={() => setAction(undefined)}>취소</button><button className={`button ${action === "reject" ? "danger" : ""}`} disabled={busy || (action !== "approve" && !comment.trim())} onClick={() => void submit()}>{busy ? "처리 중…" : "결정 확정"}</button></div></Modal>}
   </>;
 }
 

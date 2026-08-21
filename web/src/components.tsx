@@ -25,8 +25,8 @@ export function Modal({ title, description, children, onClose, wide=false }: { t
   return <div className="modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className={`modal ${wide?'wide':''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={ref}><header><div><h2 id={titleId}>{title}</h2>{description&&<p>{description}</p>}</div><button type="button" className="icon-button" onClick={onClose} aria-label="닫기"><X/></button></header><div className="modal-body">{children}</div></div></div>
 }
 
-export function Toast({ type='success', message, onClose }: { type?:'success'|'error'|'info';message:string;onClose:()=>void }) {
-  useEffect(()=>{const t=setTimeout(onClose,4500);return()=>clearTimeout(t)},[onClose])
+export function Toast({ type='success', message, duration=4500, onClose }: { type?:'success'|'error'|'info';message:string;duration?:number;onClose:()=>void }) {
+  useEffect(()=>{const t=setTimeout(onClose,duration);return()=>clearTimeout(t)},[duration,onClose])
   return <div className={`toast ${type}`} role={type==='error'?'alert':'status'}>{type==='success'?<CheckCircle2/>:type==='error'?<XCircle/>:<Info/>}<span>{message}</span><button type="button" onClick={onClose} aria-label="알림 닫기"><X/></button></div>
 }
 
