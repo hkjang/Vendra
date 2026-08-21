@@ -65,7 +65,7 @@ func (a *App) scheduleNotifications(ctx context.Context) error {
 	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
 	 SELECT d.uploaded_by,d.supplier_id,'document_expiry',CASE WHEN d.expires_at<=current_date+7 THEN '문서 만료 7일 이내' ELSE '문서 만료 30일 이내' END,
 	 d.name||' 문서가 '||to_char(d.expires_at,'YYYY-MM-DD')||' 만료됩니다.','warning','document',d.id
-	 FROM documents d WHERE d.status='active' AND d.uploaded_by IS NOT NULL AND d.expires_at BETWEEN current_date AND current_date+30
+	 FROM documents d WHERE d.status IN('active','approved') AND d.uploaded_by IS NOT NULL AND d.expires_at BETWEEN current_date AND current_date+30
 	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
 	if err != nil {
 		return err

@@ -35,6 +35,12 @@ func (a *App) storagePath(r *http.Request) (string, error) {
 	return s.Path, nil
 }
 
+// documentLive is the set of statuses a document can still be used in. Approval
+// is a signature outcome, not an end state: gating retrieval on 'active' alone
+// made an approved document impossible to download, preview or countersign,
+// while it stayed visible in the list.
+const documentLive = `status IN ('active','approved')`
+
 func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 26<<20)
 	if err := r.ParseMultipartForm(25 << 20); err != nil {
@@ -186,7 +192,7 @@ func (a *App) serveDocument(w http.ResponseWriter, r *http.Request, inline bool)
 	}
 	var path, name, contentType, checksum string
 	var size int64
-	err := a.db.QueryRow(r.Context(), `SELECT storage_path,name,COALESCE(content_type,'application/octet-stream'),size,checksum FROM documents WHERE id=$1 AND status='active'`, r.PathValue("id")).Scan(&path, &name, &contentType, &size, &checksum)
+	err := a.db.QueryRow(r.Context(), `SELECT storage_path,name,COALESCE(content_type,'application/octet-stream'),size,checksum FROM documents WHERE id=$1 AND `+documentLive+``, r.PathValue("id")).Scan(&path, &name, &contentType, &size, &checksum)
 	if err != nil {
 		writeError(w, 404, "not_found", "문서를 찾을 수 없습니다")
 		return
@@ -276,7 +282,7 @@ func (a *App) signDocument(w http.ResponseWriter, r *http.Request) {
 		in.SignatureType = "approval"
 	}
 	var checksum string
-	if err := a.db.QueryRow(r.Context(), `SELECT checksum FROM documents WHERE id=$1 AND status='active'`, r.PathValue("id")).Scan(&checksum); err != nil {
+	if err := a.db.QueryRow(r.Context(), `SELECT checksum FROM documents WHERE id=$1 AND `+documentLive+``, r.PathValue("id")).Scan(&checksum); err != nil {
 		writeError(w, 404, "not_found", "문서를 찾을 수 없습니다")
 		return
 	}

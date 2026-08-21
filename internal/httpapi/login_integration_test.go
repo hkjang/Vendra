@@ -1,9 +1,14 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1761,5 +1766,235 @@ func TestSubmittingTwiceDoesNotOpenTwoApprovals(t *testing.T) {
 	}
 	if pending != 1 {
 		t.Errorf("%d approvals are open for one request; each shows separately in the inbox and only one of them moves the object", pending)
+	}
+}
+
+// TestReturnedRequestCanBeResubmitted walks the revision loop: an approver sends
+// a request back, the requester fixes it and submits again.
+func TestReturnedRequestCanBeResubmitted(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('return_flow','반환 검증','["contract.read","contract.create","contract.update","workflow.read","workflow.approve"]','company',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	hash, err := app.hashPassword(ctx, "ReturnPassphrase!2026")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	seedUser := func(email, name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status) VALUES($1,$2,$3,'internal','active')
+			ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,status='active' RETURNING id`, email, name, hash).Scan(&id); err != nil {
+			t.Fatalf("seed user: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, id, roleID); err != nil {
+			t.Fatalf("assign role: %v", err)
+		}
+		return id
+	}
+	requesterID := seedUser("ret-requester@vendra.test", "반환 요청자")
+	seedUser("ret-approver@vendra.test", "반환 승인자")
+	var definitionID string
+	if err := pool.QueryRow(ctx, `INSERT INTO workflow_definitions(name,object_type,enabled,conditions,steps,created_by) VALUES('반환 검증','contract',true,'{}','[{"name":"승인","role":"","order":0}]',$1) RETURNING id`, requesterID).Scan(&definitionID); err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO settings(key,value,category) VALUES('workflow.approval_enabled','true','workflow')
+		ON CONFLICT(key) DO UPDATE SET value='true'`); err != nil {
+		t.Fatalf("enable approvals: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM workflow_instances WHERE definition_id=$1`, definitionID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number LIKE 'RET-FLOW-%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM workflow_definitions WHERE id=$1`, definitionID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email LIKE 'ret-%@vendra.test'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='return_flow'`)
+	})
+
+	signIn := func(email, addr string) string {
+		t.Helper()
+		_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+		return sessionCookieFrom(t, postLogin(t, handler, email, "ReturnPassphrase!2026", addr))
+	}
+	send := func(method, path, token string, payload any) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(payload)
+		r := httptest.NewRequest(method, path, strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	requester := signIn("ret-requester@vendra.test", "203.0.113.220:5000")
+	created := send(http.MethodPost, "/api/v1/contracts", requester, map[string]any{"title": "반환 검증", "number": "RET-FLOW-1", "amount": 100})
+	var object struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &object); err != nil || object.ID == "" {
+		t.Fatalf("create: %s", created.Body.String())
+	}
+	if got := send(http.MethodPost, "/api/v1/contracts/"+object.ID+"/submit", requester, map[string]any{}).Code; got != http.StatusOK {
+		t.Fatalf("first submit returned %d", got)
+	}
+	var firstInstance string
+	if err := pool.QueryRow(ctx, `SELECT id FROM workflow_instances WHERE object_id=$1`, object.ID).Scan(&firstInstance); err != nil {
+		t.Fatalf("read instance: %v", err)
+	}
+
+	approver := signIn("ret-approver@vendra.test", "203.0.113.221:5000")
+	if got := send(http.MethodPost, "/api/v1/approvals/"+firstInstance+"/actions", approver, map[string]any{"action": "return", "comment": "금액 근거 보완"}).Code; got != http.StatusOK {
+		t.Fatalf("return returned %d", got)
+	}
+	var objectStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM business_objects WHERE id=$1`, object.ID).Scan(&objectStatus); err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if objectStatus != "returned" {
+		t.Errorf("object status after a return = %q, want returned", objectStatus)
+	}
+
+	// The requester revises and submits again: a returned request is no longer in
+	// flight, so this must start a fresh approval rather than being absorbed.
+	if got := send(http.MethodPatch, "/api/v1/contracts/"+object.ID, requester, map[string]any{"amount": 120}).Code; got != http.StatusOK {
+		t.Fatalf("revision returned %d", got)
+	}
+	resubmit := send(http.MethodPost, "/api/v1/contracts/"+object.ID+"/submit", requester, map[string]any{})
+	if resubmit.Code != http.StatusOK {
+		t.Fatalf("resubmit returned %d: %s", resubmit.Code, resubmit.Body.String())
+	}
+	if strings.Contains(resubmit.Body.String(), "alreadySubmitted") {
+		t.Error("a returned request was treated as still in flight and never re-entered approval")
+	}
+	var pending, total int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER(WHERE status='pending'),count(*) FROM workflow_instances WHERE object_id=$1`, object.ID).Scan(&pending, &total); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if pending != 1 {
+		t.Errorf("%d approvals pending after a resubmit, want 1", pending)
+	}
+	if total != 2 {
+		t.Errorf("%d instances recorded, want the returned one kept alongside the new one", total)
+	}
+	// The new approval must start from the first step, not resume where it left off.
+	var step int
+	if err := pool.QueryRow(ctx, `SELECT current_step FROM workflow_instances WHERE object_id=$1 AND status='pending'`, object.ID).Scan(&step); err != nil {
+		t.Fatalf("read step: %v", err)
+	}
+	if step != 0 {
+		t.Errorf("the new approval starts at step %d, want 0", step)
+	}
+}
+
+// TestDocumentUploadSignAndDownload walks the document lifecycle end to end:
+// upload, checksum, signature, status transition and retrieval.
+func TestDocumentUploadSignAndDownload(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	storage := t.TempDir()
+	if _, err := pool.Exec(ctx, `INSERT INTO settings(key,value,category) VALUES('storage',$1,'document')
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, fmt.Sprintf(`{"driver":"filesystem","path":%q}`, storage)); err != nil {
+		t.Fatalf("point storage at the test directory: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `UPDATE settings SET value='{"driver":"filesystem","path":"/var/lib/vendra/documents"}' WHERE key='storage'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM documents WHERE name LIKE 'DOCFLOW%'`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.230:5000"))
+
+	// Upload a file whose name exercises the encoding fixed in v0.5.0.
+	const fileName = "DOCFLOW 계약서 최종.pdf"
+	const content = "%PDF-1.7 계약 본문"
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("file", fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	_ = form.WriteField("documentType", "contract")
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upload := httptest.NewRequest(http.MethodPost, "/api/v1/documents/upload", &body)
+	upload.Header.Set("Content-Type", form.FormDataContentType())
+	upload.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+	uw := httptest.NewRecorder()
+	handler.ServeHTTP(uw, upload)
+	if uw.Code != http.StatusCreated {
+		t.Fatalf("upload returned %d: %s", uw.Code, uw.Body.String())
+	}
+	var uploaded struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Checksum string `json:"checksum"`
+		Size     int64  `json:"size"`
+	}
+	if err := json.Unmarshal(uw.Body.Bytes(), &uploaded); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+	sum := sha256.Sum256([]byte(content))
+	if uploaded.Checksum != hex.EncodeToString(sum[:]) {
+		t.Errorf("recorded checksum does not match the bytes uploaded")
+	}
+	if uploaded.Size != int64(len(content)) {
+		t.Errorf("recorded size %d, want %d", uploaded.Size, len(content))
+	}
+
+	// Signing with the approval meaning must move the document to approved and
+	// record the checksum that was signed.
+	sig, _ := json.Marshal(map[string]any{"signatureType": "approval", "meaning": "계약 승인", "comment": "확인"})
+	sr := httptest.NewRequest(http.MethodPost, "/api/v1/documents/"+uploaded.ID+"/signatures", strings.NewReader(string(sig)))
+	sr.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+	sw := httptest.NewRecorder()
+	handler.ServeHTTP(sw, sr)
+	if sw.Code != http.StatusCreated {
+		t.Fatalf("signature returned %d: %s", sw.Code, sw.Body.String())
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM documents WHERE id=$1`, uploaded.ID).Scan(&status); err != nil {
+		t.Fatalf("read document: %v", err)
+	}
+	if status != "approved" {
+		t.Errorf("document status after an approval signature = %q, want approved", status)
+	}
+	var signedChecksum string
+	if err := pool.QueryRow(ctx, `SELECT signature_metadata->>'documentChecksum' FROM document_signatures WHERE document_id=$1`, uploaded.ID).Scan(&signedChecksum); err != nil {
+		t.Fatalf("read signature: %v", err)
+	}
+	if signedChecksum != uploaded.Checksum {
+		t.Errorf("the signature recorded checksum %q, want %q", signedChecksum, uploaded.Checksum)
+	}
+
+	// Download must return the bytes and name the file correctly.
+	dr := httptest.NewRequest(http.MethodGet, "/api/v1/documents/"+uploaded.ID+"/download", nil)
+	dr.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+	dw := httptest.NewRecorder()
+	handler.ServeHTTP(dw, dr)
+	if dw.Code != http.StatusOK {
+		t.Fatalf("download returned %d", dw.Code)
+	}
+	if dw.Body.String() != content {
+		t.Errorf("download returned %q, want the uploaded bytes", dw.Body.String())
+	}
+	disposition := dw.Header().Get("Content-Disposition")
+	_, params, err := mime.ParseMediaType(disposition)
+	if err != nil {
+		t.Fatalf("Content-Disposition did not parse: %q", disposition)
+	}
+	if params["filename"] != fileName {
+		t.Errorf("download names the file %q, want %q", params["filename"], fileName)
+	}
+	if dw.Header().Get("X-Content-SHA256") != uploaded.Checksum {
+		t.Error("the download did not carry the checksum it was stored with")
 	}
 }
