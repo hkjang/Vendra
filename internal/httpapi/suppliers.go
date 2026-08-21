@@ -58,6 +58,28 @@ func scanSupplier(row pgx.Row) (supplier, error) {
 	return s, err
 }
 
+// auditableSupplierInput strips the fields that are deliberately encrypted at
+// rest before the request is written to the audit trail. The account number is
+// stored as AES-256-GCM ciphertext, so copying the submitted plaintext into
+// audit_logs.new_value would hand it to every holder of audit.read and undo the
+// encryption. The audit still records that the value changed.
+func auditableSupplierInput(in map[string]any) map[string]any {
+	if _, ok := in["bankAccount"]; !ok {
+		return in
+	}
+	redacted := make(map[string]any, len(in))
+	for key, value := range in {
+		redacted[key] = value
+	}
+	changed := false
+	if account, ok := in["bankAccount"].(string); ok {
+		changed = strings.TrimSpace(account) != ""
+	}
+	delete(redacted, "bankAccount")
+	redacted["bankAccountChanged"] = changed
+	return redacted
+}
+
 func (a *App) listSuppliers(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -147,7 +169,7 @@ func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "save_failed", "공급업체를 저장하지 못했습니다")
 		return
 	}
-	a.audit.record(r, "create", "supplier", id, nil, in)
+	a.audit.record(r, "create", "supplier", id, nil, auditableSupplierInput(in))
 	s, _ := scanSupplier(a.db.QueryRow(r.Context(), supplierSelect+` WHERE id=$1`, id))
 	writeJSON(w, 201, redactSupplier(p, s))
 }
@@ -311,7 +333,7 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "save_failed", "공급업체를 저장하지 못했습니다")
 		return
 	}
-	a.audit.record(r, "update", "supplier", id, before, in)
+	a.audit.record(r, "update", "supplier", id, before, auditableSupplierInput(in))
 	s, _ := scanSupplier(a.db.QueryRow(r.Context(), supplierSelect+` WHERE id=$1`, id))
 	writeJSON(w, 200, map[string]any{"supplier": redactSupplier(p, s), "bankChangePending": bankChangePending})
 }

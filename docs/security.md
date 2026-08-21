@@ -48,6 +48,8 @@
 
 OIDC/AI secrets and bank accounts use AES-256-GCM with versioned ciphertext and authenticated context. `ENCRYPTION_KEY` is never stored in PostgreSQL. Audit events include actor, timestamp, action, object, before/after JSON, IP, session and request ID.
 
+암호화 대상 값은 감사 기록에서 제외합니다. 공급업체 계좌는 변경 여부(`bankAccountChanged`)만 남고 번호 자체는 저장되지 않으며, 설정 Secret도 `secretChanged` 표시만 남습니다. 계좌 조회는 `supplier.bank_account.read` 권한으로 복호화 경로에서만 가능합니다.
+
 Document upload limits size, strips paths from filenames, assigns an opaque storage name, records SHA-256 and validates that downloads stay under the configured storage root. 파일명은 업로더가 정하는 값이므로 `Content-Disposition`에 RFC 8187 ext-value로 완전히 percent-encoding해 내보내며, 파라미터를 추가하거나 벗어날 수 없습니다. `filename*`을 무시하는 클라이언트를 위해 ASCII `filename` 대체값도 함께 보냅니다.
 
 사용자는 `개인화 및 보안 → 세션 및 보안`에서 자신의 활성 세션을 기기·IP·최근 활동 시각과 함께 확인하고 개별 또는 일괄 종료할 수 있습니다. 종료는 `revoke_session` 감사 이벤트로 남습니다.
