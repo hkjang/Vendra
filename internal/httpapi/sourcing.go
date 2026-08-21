@@ -196,7 +196,12 @@ func (a *App) sourcingComparison(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.recalculateSourcing(r, r.PathValue("id"))
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('responseId',sr.id,'supplierId',sr.supplier_id,'supplierName',s.name,'status',sr.status,'currency',sr.currency,'totalAmount',sr.total_amount,'deliveryDays',sr.delivery_days,'warranty',sr.warranty,'validityDate',sr.validity_date,'lineItems',sr.line_items,'priceScore',sr.price_score,'qualityScore',sr.quality_score,'deliveryScore',sr.delivery_score,'riskScore',sr.risk_score,'technicalScore',sr.technical_score,'finalScore',sr.final_score,'supplierRisk',s.risk_level,'supplierGrade',s.grade) FROM sourcing_responses sr JOIN suppliers s ON s.id=sr.supplier_id WHERE sr.sourcing_id=$1 ORDER BY sr.final_score DESC NULLS LAST,sr.total_amount`, r.PathValue("id"))
+	// Only submitted bids. A supplier saving without submitting keeps a draft
+	// row carrying their working price and line items; showing it here handed
+	// the buyer a quote the supplier had not committed to, which is the one
+	// thing a sealed tender must not do. Scoring already ignored drafts, so they
+	// appeared with real amounts and no scores.
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('responseId',sr.id,'supplierId',sr.supplier_id,'supplierName',s.name,'status',sr.status,'currency',sr.currency,'totalAmount',sr.total_amount,'deliveryDays',sr.delivery_days,'warranty',sr.warranty,'validityDate',sr.validity_date,'lineItems',sr.line_items,'priceScore',sr.price_score,'qualityScore',sr.quality_score,'deliveryScore',sr.delivery_score,'riskScore',sr.risk_score,'technicalScore',sr.technical_score,'finalScore',sr.final_score,'supplierRisk',s.risk_level,'supplierGrade',s.grade) FROM sourcing_responses sr JOIN suppliers s ON s.id=sr.supplier_id WHERE sr.sourcing_id=$1 AND sr.status='submitted' ORDER BY sr.final_score DESC NULLS LAST,sr.total_amount`, r.PathValue("id"))
 	if err != nil {
 		writeError(w, 500, "database_error", "비교표를 조회하지 못했습니다")
 		return

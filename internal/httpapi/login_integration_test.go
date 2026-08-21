@@ -1017,3 +1017,67 @@ func TestBankAccountNeverReachesTheAuditLog(t *testing.T) {
 		t.Error("the audit trail no longer records that the account changed")
 	}
 }
+
+// TestSourcingComparisonHidesUnsubmittedBids checks the core sealed-tender rule:
+// a price a supplier saved but did not submit must not reach the buyer.
+func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	newSupplier := func(number, name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES($1,$2,$1,'active')
+			ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`, number, name).Scan(&id); err != nil {
+			t.Fatalf("seed supplier: %v", err)
+		}
+		return id
+	}
+	drafting := newSupplier("SUP-BID-DRAFT", "초안 업체")
+	submitting := newSupplier("SUP-BID-SENT", "제출 업체")
+
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,created_by) VALUES('rfq','RFQ-BID-1','입찰 기밀 검증','open',$1) RETURNING id`, adminID).Scan(&rfqID); err != nil {
+		t.Fatalf("seed rfq: %v", err)
+	}
+	const draftAmount = "77777777.00"
+	const sentAmount = "12345678.00"
+	if _, err := pool.Exec(ctx, `INSERT INTO sourcing_responses(sourcing_id,supplier_id,status,total_amount,line_items) VALUES
+		($1,$2,'draft',$4,'[{"item":"작성중 품목"}]'),
+		($1,$3,'submitted',$5,'[{"item":"제출 품목"}]')`, rfqID, drafting, submitting, draftAmount, sentAmount); err != nil {
+		t.Fatalf("seed responses: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_responses WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number IN ('SUP-BID-DRAFT','SUP-BID-SENT')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.140:5000"))
+	w := doRequest(t, handler, http.MethodGet, "/api/v1/sourcing/"+rfqID+"/comparison", admin)
+	if w.Code != http.StatusOK {
+		t.Fatalf("comparison returned %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "77777777") || strings.Contains(body, "작성중 품목") || strings.Contains(body, "초안 업체") {
+		t.Errorf("an unsubmitted bid reached the buyer: %s", body)
+	}
+	if !strings.Contains(body, "12345678") || !strings.Contains(body, "제출 업체") {
+		t.Errorf("the submitted bid is missing from the comparison: %s", body)
+	}
+
+	// Once submitted, the same response becomes visible.
+	if _, err := pool.Exec(ctx, `UPDATE sourcing_responses SET status='submitted',submitted_at=now() WHERE sourcing_id=$1 AND supplier_id=$2`, rfqID, drafting); err != nil {
+		t.Fatalf("submit draft: %v", err)
+	}
+	after := doRequest(t, handler, http.MethodGet, "/api/v1/sourcing/"+rfqID+"/comparison", admin)
+	if !strings.Contains(after.Body.String(), "77777777") {
+		t.Errorf("a submitted bid is still hidden: %s", after.Body.String())
+	}
+}
