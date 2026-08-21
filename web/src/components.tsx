@@ -1,4 +1,4 @@
-import { Component, ReactNode, useEffect, useId, useRef } from 'react'
+import { Component, ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Info, LoaderCircle, RefreshCw, X, XCircle } from 'lucide-react'
 import { statusTone } from './status'
 
@@ -14,7 +14,21 @@ export function Empty({ icon, title, description, action }: { icon?:ReactNode; t
   return <div className="empty"><div className="empty-icon">{icon || <Info/>}</div><h3>{title}</h3><p>{description}</p>{action}</div>
 }
 
-export function Loading({ label='불러오는 중' }: { label?:string }) { return <div className="loading"><LoaderCircle className="spin"/><span>{label}</span></div> }
+// A screen that renders <Loading> keeps rendering it forever when its fetch
+// rejects: the state it waits on simply stays undefined. Eighteen screens do
+// this, so rather than teach each one to fail, the spinner itself offers a way
+// out once the wait stops being plausible. A healthy load never reaches it.
+export function Loading({ label='불러오는 중', stalledAfterMs=12000 }: { label?:string; stalledAfterMs?:number }) {
+  const [stalled, setStalled] = useState(false)
+  useEffect(()=>{ const timer=setTimeout(()=>setStalled(true), stalledAfterMs); return ()=>clearTimeout(timer) },[stalledAfterMs])
+  return <div className="loading">
+    <LoaderCircle className="spin"/><span>{label}</span>
+    {stalled && <div className="loading-stalled" role="status">
+      <p>예상보다 오래 걸립니다. 연결이 끊겼거나 서비스가 재시작 중일 수 있습니다.</p>
+      <button type="button" className="button secondary" onClick={()=>window.location.reload()}><RefreshCw/>다시 시도</button>
+    </div>}
+  </div>
+}
 
 export function Badge({ children, tone='neutral' }: { children:ReactNode; tone?:'neutral'|'success'|'warning'|'danger'|'info'|'purple' }) { return <span className={`badge ${tone}`}>{children}</span> }
 
