@@ -1407,3 +1407,65 @@ func TestSupplierInvitesRespectScope(t *testing.T) {
 		t.Errorf("an in-scope tender invitation returned %d, want 200", got)
 	}
 }
+
+// TestContractAmountAlertOnlyCountsItsOwnSupplier reproduces a false critical
+// alert: the aggregation joined purchase orders by parent id alone, so an order
+// for a different supplier counted toward a contract's total.
+func TestContractAmountAlertOnlyCountsItsOwnSupplier(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	var ownerID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&ownerID); err != nil {
+		t.Fatalf("read owner: %v", err)
+	}
+	newSupplier := func(number, name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES($1,$2,$1,'active')
+			ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`, number, name).Scan(&id); err != nil {
+			t.Fatalf("seed supplier: %v", err)
+		}
+		return id
+	}
+	ours := newSupplier("SUP-AMT-OURS", "계약 당사자")
+	stranger := newSupplier("SUP-AMT-OTHER", "무관한 업체")
+
+	var contractID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,supplier_id,title,status,amount,owner_id,created_by) VALUES('contract','AMT-TEST-C',$1,'금액 검증 계약','active',1000,$2,$2) RETURNING id`, ours, ownerID).Scan(&contractID); err != nil {
+		t.Fatalf("seed contract: %v", err)
+	}
+	// An order for a different supplier, pointed at this contract.
+	if _, err := pool.Exec(ctx, `INSERT INTO business_objects(object_type,number,supplier_id,parent_id,title,status,amount,owner_id,created_by) VALUES('purchase_order','AMT-TEST-PO-OTHER',$1,$2,'무관한 발주','approved',5000,$3,$3)`, stranger, contractID, ownerID); err != nil {
+		t.Fatalf("seed foreign order: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM notifications WHERE object_id=$1`, contractID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number LIKE 'AMT-TEST-%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number IN ('SUP-AMT-OURS','SUP-AMT-OTHER')`)
+	})
+
+	if err := app.scheduleNotifications(ctx); err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	var alerts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE kind='contract_amount_exceeded' AND object_id=$1`, contractID).Scan(&alerts); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if alerts != 0 {
+		t.Errorf("an order for another supplier raised a critical overrun alert on this contract (%d)", alerts)
+	}
+
+	// A real overrun by the contract's own supplier must still alert.
+	if _, err := pool.Exec(ctx, `INSERT INTO business_objects(object_type,number,supplier_id,parent_id,title,status,amount,owner_id,created_by) VALUES('purchase_order','AMT-TEST-PO-OURS',$1,$2,'정상 발주','approved',5000,$3,$3)`, ours, contractID, ownerID); err != nil {
+		t.Fatalf("seed own order: %v", err)
+	}
+	if err := app.scheduleNotifications(ctx); err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE kind='contract_amount_exceeded' AND object_id=$1`, contractID).Scan(&alerts); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if alerts == 0 {
+		t.Error("a genuine overrun by the contract's own supplier raised no alert")
+	}
+}
