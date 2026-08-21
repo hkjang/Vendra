@@ -39,6 +39,7 @@
 - 소싱 Q&A는 참여업체 공개 질문이라도 포털에서는 질문자 업체·담당자를 가립니다. 답변은 모두 읽을 수 있지만 함께 초대된 경쟁사를 알 수 없으며, 본인 질문과 구매팀 공지는 출처가 표시됩니다. 내부 검토자에게는 전체 출처가 보입니다.
 - MCP 도구는 공급업체 포털 계정을 거부합니다. 모든 도구는 조직 범위로 결과를 좁히는 교차 공급업체 조회이므로 포털 격리를 담고 있지 않습니다. 기본 `supplier_user` 역할은 `portal.*`뿐이라 권한 게이트에서도 막히지만, 관리자가 조회 권한을 부여하더라도 사용자 유형만으로 차단됩니다.
 - MCP 오류 응답은 의도된 거부 사유만 전달하고, 드라이버 오류나 캐스트 실패 같은 내부 결함은 로그로만 남깁니다.
+- 데이터 범위는 조회뿐 아니라 쓰기에도 적용됩니다. 업무 객체를 만들거나 공급업체를 변경할 때 지정한 조직·공급업체가 범위 안인지 검증하므로, 접근할 수 없는 조직에 레코드를 만들어 넣을 수 없습니다.
 - Amount fields are removed unless the Principal has the domain amount permission or wildcard.
 - `access_grants` supports resource conditions, valid-from/until and delegated-by for temporary access/delegation.
 - Workflow step role and object conditions enforce approval authority.

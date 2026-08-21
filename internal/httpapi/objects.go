@@ -109,6 +109,29 @@ func objectOrderBy(order string, amountVisible bool) string {
 	return "o.updated_at DESC"
 }
 
+// objectScopeAllowed checks the organisation and supplier a caller is trying to
+// attach a record to. Reads are scoped by query, but writes took whatever the
+// client supplied: a department user could file a purchase order against another
+// organisation, where it entered that organisation's lists, dashboards and
+// approval routing while staying invisible to its author. Document upload
+// already performed this check; business objects did not.
+func (a *App) objectScopeAllowed(r *http.Request, organizationID, supplierID string) bool {
+	p, _ := principalFrom(r.Context())
+	if grantAuthorized(r.Context()) || p.DataScope == "company" {
+		return true
+	}
+	if organizationID != "" {
+		if p.OrganizationID == nil {
+			return false
+		}
+		var allowed bool
+		if a.db.QueryRow(r.Context(), `SELECT vendra_org_in_scope($1::uuid,$2,$3::uuid)`, organizationID, p.DataScope, *p.OrganizationID).Scan(&allowed) != nil || !allowed {
+			return false
+		}
+	}
+	return supplierID == "" || a.supplierScopeAllowed(r, supplierID)
+}
+
 func (a *App) createObject(objectType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := principalFrom(r.Context())
@@ -124,6 +147,10 @@ func (a *App) createObject(objectType string) http.HandlerFunc {
 		}
 		if stringValue(in, "organizationId") == "" && p.OrganizationID != nil {
 			in["organizationId"] = *p.OrganizationID
+		}
+		if !a.objectScopeAllowed(r, stringValue(in, "organizationId"), stringValue(in, "supplierId")) {
+			writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어난 조직 또는 공급업체입니다")
+			return
 		}
 		number, _ := in["number"].(string)
 		if number == "" {
@@ -218,6 +245,10 @@ func (a *App) updateObject(objectType string) http.HandlerFunc {
 		in, err := decodeMap(r)
 		if err != nil {
 			writeError(w, 400, "invalid_request", err.Error())
+			return
+		}
+		if supplierID := stringValue(in, "supplierId"); supplierID != "" && !a.objectScopeAllowed(r, "", supplierID) {
+			writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어난 공급업체입니다")
 			return
 		}
 		data := before.Data
