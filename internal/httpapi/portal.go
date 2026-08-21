@@ -198,6 +198,12 @@ func (a *App) createInvitation(w http.ResponseWriter, r *http.Request) {
 	if in.ExpiresInDays <= 0 {
 		in.ExpiresInDays = 7
 	}
+	// The invitation binds the future portal account to this supplier, so an
+	// unchecked id grants someone access to a supplier the inviter cannot see.
+	if in.SupplierID != "" && !a.supplierScopeAllowed(r, in.SupplierID) {
+		writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어난 공급업체입니다")
+		return
+	}
 	token, err := randomToken(32)
 	if err != nil {
 		writeError(w, 500, "token_error", "초대 링크를 만들지 못했습니다")
