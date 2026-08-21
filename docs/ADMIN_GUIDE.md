@@ -34,7 +34,7 @@ docker run -d \
   -e BOOTSTRAP_ADMIN="admin@company.com" \
   -e BOOTSTRAP_ADMIN_PASSWORD="change-this-strong-password" \
   -e ENCRYPTION_KEY="Base64Encoded32ByteKeyHere==" \
-  vendra:v0.2.0
+  vendra:v0.3.0
 ```
 
 ### 2.1 계좌정보 및 시크릿 AES-256-GCM 암호화

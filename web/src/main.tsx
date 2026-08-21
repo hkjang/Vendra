@@ -5,6 +5,7 @@ import App from "./App";
 import "./styles.css";
 import "./notifications.css";
 import "./sourcing.css";
+import "./work-inbox.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
