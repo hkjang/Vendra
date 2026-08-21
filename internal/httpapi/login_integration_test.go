@@ -875,3 +875,80 @@ func TestScreeningTemplateWithoutThresholdsIsRejected(t *testing.T) {
 		t.Fatalf("a valid template was rejected with %d: %s", ok.Code, ok.Body.String())
 	}
 }
+
+func TestFormDraftsAreBoundedPerUser(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	token := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.120:5000"))
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	_, _ = pool.Exec(ctx, `DELETE FROM user_form_drafts WHERE user_id=$1`, adminID)
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM user_form_drafts WHERE user_id=$1`, adminID) })
+
+	// Draft keys are client-chosen, so an account could otherwise keep adding
+	// new ones indefinitely.
+	for i := 0; i < maxFormDraftsPerUser+15; i++ {
+		body, _ := json.Marshal(map[string]any{"payload": map[string]any{"title": fmt.Sprintf("초안 %02d", i)}})
+		r := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/v1/me/drafts/draft-key-%03d", i), strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("draft %d returned %d: %s", i, w.Code, w.Body.String())
+		}
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_form_drafts WHERE user_id=$1`, adminID).Scan(&count); err != nil {
+		t.Fatalf("count drafts: %v", err)
+	}
+	if count > maxFormDraftsPerUser {
+		t.Errorf("%d drafts stored, want at most %d", count, maxFormDraftsPerUser)
+	}
+	// The most recent draft must survive the eviction that trimmed the rest.
+	newest := fmt.Sprintf("draft-key-%03d", maxFormDraftsPerUser+14)
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_form_drafts WHERE user_id=$1 AND draft_key=$2)`, adminID, newest).Scan(&exists); err != nil {
+		t.Fatalf("check newest: %v", err)
+	}
+	if !exists {
+		t.Error("the draft just saved was evicted")
+	}
+}
+
+// A malformed notification key used to fail the uuid cast and roll back every
+// other item in the same batch.
+func TestWorkItemStateBatchSurvivesAMalformedNotificationKey(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	token := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.121:5000"))
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	keys := []string{"contract_expiry:abc:20260821", "notification:not-a-uuid", "risk_review:def"}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM user_work_item_states WHERE user_id=$1 AND item_key=ANY($2)`, adminID, keys)
+	})
+
+	body, _ := json.Marshal(map[string]any{"itemKeys": keys, "state": "done"})
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/me/work-items/state", strings.NewReader(string(body)))
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch returned %d: %s", w.Code, w.Body.String())
+	}
+	var stored int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_work_item_states WHERE user_id=$1 AND item_key=ANY($2)`, adminID, keys).Scan(&stored); err != nil {
+		t.Fatalf("count states: %v", err)
+	}
+	if stored != len(keys) {
+		t.Errorf("%d of %d item states were saved; one bad key used to discard the batch", stored, len(keys))
+	}
+}

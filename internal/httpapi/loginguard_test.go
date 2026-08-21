@@ -79,14 +79,21 @@ func TestClientIPValueRejectsUnparseablePeers(t *testing.T) {
 
 func TestRetentionPolicyNormalized(t *testing.T) {
 	d := defaultRetentionPolicy()
-	if got := (retentionPolicy{ExpiredSessionDays: -1, LoginAttemptDays: -1}).normalized(); got != d {
+	negative := retentionPolicy{ExpiredSessionDays: -1, LoginAttemptDays: -1, FormDraftDays: -1}
+	if got := negative.normalized(); got != d {
 		t.Fatalf("negative retention was not repaired: %#v", got)
 	}
-	if got := (retentionPolicy{ExpiredSessionDays: 0, LoginAttemptDays: 0}).normalized(); got.ExpiredSessionDays != 0 || got.LoginAttemptDays != 0 {
-		t.Fatalf("administrator could not disable the sweep: %#v", got)
+	// Zero is a deliberate value: it turns a sweep off rather than being invalid.
+	zeroed := retentionPolicy{ExpiredSessionDays: 0, LoginAttemptDays: 0, FormDraftDays: 0}
+	if got := zeroed.normalized(); got != zeroed {
+		t.Fatalf("administrator could not disable a sweep: %#v", got)
 	}
-	if got := (retentionPolicy{ExpiredSessionDays: 99999, LoginAttemptDays: 99999}).normalized(); got.ExpiredSessionDays != 3650 {
+	huge := retentionPolicy{ExpiredSessionDays: 99999, LoginAttemptDays: 99999, FormDraftDays: 99999}
+	if got := huge.normalized(); got.ExpiredSessionDays != 3650 || got.LoginAttemptDays != 3650 || got.FormDraftDays != 3650 {
 		t.Fatalf("retention was not capped: %#v", got)
+	}
+	if d.FormDraftDays <= 0 {
+		t.Error("abandoned autosave drafts have no default retention")
 	}
 }
 

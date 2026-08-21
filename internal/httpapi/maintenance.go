@@ -11,10 +11,11 @@ import (
 type retentionPolicy struct {
 	ExpiredSessionDays int `json:"expiredSessionDays"`
 	LoginAttemptDays   int `json:"loginAttemptDays"`
+	FormDraftDays      int `json:"formDraftDays"`
 }
 
 func defaultRetentionPolicy() retentionPolicy {
-	return retentionPolicy{ExpiredSessionDays: 7, LoginAttemptDays: 30}
+	return retentionPolicy{ExpiredSessionDays: 7, LoginAttemptDays: 30, FormDraftDays: 60}
 }
 
 func (p retentionPolicy) normalized() retentionPolicy {
@@ -30,6 +31,7 @@ func (p retentionPolicy) normalized() retentionPolicy {
 	d := defaultRetentionPolicy()
 	p.ExpiredSessionDays = clamp(p.ExpiredSessionDays, d.ExpiredSessionDays)
 	p.LoginAttemptDays = clamp(p.LoginAttemptDays, d.LoginAttemptDays)
+	p.FormDraftDays = clamp(p.FormDraftDays, d.FormDraftDays)
 	return p
 }
 
@@ -55,6 +57,9 @@ func (a *App) purgeExpired(ctx context.Context) error {
 	}{
 		{"sessions", policy.ExpiredSessionDays, `DELETE FROM sessions WHERE expires_at < now()-make_interval(days => $1)`},
 		{"login_attempts", policy.LoginAttemptDays, `DELETE FROM login_attempts WHERE created_at < now()-make_interval(days => $1)`},
+		// An abandoned autosave is not business data; it is the leftover of a form
+		// the user never submitted.
+		{"user_form_drafts", policy.FormDraftDays, `DELETE FROM user_form_drafts WHERE updated_at < now()-make_interval(days => $1)`},
 	}
 	for _, sweep := range sweeps {
 		if sweep.days <= 0 {
