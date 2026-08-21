@@ -481,6 +481,8 @@ type AccessGrant = {
 };
 function UsersPanel() {
   const [users, setUsers] = useState<User[]>();
+  const [truncated, setTruncated] = useState(false);
+  const [userQuery, setUserQuery] = useState("");
   const [roles, setRoles] = useState<AdminRole[]>([]);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [grants, setGrants] = useState<AccessGrant[]>([]);
@@ -490,21 +492,29 @@ function UsersPanel() {
   >();
   const [editingUser, setEditingUser] = useState<User>();
   const [editingRole, setEditingRole] = useState<AdminRole>();
-  const load = () =>
-    Promise.all([
-      api<{ items: User[] }>("/api/v1/admin/users"),
-      api<{ items: AdminRole[] }>("/api/v1/admin/roles"),
-      api<{ items: Organization[] }>("/api/v1/admin/organizations"),
-      api<{ items: AccessGrant[] }>("/api/v1/admin/access-grants"),
-    ]).then(([u, r, o, g]) => {
-      setUsers(u.items);
-      setRoles(r.items);
-      setOrganizations(o.items);
-      setGrants(g.items);
-    });
+  const load = useCallback(
+    (query = userQuery) =>
+      Promise.all([
+        api<{ items: User[]; truncated: boolean }>(
+          `/api/v1/admin/users?q=${encodeURIComponent(query)}`,
+        ),
+        api<{ items: AdminRole[] }>("/api/v1/admin/roles"),
+        api<{ items: Organization[] }>("/api/v1/admin/organizations"),
+        api<{ items: AccessGrant[] }>("/api/v1/admin/access-grants"),
+      ]).then(([u, r, o, g]) => {
+        setUsers(u.items);
+        setTruncated(u.truncated);
+        setRoles(r.items);
+        setOrganizations(o.items);
+        setGrants(g.items);
+      }),
+    [userQuery],
+  );
   useEffect(() => {
-    load();
-  }, []);
+    // Debounce so typing in the search box does not query on every keystroke.
+    const timer = setTimeout(() => void load(userQuery), 250);
+    return () => clearTimeout(timer);
+  }, [load, userQuery]);
   if (!users || !roles) return <Loading />;
   const addLabel = {
     users: "사용자 추가",
@@ -555,6 +565,25 @@ function UsersPanel() {
           </button>
         ))}
       </div>
+      {tab === "users" && (
+        <div className="admin-list-controls">
+          <label className="search-box">
+            <Search />
+            <input
+              value={userQuery}
+              onChange={(e) => setUserQuery(e.target.value)}
+              placeholder="이름 또는 이메일로 검색"
+              aria-label="사용자 검색"
+            />
+          </label>
+          {truncated && (
+            <p className="form-error warning" role="status">
+              <AlertCircle />
+              결과가 많아 일부만 표시했습니다. 검색어를 입력해 범위를 좁히세요.
+            </p>
+          )}
+        </div>
+      )}
       {tab === "users" && (
         <table>
           <thead>

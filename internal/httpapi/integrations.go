@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -297,6 +299,15 @@ func (a *App) mcpCall(w http.ResponseWriter, r *http.Request, req rpcRequest) {
 		return
 	}
 	p, _ := principalFrom(r.Context())
+	// Every MCP tool queries across suppliers and scopes results by organisation,
+	// so none of them carry the portal's supplier isolation. REST enforces that
+	// isolation explicitly on each endpoint; refusing portal principals here
+	// keeps the two surfaces from diverging if a supplier account is ever
+	// granted a read permission.
+	if p.UserType == "supplier" {
+		rpcError(w, req.ID, -32001, "Supplier portal accounts cannot use MCP tools")
+		return
+	}
 	if !hasPermission(p, "supplier.read") && !hasPermission(p, "*.read") {
 		rpcError(w, req.ID, -32001, "Insufficient read permission")
 		return
@@ -313,12 +324,27 @@ func (a *App) mcpCall(w http.ResponseWriter, r *http.Request, req rpcRequest) {
 	}
 	result, err := a.runMCPTool(r, call.Name, call.Arguments)
 	if err != nil {
-		rpcResult(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true})
+		// Tool errors are deliberate messages; anything else is an internal
+		// fault whose text (a driver error, a failed cast) belongs in the log
+		// rather than in a response an AI agent will repeat.
+		message := err.Error()
+		if !errors.Is(err, errMCPTool) {
+			slog.Error("mcp tool failed", "tool", call.Name, "error", err, "request_id", requestID(r.Context()))
+			message = "도구를 실행하지 못했습니다"
+		}
+		rpcResult(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": message}}, "isError": true})
 		return
 	}
 	b, _ := json.Marshal(result)
 	a.audit.record(r, "mcp_read", "mcp_tool", call.Name, nil, map[string]any{"arguments": call.Arguments})
 	rpcResult(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": string(b)}}, "structuredContent": result})
+}
+
+// errMCPTool marks a message that is safe and useful to return to the caller.
+var errMCPTool = errors.New("mcp tool")
+
+func mcpToolError(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errMCPTool, fmt.Sprintf(format, args...))
 }
 
 func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any, error) {
@@ -340,10 +366,15 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		return supplierSummaryRows(rows), nil
 	case "get_supplier":
 		s, err := scanSupplier(a.db.QueryRow(ctx, supplierSelect+` WHERE id=$1 AND deleted_at IS NULL`, stringValue(args, "id")))
-		if err == nil && !a.canAccessSupplier(ctx, p, s) {
-			return nil, fmt.Errorf("data scope denied")
+		if err != nil {
+			// A bad id reaches here as a cast error; either way the caller only
+			// needs to know the supplier is not available to them.
+			return nil, mcpToolError("supplier not found")
 		}
-		return redactSupplier(p, s), err
+		if !a.canAccessSupplier(ctx, p, s) {
+			return nil, mcpToolError("data scope denied")
+		}
+		return redactSupplier(p, s), nil
 	case "compare_suppliers":
 		ids := stringSlice(args["ids"])
 		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE id=ANY($1::uuid[]) AND deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name`, ids, p.DataScope, organizationID, p.ID, showSpend)
@@ -354,12 +385,12 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		return supplierSummaryRows(rows), nil
 	case "get_supplier_risk":
 		if !a.supplierScopeAllowed(r, stringValue(args, "supplierId")) {
-			return nil, fmt.Errorf("data scope denied")
+			return nil, mcpToolError("data scope denied")
 		}
 		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'riskType',risk_type,'probability',probability,'impact',impact,'score',score,'severity',severity,'status',status,'description',description,'mitigation',mitigation) FROM risks WHERE supplier_id=$1 ORDER BY score DESC`, stringValue(args, "supplierId"))
 	case "get_supplier_score":
 		if !a.supplierScopeAllowed(r, stringValue(args, "supplierId")) {
-			return nil, fmt.Errorf("data scope denied")
+			return nil, mcpToolError("data scope denied")
 		}
 		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'type',evaluation_type,'status',status,'score',total_score,'grade',grade,'scores',scores,'createdAt',created_at) FROM evaluations WHERE supplier_id=$1 ORDER BY created_at DESC`, stringValue(args, "supplierId"))
 	case "search_contracts":
@@ -378,7 +409,7 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		minScore, _ := args["minScore"].(float64)
 		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'categories',categories,'score',score,'grade',grade,'riskLevel',risk_level,'annualSpend',CASE WHEN $6 THEN annual_spend END) FROM suppliers WHERE deleted_at IS NULL AND status IN('active','approved') AND ($1='' OR categories ? $1) AND COALESCE(score,0)>=$2 AND risk_level NOT IN('CRITICAL') AND (vendra_org_in_scope(organization_id,$3,NULLIF($4,'')::uuid) OR ($3='own' AND owner_id=$5::uuid)) ORDER BY score DESC NULLS LAST,risk_level LIMIT 50`, category, minScore, p.DataScope, organizationID, p.ID, showSpend)
 	default:
-		return nil, fmt.Errorf("unknown tool: %s", name)
+		return nil, mcpToolError("unknown tool: %s", name)
 	}
 }
 
