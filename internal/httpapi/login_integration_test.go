@@ -952,3 +952,68 @@ func TestWorkItemStateBatchSurvivesAMalformedNotificationKey(t *testing.T) {
 		t.Errorf("%d of %d item states were saved; one bad key used to discard the batch", stored, len(keys))
 	}
 }
+
+// TestBankAccountNeverReachesTheAuditLog exercises the full update path: the
+// account number must be readable only through the vault, never from audit_logs.
+func TestBankAccountNeverReachesTheAuditLog(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	const account = "110-9876-543210"
+
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-AUDIT-TEST','감사 검증 공급사','111-11-11111','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE object_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-AUDIT-TEST'`)
+	})
+	// Bank change approval would divert the value into a workflow object; this
+	// test covers the direct write path.
+	_, _ = pool.Exec(ctx, `INSERT INTO settings(key,value,category) VALUES('supplier.registration','{"bankChangeApproval":false}','general')
+		ON CONFLICT(key) DO UPDATE SET value='{"bankChangeApproval":false}'`)
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.130:5000"))
+	body, _ := json.Marshal(map[string]any{"bankAccount": account})
+	r := httptest.NewRequest(http.MethodPatch, "/api/v1/suppliers/"+supplierID, strings.NewReader(string(body)))
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update returned %d: %s", w.Code, w.Body.String())
+	}
+
+	// It must be stored, and stored encrypted.
+	var cipher *string
+	if err := pool.QueryRow(ctx, `SELECT bank_account_encrypted FROM suppliers WHERE id=$1`, supplierID).Scan(&cipher); err != nil {
+		t.Fatalf("read supplier: %v", err)
+	}
+	if cipher == nil || *cipher == "" {
+		t.Fatal("the account was not saved")
+	}
+	if strings.Contains(*cipher, account) {
+		t.Error("the account is stored in the clear")
+	}
+	if decrypted, err := app.vault.Decrypt(*cipher); err != nil || decrypted != account {
+		t.Errorf("the stored ciphertext does not decrypt to the account: %q %v", decrypted, err)
+	}
+
+	// And it must be absent from the audit trail.
+	var auditRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE object_id=$1 AND new_value::text LIKE '%'||$2||'%'`, supplierID, account).Scan(&auditRows); err != nil {
+		t.Fatalf("scan audit: %v", err)
+	}
+	if auditRows != 0 {
+		t.Errorf("the account number appears in %d audit rows", auditRows)
+	}
+	var marked bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM audit_logs WHERE object_id=$1 AND new_value->>'bankAccountChanged'='true')`, supplierID).Scan(&marked); err != nil {
+		t.Fatalf("scan audit marker: %v", err)
+	}
+	if !marked {
+		t.Error("the audit trail no longer records that the account changed")
+	}
+}
