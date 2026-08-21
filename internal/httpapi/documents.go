@@ -108,10 +108,38 @@ func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	if contentType == "" {
 		contentType = mime.TypeByExtension(filepath.Ext(cleanName))
 	}
-	var id string
-	err = a.db.QueryRow(r.Context(), `INSERT INTO documents(supplier_id,object_type,object_id,document_type,name,version,storage_path,content_type,size,checksum,expires_at,uploaded_by) VALUES(NULLIF($1,'')::uuid,NULLIF($2,''),NULLIF($3,'')::uuid,COALESCE(NULLIF($4,''),'other'),$5,COALESCE((SELECT max(version)+1 FROM documents WHERE supplier_id=NULLIF($1,'')::uuid AND document_type=COALESCE(NULLIF($4,''),'other') AND name=$5),1),$6,$7,$8,$9,NULLIF($10,'')::date,$11::uuid) RETURNING id`, r.FormValue("supplierId"), r.FormValue("objectType"), r.FormValue("objectId"), r.FormValue("documentType"), cleanName, path, contentType, size, hex.EncodeToString(hash.Sum(nil)), r.FormValue("expiresAt"), p.ID).Scan(&id)
+	// The version is max(version)+1 over the document's own history, which two
+	// concurrent uploads can evaluate against the same snapshot and both claim.
+	// A transaction-scoped advisory lock keyed on that history serialises the
+	// numbering; uploads of different documents are unaffected.
+	documentType := r.FormValue("documentType")
+	if documentType == "" {
+		documentType = "other"
+	}
+	// Unit separator, not NUL: PostgreSQL text cannot hold a NUL byte. A key
+	// collision would only make two documents share a lock, which is harmless.
+	versionKey := r.FormValue("supplierId") + "\x1f" + documentType + "\x1f" + cleanName
+	tx, err := a.db.Begin(r.Context())
 	if err != nil {
 		_ = os.Remove(path)
+		writeError(w, 500, "database_error", "문서 정보를 저장하지 못했습니다")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, err := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, versionKey); err != nil {
+		_ = os.Remove(path)
+		logDB(err)
+		writeError(w, 500, "database_error", "문서 정보를 저장하지 못했습니다")
+		return
+	}
+	var id string
+	err = tx.QueryRow(r.Context(), `INSERT INTO documents(supplier_id,object_type,object_id,document_type,name,version,storage_path,content_type,size,checksum,expires_at,uploaded_by) VALUES(NULLIF($1,'')::uuid,NULLIF($2,''),NULLIF($3,'')::uuid,COALESCE(NULLIF($4,''),'other'),$5,COALESCE((SELECT max(version)+1 FROM documents WHERE supplier_id=NULLIF($1,'')::uuid AND document_type=COALESCE(NULLIF($4,''),'other') AND name=$5),1),$6,$7,$8,$9,NULLIF($10,'')::date,$11::uuid) RETURNING id`, r.FormValue("supplierId"), r.FormValue("objectType"), r.FormValue("objectId"), r.FormValue("documentType"), cleanName, path, contentType, size, hex.EncodeToString(hash.Sum(nil)), r.FormValue("expiresAt"), p.ID).Scan(&id)
+	if err == nil {
+		err = tx.Commit(r.Context())
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		logDB(err)
 		writeError(w, 400, "save_failed", "문서 정보를 저장하지 못했습니다")
 		return
 	}
