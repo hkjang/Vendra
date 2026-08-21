@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -52,16 +52,23 @@ export default function Suppliers() {
     items: Supplier[];
     truncated: boolean;
   }>({ key: "", items: [], truncated: false });
+  const loadSequence = useRef(0);
   const load = useCallback(() => {
+    // Typing fires a request per keystroke, so an earlier one can answer after a
+    // later one. Without this guard the stale reply overwrote the current result
+    // and left result.key mismatched, which reads as loading and shows nothing
+    // until the query changes again.
+    const sequence = ++loadSequence.current;
     return api<{ items: Supplier[]; truncated?: boolean }>(
       `/api/v1/suppliers?q=${encodeURIComponent(q)}&status=${status}&risk=${risk}`,
-    ).then((response) =>
+    ).then((response) => {
+      if (sequence !== loadSequence.current) return;
       setResult({
         key: requestKey,
         items: response.items,
         truncated: Boolean(response.truncated),
-      }),
-    );
+      });
+    });
   }, [q, requestKey, status, risk]);
   useEffect(() => {
     void load();
