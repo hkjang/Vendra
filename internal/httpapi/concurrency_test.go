@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -190,5 +192,81 @@ func TestConcurrentApprovalsActOnce(t *testing.T) {
 	}
 	if actions != 1 {
 		t.Errorf("%d decisions recorded in the audit trail for one approval", actions)
+	}
+}
+
+// TestConcurrentUploadsGetDistinctVersions races uploads of the same document
+// name. The version is computed as max(version)+1 inside the insert, which two
+// concurrent statements can evaluate against the same snapshot.
+func TestConcurrentUploadsGetDistinctVersions(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	storage := t.TempDir()
+	if _, err := pool.Exec(ctx, `INSERT INTO settings(key,value,category) VALUES('storage',$1,'document')
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, fmt.Sprintf(`{"driver":"filesystem","path":%q}`, storage)); err != nil {
+		t.Fatalf("point storage at the test directory: %v", err)
+	}
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-VER-RACE','버전 경합','444-44-44444','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	t.Cleanup(func() {
+		clean := context.Background()
+		_, _ = pool.Exec(clean, `DELETE FROM documents WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(clean, `DELETE FROM suppliers WHERE supplier_number='SUP-VER-RACE'`)
+		_, _ = pool.Exec(clean, `UPDATE settings SET value='{"driver":"filesystem","path":"/var/lib/vendra/documents"}' WHERE key='storage'`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.250:5000"))
+
+	const uploaders = 12
+	var start, done sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < uploaders; i++ {
+		done.Add(1)
+		go func(i int) {
+			defer done.Done()
+			var body bytes.Buffer
+			form := multipart.NewWriter(&body)
+			part, err := form.CreateFormFile("file", "VERRACE 계약서.pdf")
+			if err != nil {
+				return
+			}
+			_, _ = part.Write([]byte(fmt.Sprintf("본문 %d", i)))
+			_ = form.WriteField("documentType", "contract")
+			_ = form.WriteField("supplierId", supplierID)
+			_ = form.Close()
+			start.Wait()
+			r := httptest.NewRequest(http.MethodPost, "/api/v1/documents/upload", &body)
+			r.Header.Set("Content-Type", form.FormDataContentType())
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+			handler.ServeHTTP(httptest.NewRecorder(), r)
+		}(i)
+	}
+	start.Done()
+	done.Wait()
+
+	rows, err := pool.Query(ctx, `SELECT version, count(*) FROM documents WHERE supplier_id=$1 GROUP BY version HAVING count(*)>1 ORDER BY version`, supplierID)
+	if err != nil {
+		t.Fatalf("query versions: %v", err)
+	}
+	defer rows.Close()
+	collisions := map[int]int{}
+	for rows.Next() {
+		var version, count int
+		if rows.Scan(&version, &count) == nil {
+			collisions[version] = count
+		}
+	}
+	var stored int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM documents WHERE supplier_id=$1`, supplierID).Scan(&stored); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if len(collisions) > 0 {
+		t.Errorf("%d of %d uploads share a version number with another: %v — the version history cannot say which file is which", len(collisions), stored, collisions)
 	}
 }
