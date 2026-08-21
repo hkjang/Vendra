@@ -1211,3 +1211,93 @@ func TestListsReportWhenTheyAreCutOff(t *testing.T) {
 		t.Error("a complete page was reported as truncated")
 	}
 }
+
+// TestSupplyRelationshipRespectsScope is the sibling of the business object
+// write-scope check: the network graph filters both ends of every edge, so the
+// write must too.
+func TestSupplyRelationshipRespectsScope(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var mine, other string
+	for _, seed := range []struct {
+		name string
+		dest *string
+	}{{"관계검증 본부", &mine}, {"관계검증 타본부", &other}} {
+		if err := pool.QueryRow(ctx, `INSERT INTO organizations(name,path) VALUES($1,'/') ON CONFLICT DO NOTHING RETURNING id`, seed.name).Scan(seed.dest); err != nil {
+			if err := pool.QueryRow(ctx, `SELECT id FROM organizations WHERE name=$1`, seed.name).Scan(seed.dest); err != nil {
+				t.Fatalf("seed org %s: %v", seed.name, err)
+			}
+		}
+	}
+	newSupplier := func(number, name, org string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status,organization_id) VALUES($1,$2,$1,'active',$3)
+			ON CONFLICT(supplier_number) DO UPDATE SET organization_id=excluded.organization_id RETURNING id`, number, name, org).Scan(&id); err != nil {
+			t.Fatalf("seed supplier: %v", err)
+		}
+		return id
+	}
+	inScope := newSupplier("SUP-REL-MINE", "우리 공급사", mine)
+	outOfScope := newSupplier("SUP-REL-OTHER", "타 본부 공급사", other)
+
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('rel_dept_buyer','관계검증 구매','["supplier.read","supplier.update"]','department',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions,data_scope='department' RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	const email = "rel-buyer@vendra.test"
+	const password = "RelPassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,organization_id) VALUES($1,'관계 검증자',$2,'internal','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,organization_id=excluded.organization_id,status='active' RETURNING id`, email, hash, mine).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, roleID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM supplier_relationships WHERE source_supplier_id IN ($1,$2) OR target_supplier_id IN ($1,$2)`, inScope, outOfScope)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='rel_dept_buyer'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number IN ('SUP-REL-MINE','SUP-REL-OTHER')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM organizations WHERE name IN ('관계검증 본부','관계검증 타본부')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	token := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.170:5000"))
+	relate := func(source, target string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"sourceSupplierId": source, "targetSupplierId": target, "relationshipType": "tier2"})
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/supplier-network/relationships", strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	if got := relate(inScope, outOfScope).Code; got != http.StatusForbidden {
+		t.Errorf("drawing an edge to a supplier out of scope returned %d, want 403", got)
+	}
+	if got := relate(outOfScope, inScope).Code; got != http.StatusForbidden {
+		t.Errorf("the reversed direction returned %d, want 403", got)
+	}
+	var planted int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM supplier_relationships WHERE source_supplier_id=$1 OR target_supplier_id=$1`, outOfScope).Scan(&planted); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if planted != 0 {
+		t.Errorf("%d edges were written against a supplier the author cannot see", planted)
+	}
+	// An edge entirely inside the caller's scope still works.
+	second := newSupplier("SUP-REL-MINE2", "우리 공급사 2", mine)
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-REL-MINE2'`) })
+	if got := relate(inScope, second).Code; got != http.StatusCreated {
+		t.Errorf("an in-scope relationship returned %d, want 201", got)
+	}
+}
