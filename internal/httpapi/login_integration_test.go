@@ -1154,3 +1154,60 @@ func TestObjectCreationRespectsOrganisationScope(t *testing.T) {
 		t.Errorf("creating in the caller's own organisation returned %d, want 201", got)
 	}
 }
+
+// TestListsReportWhenTheyAreCutOff covers the presentation defect the search and
+// administration lists already hit: a page that silently stops at its limit
+// reads as "this is everything".
+func TestListsReportWhenTheyAreCutOff(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	for i := 0; i < 7; i++ {
+		if _, err := pool.Exec(ctx, `INSERT INTO business_objects(object_type,number,title,status,owner_id,created_by) VALUES('contract',$1,$2,'active',$3,$3) ON CONFLICT DO NOTHING`,
+			fmt.Sprintf("TRUNCTEST-%02d", i), fmt.Sprintf("절단 검증 계약 %02d", i), adminID); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number LIKE 'TRUNCTEST-%'`) })
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.160:5000"))
+	read := func(query string) (int, bool, int) {
+		t.Helper()
+		w := doRequest(t, handler, http.MethodGet, "/api/v1/contracts?"+query, admin)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list returned %d: %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Items     []map[string]any `json:"items"`
+			Truncated bool             `json:"truncated"`
+			Limit     int              `json:"limit"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return len(body.Items), body.Truncated, body.Limit
+	}
+
+	items, cut, limit := read("limit=3&q=" + url.QueryEscape("절단 검증"))
+	if items != 3 || limit != 3 {
+		t.Fatalf("got %d items with limit %d, want 3/3", items, limit)
+	}
+	if !cut {
+		t.Error("a cut-off page reported truncated=false")
+	}
+	// The probe row fetched to detect truncation must not be served.
+	if items > limit {
+		t.Errorf("returned %d items for a limit of %d", items, limit)
+	}
+	// A page that holds everything is not flagged.
+	if items, cut, _ = read("limit=50&q=" + url.QueryEscape("절단 검증")); items != 7 {
+		t.Errorf("got %d items, want all 7", items)
+	} else if cut {
+		t.Error("a complete page was reported as truncated")
+	}
+}

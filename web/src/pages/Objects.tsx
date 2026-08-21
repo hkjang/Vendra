@@ -173,7 +173,8 @@ function ObjectList({ type }: { type: string }) {
   const [result, setResult] = useState<{
     key: string;
     items: BusinessObject[];
-  }>({ key: "", items: [] });
+    truncated: boolean;
+  }>({ key: "", items: [], truncated: false });
   const [modal, setModal] = useState(false);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [views, setViews] = useState<SavedView[]>([]);
@@ -189,10 +190,15 @@ function ObjectList({ type }: { type: string }) {
   const viewContext = `object:${type}`;
   const load = useCallback(() => {
     const sequence = ++loadSequence.current;
-    return api<{ items: BusinessObject[] }>(
+    return api<{ items: BusinessObject[]; truncated?: boolean }>(
       `${c.endpoint}?q=${encodeURIComponent(q)}&status=${status}&order=${order}`,
     ).then((response) => {
-      if (sequence === loadSequence.current) setResult({ key: requestKey, items: response.items });
+      if (sequence === loadSequence.current)
+        setResult({
+          key: requestKey,
+          items: response.items,
+          truncated: Boolean(response.truncated),
+        });
     });
   }, [c.endpoint, order, q, requestKey, status]);
   useEffect(() => {
@@ -270,6 +276,7 @@ function ObjectList({ type }: { type: string }) {
   }
   const loading = result.key !== requestKey;
   const items = loading ? [] : result.items;
+  const truncated = !loading && result.truncated;
   return (
     <div className="page">
       <PageHeader
@@ -283,6 +290,12 @@ function ObjectList({ type }: { type: string }) {
           </button>
         }
       />
+      {truncated && (
+        <p className="form-error warning list-truncated" role="status">
+          <AlertCircle />
+          결과가 많아 일부만 표시했습니다. 검색이나 필터로 범위를 좁히세요.
+        </p>
+      )}
       <div className="toolbar object-toolbar">
         <div className="search-box">
           <Search />

@@ -151,7 +151,8 @@ func (a *App) listDocuments(w http.ResponseWriter, r *http.Request) {
 	if p.SupplierID != nil {
 		principalSupplierID = *p.SupplierID
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT d.id,d.supplier_id,d.object_type,d.object_id,d.document_type,d.name,d.version,d.content_type,d.size,d.checksum,to_char(d.expires_at,'YYYY-MM-DD'),d.status,d.uploaded_by,d.created_at FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id LEFT JOIN business_objects o ON o.id=d.object_id WHERE ($1='' OR d.supplier_id=$1::uuid) AND (($3='supplier' AND d.supplier_id=NULLIF($6,'')::uuid) OR ($3<>'supplier' AND (vendra_org_in_scope(s.organization_id,$4,NULLIF($5,'')::uuid) OR vendra_org_in_scope(o.organization_id,$4,NULLIF($5,'')::uuid) OR ($4='own' AND (s.owner_id=$7::uuid OR o.owner_id=$7::uuid OR d.uploaded_by=$7::uuid))))) ORDER BY d.created_at DESC LIMIT $2`, supplierID, parseLimit(r, 200), p.UserType, p.DataScope, organizationID, principalSupplierID, p.ID)
+	limit := parseLimit(r, 200)
+	rows, err := a.db.Query(r.Context(), `SELECT d.id,d.supplier_id,d.object_type,d.object_id,d.document_type,d.name,d.version,d.content_type,d.size,d.checksum,to_char(d.expires_at,'YYYY-MM-DD'),d.status,d.uploaded_by,d.created_at FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id LEFT JOIN business_objects o ON o.id=d.object_id WHERE ($1='' OR d.supplier_id=$1::uuid) AND (($3='supplier' AND d.supplier_id=NULLIF($6,'')::uuid) OR ($3<>'supplier' AND (vendra_org_in_scope(s.organization_id,$4,NULLIF($5,'')::uuid) OR vendra_org_in_scope(o.organization_id,$4,NULLIF($5,'')::uuid) OR ($4='own' AND (s.owner_id=$7::uuid OR o.owner_id=$7::uuid OR d.uploaded_by=$7::uuid))))) ORDER BY d.created_at DESC LIMIT $2`, supplierID, limit+1, p.UserType, p.DataScope, organizationID, principalSupplierID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "문서를 조회하지 못했습니다")
 		return
@@ -168,7 +169,8 @@ func (a *App) listDocuments(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"id": id, "supplierId": linkedSupplierID, "objectType": objectType, "objectId": objectID, "documentType": typ, "name": name, "version": version, "contentType": contentType, "size": size, "checksum": checksum, "expiresAt": expires, "status": status, "uploadedBy": uploader, "createdAt": created})
 		}
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	items, truncated := truncate(items, limit)
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
 func (a *App) downloadDocument(w http.ResponseWriter, r *http.Request) {

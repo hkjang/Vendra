@@ -61,6 +61,17 @@ func scanObject(row pgx.Row) (businessObject, error) {
 	return o, err
 }
 
+// truncate reports whether more rows exist than the caller asked for. Queries
+// fetch limit+1 so the extra row answers the question without a second count;
+// it is dropped before the response goes out. A list that silently stops at its
+// limit reads as "this is everything", which is worse than no limit at all.
+func truncate[T any](items []T, limit int) ([]T, bool) {
+	if len(items) > limit {
+		return items[:limit], true
+	}
+	return items, false
+}
+
 func (a *App) listObjects(objectType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := principalFrom(r.Context())
@@ -75,7 +86,7 @@ func (a *App) listObjects(objectType string) http.HandlerFunc {
 		}
 		orderBy := objectOrderBy(order, hasPermission(p, objectType+".amount.read"))
 		query := objectSelect + ` WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.status=$2) AND ($3='' OR o.supplier_id=$3::uuid) AND ($4='' OR o.title ILIKE '%'||$4||'%' OR o.number ILIKE '%'||$4||'%') AND (vendra_org_in_scope(o.organization_id,$6,NULLIF($7,'')::uuid) OR ($6='own' AND o.owner_id=$8::uuid)) ORDER BY ` + orderBy + ` LIMIT $5`
-		rows, err := a.db.Query(r.Context(), query, objectType, status, supplierID, q, limit, p.DataScope, organizationID, p.ID)
+		rows, err := a.db.Query(r.Context(), query, objectType, status, supplierID, q, limit+1, p.DataScope, organizationID, p.ID)
 		if err != nil {
 			logDB(err)
 			writeError(w, 500, "database_error", "목록을 조회하지 못했습니다")
@@ -91,7 +102,8 @@ func (a *App) listObjects(objectType string) http.HandlerFunc {
 			}
 			items = append(items, redactObject(p, o))
 		}
-		writeJSON(w, 200, map[string]any{"items": items, "count": len(items)})
+		items, truncated := truncate(items, limit)
+		writeJSON(w, 200, map[string]any{"items": items, "count": len(items), "limit": limit, "truncated": truncated})
 	}
 }
 
