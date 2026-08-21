@@ -484,6 +484,16 @@ func (a *App) createSupplierRelationship(w http.ResponseWriter, r *http.Request)
 	if in.Criticality == "" {
 		in.Criticality = "normal"
 	}
+	// Both ends must be in scope. The network graph filters every edge by the
+	// organisation of both suppliers, so an unchecked write let a caller draw a
+	// supply relationship between suppliers they cannot see: the edge then
+	// showed up in another organisation's graph and cascade-risk analysis while
+	// staying invisible to its author. The spend transaction beside this one
+	// already performed the same check.
+	if !a.supplierScopeAllowed(r, in.SourceSupplierID) || !a.supplierScopeAllowed(r, in.TargetSupplierID) {
+		writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어난 공급업체입니다")
+		return
+	}
 	var id string
 	err := a.db.QueryRow(r.Context(), `INSERT INTO supplier_relationships(source_supplier_id,target_supplier_id,relationship_type,criticality,supplied_categories,dependency_percent,notes,created_by) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8) ON CONFLICT(source_supplier_id,target_supplier_id,relationship_type) DO UPDATE SET criticality=excluded.criticality,supplied_categories=excluded.supplied_categories,dependency_percent=excluded.dependency_percent,notes=excluded.notes RETURNING id`, in.SourceSupplierID, in.TargetSupplierID, in.RelationshipType, in.Criticality, raw(in.Categories), in.DependencyPercent, in.Notes, p.ID).Scan(&id)
 	if err != nil {
