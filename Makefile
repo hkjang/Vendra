@@ -1,6 +1,6 @@
 .PHONY: dev test build image offline-release
 
-VERSION ?= 0.6.11
+VERSION ?= 0.6.12
 IMAGE ?= vendra:v$(VERSION)
 
 dev:
