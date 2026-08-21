@@ -27,6 +27,14 @@ Embedded, ordered SQL migrations run inside a PostgreSQL transaction at startup.
 
 배경 작업은 매시간 최대 50건을 순차 전송하며, 응답하지 않는 어댑터는 설정된 시간에 끊고 다음 건으로 넘어갑니다. 5회 실패한 전송은 재시도하지 않습니다. 한 번의 배경 작업 전체에도 30분 상한이 있어 어떤 통합이나 질의도 매시간 반복 실행을 영구히 멈출 수 없습니다.
 
+## Performance
+
+읽기 경로는 공급업체 5천, 업무 5만, 지출 10만, 문서 2만, 감사로그 20만 건 규모에서 측정합니다. 대시보드와 업무 관제탑은 범위 안 업무를 집계하므로 데이터 양에 비례합니다(위 규모에서 약 110ms). 목록 조회는 인덱스로 상수 시간에 가깝습니다.
+
+```bash
+VENDRA_PERF=1 VENDRA_TEST_DSN="postgres://..." go test ./internal/httpapi/ -run TestMeasureEndpointLatency -v
+```
+
 ## Retention
 
 만료된 운영 데이터는 시간당 백그라운드 스윕이 정리합니다. `maintenance.retention` 설정으로 조정하며 `0`은 해당 스윕을 끕니다.
