@@ -4730,3 +4730,7 @@ kbd {
   max-width: 320px;
   margin: 0;
 }
+
+.list-truncated {
+  margin: 0 0 14px;
+}

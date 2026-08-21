@@ -47,14 +47,21 @@ export default function Suppliers() {
   const status = params.get("status") || "";
   const risk = params.get("risk") || "";
   const requestKey = `${q}\u0000${status}\u0000${risk}`;
-  const [result, setResult] = useState<{ key: string; items: Supplier[] }>({
-    key: "",
-    items: [],
-  });
+  const [result, setResult] = useState<{
+    key: string;
+    items: Supplier[];
+    truncated: boolean;
+  }>({ key: "", items: [], truncated: false });
   const load = useCallback(() => {
-    return api<{ items: Supplier[] }>(
+    return api<{ items: Supplier[]; truncated?: boolean }>(
       `/api/v1/suppliers?q=${encodeURIComponent(q)}&status=${status}&risk=${risk}`,
-    ).then((response) => setResult({ key: requestKey, items: response.items }));
+    ).then((response) =>
+      setResult({
+        key: requestKey,
+        items: response.items,
+        truncated: Boolean(response.truncated),
+      }),
+    );
   }, [q, requestKey, status, risk]);
   useEffect(() => {
     void load();
@@ -67,6 +74,7 @@ export default function Suppliers() {
   }
   const loading = result.key !== requestKey;
   const items = loading ? [] : result.items;
+  const truncated = !loading && result.truncated;
   return (
     <div className="page">
       <PageHeader
@@ -80,6 +88,12 @@ export default function Suppliers() {
           </button>
         }
       />
+      {truncated && (
+        <p className="form-error warning list-truncated" role="status">
+          <AlertCircle />
+          결과가 많아 일부만 표시했습니다. 검색이나 필터로 범위를 좁히세요.
+        </p>
+      )}
       <div className="toolbar">
         <div className="search-box">
           <Search />
