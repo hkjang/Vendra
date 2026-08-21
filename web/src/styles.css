@@ -4705,3 +4705,13 @@ kbd {
   outline-offset: 3px;
   border-radius: 6px;
 }
+
+/* Card header and attention links ("전체 보기", "승인함") sat at their bare line
+   height of 18-19px, under the 24px minimum for a pointer target. They are
+   standalone card actions, not links inside a sentence. */
+.card-head a,
+.attention a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+}

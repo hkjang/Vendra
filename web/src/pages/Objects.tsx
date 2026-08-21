@@ -290,9 +290,14 @@ function ObjectList({ type }: { type: string }) {
             value={q}
             onChange={(e) => set("q", e.target.value)}
             placeholder="번호 또는 제목 검색"
+            aria-label="번호 또는 제목 검색"
           />
         </div>
-        <select value={status} onChange={(e) => set("status", e.target.value)}>
+        <select
+          value={status}
+          onChange={(e) => set("status", e.target.value)}
+          aria-label="상태 필터"
+        >
           <option value="">모든 상태</option>
           <option value="draft">초안</option>
           <option value="pending_approval">승인 대기</option>
