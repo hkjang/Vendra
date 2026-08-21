@@ -1081,3 +1081,76 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 		t.Errorf("a submitted bid is still hidden: %s", after.Body.String())
 	}
 }
+
+// TestObjectCreationRespectsOrganisationScope covers the write side of data
+// scope: reads were always filtered, but a create took whatever organisation the
+// client named, letting a user file records into one they cannot see.
+func TestObjectCreationRespectsOrganisationScope(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var mine, other string
+	if err := pool.QueryRow(ctx, `INSERT INTO organizations(name,path) VALUES('범위검증 본부','/') ON CONFLICT DO NOTHING RETURNING id`).Scan(&mine); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT id FROM organizations WHERE name='범위검증 본부'`).Scan(&mine); err != nil {
+			t.Fatalf("seed org: %v", err)
+		}
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO organizations(name,path) VALUES('타 본부','/') ON CONFLICT DO NOTHING RETURNING id`).Scan(&other); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT id FROM organizations WHERE name='타 본부'`).Scan(&other); err != nil {
+			t.Fatalf("seed other org: %v", err)
+		}
+	}
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('scope_dept_buyer','범위검증 구매','["contract.read","contract.create","contract.update"]','department',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions,data_scope='department' RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	const email = "scope-buyer@vendra.test"
+	const password = "ScopePassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,organization_id) VALUES($1,'범위 검증자',$2,'internal','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,organization_id=excluded.organization_id,status='active' RETURNING id`, email, hash, mine).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, roleID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number LIKE 'SCOPETEST-%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='scope_dept_buyer'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM organizations WHERE name IN ('범위검증 본부','타 본부')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	token := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.150:5000"))
+	create := func(number, organizationID string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"title": "범위 검증 계약", "number": number, "organizationId": organizationID})
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/contracts", strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	// Planting a record in another organisation must be refused.
+	if got := create("SCOPETEST-OTHER", other).Code; got != http.StatusForbidden {
+		t.Errorf("creating into another organisation returned %d, want 403", got)
+	}
+	var planted int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM business_objects WHERE number='SCOPETEST-OTHER'`).Scan(&planted); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if planted != 0 {
+		t.Error("the record was written into an organisation the author cannot see")
+	}
+	// Their own organisation still works.
+	if got := create("SCOPETEST-MINE", mine).Code; got != http.StatusCreated {
+		t.Errorf("creating in the caller's own organisation returned %d, want 201", got)
+	}
+}
