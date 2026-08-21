@@ -6,6 +6,9 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) {
 	paths := map[string]any{
 		"/api/v1/me":                                  map[string]any{"get": operation("Identity", "내 프로필 조회"), "patch": operation("Identity", "내 프로필 수정")},
 		"/api/v1/me/password":                         map[string]any{"post": operation("Identity", "내 비밀번호 변경 및 다른 세션 폐기")},
+		"/api/v1/me/sessions":                         map[string]any{"get": operation("Identity", "내 활성 세션 목록")},
+		"/api/v1/me/sessions/revoke-others":           map[string]any{"post": operation("Identity", "현재 세션을 제외한 모든 세션 종료")},
+		"/api/v1/me/sessions/{id}":                    oneID("delete", "Identity", "특정 세션 종료"),
 		"/api/v1/suppliers":                           crudPath("Supplier", "공급업체 목록과 등록"),
 		"/api/v1/suppliers/{id}":                      itemPath("Supplier", "Supplier 360 기본정보"),
 		"/api/v1/suppliers/{id}/activity":             oneID("get", "Supplier", "공급업체 활동 및 감사 이력"),

@@ -29,6 +29,7 @@ import {
   RiskBadge,
 } from "../components";
 import { statusTone } from "../status";
+import { errorMessage, useNotify } from "../toast-context";
 import { BusinessObject, Supplier } from "../types";
 import { DocumentUpload } from "./Suppliers";
 
@@ -388,11 +389,25 @@ function PortalWork({
   onSaved: () => void;
 }) {
   const [create, setCreate] = useState(false);
+  const [confirming, setConfirming] = useState<string>();
+  const notify = useNotify();
   async function confirm(id: string, objectType: string) {
     const endpoint =
       objectType === "contract" ? "contracts" : "purchase-orders";
-    await post(`/api/v1/portal/${endpoint}/${id}/confirm`, {});
-    onSaved();
+    setConfirming(id);
+    try {
+      await post(`/api/v1/portal/${endpoint}/${id}/confirm`, {});
+      notify(
+        objectType === "contract"
+          ? "계약을 확인했습니다."
+          : "발주를 확인했습니다.",
+      );
+      onSaved();
+    } catch (e) {
+      notify(errorMessage(e, "확인 처리를 하지 못했습니다"), "error");
+    } finally {
+      setConfirming(undefined);
+    }
   }
   return (
     <div className="portal-page">
@@ -453,8 +468,9 @@ function PortalWork({
                       <button
                         className="button secondary compact"
                         onClick={() => confirm(o.id, type)}
+                        disabled={confirming === o.id}
                       >
-                        발주 확인
+                        {confirming === o.id ? "확인 중…" : "발주 확인"}
                       </button>
                     ) : type === "contract" &&
                       ["approved", "active", "sent", "executed"].includes(
@@ -464,8 +480,9 @@ function PortalWork({
                       <button
                         className="button secondary compact"
                         onClick={() => confirm(o.id, type)}
+                        disabled={confirming === o.id}
                       >
-                        계약 확인
+                        {confirming === o.id ? "확인 중…" : "계약 확인"}
                       </button>
                     ) : (
                       <ChevronRight />
@@ -511,14 +528,24 @@ function PortalSourcing({
   const [selected, setSelected] = useState<SourcingItem>();
   const [declining, setDeclining] = useState<SourcingItem>();
   const [declineReason, setDeclineReason] = useState("");
+  const [declineBusy, setDeclineBusy] = useState(false);
+  const notify = useNotify();
   async function decline() {
     if (!declining) return;
-    await post(`/api/v1/portal/sourcing/${declining.id}/decline`, {
-      reason: declineReason,
-    });
-    setDeclining(undefined);
-    setDeclineReason("");
-    onSaved();
+    setDeclineBusy(true);
+    try {
+      await post(`/api/v1/portal/sourcing/${declining.id}/decline`, {
+        reason: declineReason,
+      });
+      notify("참여 거절을 전달했습니다.");
+      setDeclining(undefined);
+      setDeclineReason("");
+      onSaved();
+    } catch (e) {
+      notify(errorMessage(e, "거절을 전달하지 못했습니다"), "error");
+    } finally {
+      setDeclineBusy(false);
+    }
   }
   return (
     <div className="portal-page">
@@ -617,9 +644,9 @@ function PortalSourcing({
               type="button"
               className="button danger"
               onClick={() => void decline()}
-              disabled={!declineReason.trim()}
+              disabled={declineBusy || !declineReason.trim()}
             >
-              참여 거절 확정
+              {declineBusy ? "전달 중…" : "참여 거절 확정"}
             </button>
           </div>
         </Modal>
@@ -965,6 +992,7 @@ function PortalContacts() {
   const [items, setItems] = useState<PortalContact[]>();
   const [create, setCreate] = useState(false);
   const [verificationUrl, setVerificationUrl] = useState("");
+  const notify = useNotify();
   const load = useCallback(
     () =>
       api<{ items: PortalContact[] }>("/api/v1/portal/contacts").then((x) =>
@@ -977,11 +1005,15 @@ function PortalContacts() {
   }, [load]);
   if (!items) return <Loading />;
   async function verify(id: string) {
-    const result = await post<{ verificationUrl: string }>(
-      `/api/v1/portal/contacts/${id}/verification`,
-      {},
-    );
-    setVerificationUrl(result.verificationUrl);
+    try {
+      const result = await post<{ verificationUrl: string }>(
+        `/api/v1/portal/contacts/${id}/verification`,
+        {},
+      );
+      setVerificationUrl(result.verificationUrl);
+    } catch (e) {
+      notify(errorMessage(e, "인증 링크를 만들지 못했습니다"), "error");
+    }
   }
   return (
     <div className="portal-page">

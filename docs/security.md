@@ -37,12 +37,16 @@
 - Amount fields are removed unless the Principal has the domain amount permission or wildcard.
 - `access_grants` supports resource conditions, valid-from/until and delegated-by for temporary access/delegation.
 - Workflow step role and object conditions enforce approval authority.
+- 승인 단계는 상신 시점에 인스턴스로 스냅샷되므로, 관리자가 워크플로 정의를 바꿔도 이미 진행 중인 승인의 단계·순서·역할은 바뀌지 않습니다.
+- `workflow.separation_of_duties`의 `blockSelfApproval`을 켜면 본인이 요청한 건을 승인하거나 반려할 수 없습니다. 보완 요청은 결재가 아니라 반환이므로 허용됩니다. 기본값은 꺼짐이며 감사 요건이 있는 조직은 켜는 것을 권장합니다.
 
 ## Encryption and audit
 
 OIDC/AI secrets and bank accounts use AES-256-GCM with versioned ciphertext and authenticated context. `ENCRYPTION_KEY` is never stored in PostgreSQL. Audit events include actor, timestamp, action, object, before/after JSON, IP, session and request ID.
 
-Document upload limits size, strips paths from filenames, assigns an opaque storage name, records SHA-256 and validates that downloads stay under the configured storage root.
+Document upload limits size, strips paths from filenames, assigns an opaque storage name, records SHA-256 and validates that downloads stay under the configured storage root. 파일명은 업로더가 정하는 값이므로 `Content-Disposition`에 RFC 8187 ext-value로 완전히 percent-encoding해 내보내며, 파라미터를 추가하거나 벗어날 수 없습니다. `filename*`을 무시하는 클라이언트를 위해 ASCII `filename` 대체값도 함께 보냅니다.
+
+사용자는 `개인화 및 보안 → 세션 및 보안`에서 자신의 활성 세션을 기기·IP·최근 활동 시각과 함께 확인하고 개별 또는 일괄 종료할 수 있습니다. 종료는 `revoke_session` 감사 이벤트로 남습니다.
 
 ## Reverse proxy
 

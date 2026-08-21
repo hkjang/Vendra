@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -13,8 +13,26 @@ import {
   Trash2,
   UserRound,
 } from "lucide-react";
-import { api, date, del, patch, post, Principal, Version } from "../api";
-import { Badge, Confirm, Empty, Field, Modal, PageHeader } from "../components";
+import {
+  api,
+  date,
+  dateTime,
+  del,
+  patch,
+  post,
+  Principal,
+  timeAgo,
+  Version,
+} from "../api";
+import {
+  Badge,
+  Confirm,
+  Empty,
+  Field,
+  Loading,
+  Modal,
+  PageHeader,
+} from "../components";
 import { APIKey } from "../types";
 
 export default function Profile({
@@ -445,32 +463,127 @@ function PasswordForm({ notify }: { notify: (s: string) => void }) {
   );
 }
 
+type ActiveSession = {
+  id: string;
+  ip?: string | null;
+  userAgent: string;
+  createdAt: string;
+  lastSeenAt: string;
+  current: boolean;
+};
+
+// Summarise a user agent for the session list. The full string is kept in the
+// title attribute for anyone who needs to identify a device precisely.
+function describeAgent(userAgent: string) {
+  if (!userAgent) return "알 수 없는 클라이언트";
+  const browser =
+    /Edg\//.test(userAgent) ? "Edge"
+    : /OPR\//.test(userAgent) ? "Opera"
+    : /Chrome\//.test(userAgent) ? "Chrome"
+    : /Safari\//.test(userAgent) ? "Safari"
+    : /Firefox\//.test(userAgent) ? "Firefox"
+    : "기타 클라이언트";
+  const platform =
+    /Windows/.test(userAgent) ? "Windows"
+    : /Macintosh|Mac OS/.test(userAgent) ? "macOS"
+    : /Android/.test(userAgent) ? "Android"
+    : /iPhone|iPad/.test(userAgent) ? "iOS"
+    : /Linux/.test(userAgent) ? "Linux"
+    : "";
+  return platform ? `${browser} · ${platform}` : browser;
+}
+
 function Sessions({ notify }: { notify: (s: string) => void }) {
+  const [sessions, setSessions] = useState<ActiveSession[]>();
+  const [confirmOthers, setConfirmOthers] = useState(false);
+  const load = useCallback(
+    () =>
+      api<{ items: ActiveSession[] }>("/api/v1/me/sessions").then((x) =>
+        setSessions(x.items),
+      ),
+    [],
+  );
+  useEffect(() => {
+    load();
+  }, [load]);
+  async function revoke(session: ActiveSession) {
+    try {
+      await del(`/api/v1/me/sessions/${session.id}`);
+      notify("선택한 세션을 종료했습니다.");
+      load();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "세션을 종료하지 못했습니다");
+    }
+  }
+  async function revokeOthers() {
+    setConfirmOthers(false);
+    try {
+      const result = await post<{ revokedSessions: number }>(
+        "/api/v1/me/sessions/revoke-others",
+        {},
+      );
+      notify(
+        result.revokedSessions > 0
+          ? `다른 세션 ${result.revokedSessions}개를 종료했습니다.`
+          : "종료할 다른 세션이 없습니다.",
+      );
+      load();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "세션을 종료하지 못했습니다");
+    }
+  }
+  const others = (sessions || []).filter((s) => !s.current).length;
   return (
     <div className="settings-card">
       <div className="settings-card-head">
         <div>
           <h2>세션 및 보안</h2>
-          <p>현재 로그인 세션과 계정 보안 상태를 확인합니다.</p>
+          <p>이 계정으로 로그인되어 있는 기기를 확인하고 종료합니다.</p>
         </div>
+        {others > 0 && (
+          <button
+            className="button secondary"
+            onClick={() => setConfirmOthers(true)}
+          >
+            <ShieldCheck />
+            다른 세션 모두 종료
+          </button>
+        )}
       </div>
-      <div className="session-row">
-        <span className="session-icon">
-          <Laptop2 />
-        </span>
-        <div>
-          <b>현재 브라우저</b>
-          <p>{navigator.userAgent}</p>
-          <small>
-            <Clock3 />
-            지금 활동 중
-          </small>
-        </div>
-        <Badge tone="success">
-          <Check />
-          현재 세션
-        </Badge>
-      </div>
+      {!sessions ? (
+        <Loading />
+      ) : (
+        sessions.map((session) => (
+          <div className="session-row" key={session.id}>
+            <span className="session-icon">
+              <Laptop2 />
+            </span>
+            <div>
+              <b title={session.userAgent}>{describeAgent(session.userAgent)}</b>
+              <p>{session.ip || "IP 미기록"}</p>
+              <small title={`로그인 ${dateTime(session.createdAt)}`}>
+                <Clock3 />
+                최근 활동 {timeAgo(session.lastSeenAt)} · 로그인{" "}
+                {dateTime(session.createdAt)}
+              </small>
+            </div>
+            {session.current ? (
+              <Badge tone="success">
+                <Check />
+                현재 세션
+              </Badge>
+            ) : (
+              <button
+                className="button secondary"
+                onClick={() => revoke(session)}
+              >
+                <Trash2 />
+                종료
+              </button>
+            )}
+          </div>
+        ))
+      )}
       <div className="security-checks">
         <h3>보안 상태</h3>
         <p>
@@ -490,6 +603,16 @@ function Sessions({ notify }: { notify: (s: string) => void }) {
           SSO 정책은 서비스 관리자가 설정
         </p>
       </div>
+      {confirmOthers && (
+        <Confirm
+          title="다른 세션을 모두 종료할까요?"
+          body={`현재 브라우저를 제외한 ${others}개 세션이 즉시 로그아웃됩니다.`}
+          confirmLabel="모두 종료"
+          danger
+          onConfirm={revokeOthers}
+          onClose={() => setConfirmOthers(false)}
+        />
+      )}
       <PasswordForm notify={notify} />
     </div>
   );

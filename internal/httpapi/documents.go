@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"os"
@@ -211,9 +212,16 @@ func (a *App) serveDocument(w http.ResponseWriter, r *http.Request, inline bool)
 		disposition = "inline"
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'none'; sandbox")
 	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename*=UTF-8''%s", disposition, strings.ReplaceAll(name, " ", "%20")))
+	w.Header().Set("Content-Disposition", contentDisposition(disposition, name))
 	w.Header().Set("X-Content-SHA256", checksum)
-	w.Header().Set("Content-Length", fmt.Sprint(size))
+	// Length comes from the file itself. Trusting the recorded size would
+	// truncate or stall the response whenever the two disagree.
+	if info, statErr := f.Stat(); statErr == nil {
+		if info.Size() != size {
+			slog.Warn("document size differs from the stored metadata", "document_id", r.PathValue("id"), "recorded", size, "on_disk", info.Size(), "request_id", requestID(r.Context()))
+		}
+		w.Header().Set("Content-Length", fmt.Sprint(info.Size()))
+	}
 	action := "download"
 	if inline {
 		action = "preview"

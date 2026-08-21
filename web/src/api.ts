@@ -15,10 +15,11 @@ export type Version = {
   buildTime: string;
 };
 
-class APIError extends Error {
+export class APIError extends Error {
   status: number;
   constructor(status: number, message: string) {
     super(message);
+    this.name = "APIError";
     this.status = status;
   }
 }
@@ -76,14 +77,51 @@ export function money(value?: number | null) {
   }).format(value);
 }
 
-export function date(value?: string | null) {
-  if (!value) return "—";
+function parseTimestamp(value?: string | null) {
+  if (!value) return undefined;
   // PostgreSQL may serialize UTC offsets as `+00`; browsers require `+00:00`.
   const parsed = new Date(value.replace(/([+-]\d{2})$/, "$1:00"));
-  if (Number.isNaN(parsed.getTime())) return "—";
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+export function date(value?: string | null) {
+  const parsed = parseTimestamp(value);
+  if (!parsed) return "—";
   return new Intl.DateTimeFormat("ko-KR", {
     year: "numeric",
     month: "short",
     day: "numeric",
   }).format(parsed);
+}
+
+/** Date plus time, for values where the hour distinguishes one row from another. */
+export function dateTime(value?: string | null) {
+  const parsed = parseTimestamp(value);
+  if (!parsed) return "—";
+  return new Intl.DateTimeFormat("ko-KR", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
+/** Short relative phrasing such as "3분 전"; falls back to an absolute date. */
+export function timeAgo(value?: string | null) {
+  const parsed = parseTimestamp(value);
+  if (!parsed) return "—";
+  const seconds = Math.round((Date.now() - parsed.getTime()) / 1000);
+  if (seconds < 60) return "방금";
+  const units: [Intl.RelativeTimeFormatUnit, number][] = [
+    ["minute", 60],
+    ["hour", 3600],
+    ["day", 86400],
+  ];
+  const formatter = new Intl.RelativeTimeFormat("ko-KR", { numeric: "auto" });
+  for (let i = units.length - 1; i >= 0; i--) {
+    const [unit, size] = units[i];
+    if (seconds >= size) return formatter.format(-Math.floor(seconds / size), unit);
+  }
+  return dateTime(value);
 }

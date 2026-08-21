@@ -281,3 +281,241 @@ func TestAdminResetPasswordEvictsEverySessionOfTheTarget(t *testing.T) {
 		t.Errorf("a user without the admin permission got %d, want 403", fw.Code)
 	}
 }
+
+func TestSessionListAndRevocation(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	_, _ = pool.Exec(ctx, `DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)`, testAdminEmail)
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+
+	current := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.40:5000"))
+	laptop := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.41:5000"))
+	phone := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "[2001:db8::99]:5000"))
+
+	sessions := listSessions(t, handler, current)
+	if len(sessions) != 3 {
+		t.Fatalf("listed %d sessions, want 3", len(sessions))
+	}
+	currentCount, addresses := 0, map[string]bool{}
+	for _, s := range sessions {
+		if s.Current {
+			currentCount++
+		}
+		if s.IP != nil {
+			addresses[*s.IP] = true
+		}
+	}
+	if currentCount != 1 {
+		t.Errorf("%d sessions claimed to be current, want exactly 1", currentCount)
+	}
+	// The IPv6 peer must be listed as itself, not dropped or mangled.
+	if !addresses["2001:db8::99"] {
+		t.Errorf("IPv6 session address missing from %v", addresses)
+	}
+
+	// Revoking the current session must be refused; that is what logout is for.
+	var currentID string
+	for _, s := range sessions {
+		if s.Current {
+			currentID = s.ID
+		}
+	}
+	if got := doRequest(t, handler, http.MethodDelete, "/api/v1/me/sessions/"+currentID, current).Code; got != http.StatusBadRequest {
+		t.Errorf("revoking the current session returned %d, want 400", got)
+	}
+
+	// Revoke one other device and confirm only that one died.
+	var laptopID string
+	for _, s := range sessions {
+		if !s.Current && s.IP != nil && *s.IP == "203.0.113.41" {
+			laptopID = s.ID
+		}
+	}
+	if got := doRequest(t, handler, http.MethodDelete, "/api/v1/me/sessions/"+laptopID, current).Code; got != http.StatusOK {
+		t.Fatalf("revoking a session returned %d", got)
+	}
+	if got := getMe(t, handler, laptop).Code; got != http.StatusUnauthorized {
+		t.Errorf("the revoked session still works: %d", got)
+	}
+	if got := getMe(t, handler, phone).Code; got != http.StatusOK {
+		t.Errorf("an unrelated session was revoked: %d", got)
+	}
+
+	// Sweep the rest.
+	if got := doRequest(t, handler, http.MethodPost, "/api/v1/me/sessions/revoke-others", current).Code; got != http.StatusOK {
+		t.Fatalf("revoke-others returned %d", got)
+	}
+	if got := getMe(t, handler, phone).Code; got != http.StatusUnauthorized {
+		t.Errorf("revoke-others left another session alive: %d", got)
+	}
+	if got := getMe(t, handler, current).Code; got != http.StatusOK {
+		t.Errorf("revoke-others logged out the caller: %d", got)
+	}
+	if remaining := listSessions(t, handler, current); len(remaining) != 1 {
+		t.Errorf("%d sessions remain, want only the current one", len(remaining))
+	}
+}
+
+type listedSession struct {
+	ID      string  `json:"id"`
+	IP      *string `json:"ip"`
+	Current bool    `json:"current"`
+}
+
+func listSessions(t *testing.T, handler http.Handler, token string) []listedSession {
+	t.Helper()
+	w := doRequest(t, handler, http.MethodGet, "/api/v1/me/sessions", token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("listing sessions returned %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Items []listedSession `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	return body.Items
+}
+
+func doRequest(t *testing.T, handler http.Handler, method, path, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(method, path, strings.NewReader("{}"))
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	return w
+}
+
+// TestEditingAWorkflowDoesNotStrandInFlightApprovals reproduces the failure an
+// administrator would cause by trimming a workflow while requests are pending.
+func TestEditingAWorkflowDoesNotStrandInFlightApprovals(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	twoSteps := `[{"name":"팀장 승인","role":"","order":0},{"name":"재무 승인","role":"","order":1}]`
+	oneStep := `[{"name":"재무 승인","role":"","order":0}]`
+
+	var definitionID string
+	if err := pool.QueryRow(ctx, `INSERT INTO workflow_definitions(name,object_type,enabled,steps,created_by) VALUES('스냅샷 검증','contract',true,$1,$2) RETURNING id`, twoSteps, adminID).Scan(&definitionID); err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	var objectID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,owner_id,created_by) VALUES('contract','SNAPSHOT-TEST-1','스냅샷 검증 계약','pending_approval',$1,$1) RETURNING id`, adminID).Scan(&objectID); err != nil {
+		t.Fatalf("seed object: %v", err)
+	}
+	// The instance is already one step in, exactly like a request that cleared
+	// its first approver before the workflow was edited.
+	var instanceID string
+	if err := pool.QueryRow(ctx, `INSERT INTO workflow_instances(definition_id,object_type,object_id,requested_by,current_step,context) VALUES($1,'contract',$2,$3,1,$4) RETURNING id`,
+		definitionID, objectID, adminID, `{"steps":`+twoSteps+`}`).Scan(&instanceID); err != nil {
+		t.Fatalf("seed instance: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM workflow_instances WHERE id=$1`, instanceID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE id=$1`, objectID)
+		_, _ = pool.Exec(ctx, `DELETE FROM workflow_definitions WHERE id=$1`, definitionID)
+	})
+
+	// The administrator trims the workflow to a single step.
+	if _, err := pool.Exec(ctx, `UPDATE workflow_definitions SET steps=$2,version=version+1 WHERE id=$1`, definitionID, oneStep); err != nil {
+		t.Fatalf("edit workflow: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.50:5000"))
+
+	body, _ := json.Marshal(map[string]string{"action": "approve", "comment": "확인"})
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/"+instanceID+"/actions", strings.NewReader(string(body)))
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("approval returned %d (%s); reading the live definition strands it at 409", w.Code, w.Body.String())
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM workflow_instances WHERE id=$1`, instanceID).Scan(&status); err != nil {
+		t.Fatalf("read instance: %v", err)
+	}
+	// Step 1 was the last of the two it was submitted under, so it completes.
+	if status != "approved" {
+		t.Errorf("instance status = %q, want approved", status)
+	}
+	var objectStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM business_objects WHERE id=$1`, objectID).Scan(&objectStatus); err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if objectStatus != "approved" {
+		t.Errorf("object status = %q, want approved", objectStatus)
+	}
+}
+
+func TestSeparationOfDutiesBlocksSelfApprovalWhenEnabled(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	steps := `[{"name":"재무 승인","role":"","order":0}]`
+	var definitionID, objectID, instanceID string
+	if err := pool.QueryRow(ctx, `INSERT INTO workflow_definitions(name,object_type,enabled,steps,created_by) VALUES('자기결재 검증','contract',true,$1,$2) RETURNING id`, steps, adminID).Scan(&definitionID); err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,owner_id,created_by) VALUES('contract','SOD-TEST-1','자기결재 검증','pending_approval',$1,$1) RETURNING id`, adminID).Scan(&objectID); err != nil {
+		t.Fatalf("seed object: %v", err)
+	}
+	// The administrator is both the requester and the only approver.
+	if err := pool.QueryRow(ctx, `INSERT INTO workflow_instances(definition_id,object_type,object_id,requested_by,context) VALUES($1,'contract',$2,$3,$4) RETURNING id`,
+		definitionID, objectID, adminID, `{"steps":`+steps+`}`).Scan(&instanceID); err != nil {
+		t.Fatalf("seed instance: %v", err)
+	}
+	restore := func() {
+		_, _ = pool.Exec(ctx, `UPDATE settings SET value='{"blockSelfApproval":false}' WHERE key='workflow.separation_of_duties'`)
+	}
+	t.Cleanup(func() {
+		restore()
+		_, _ = pool.Exec(ctx, `DELETE FROM workflow_instances WHERE id=$1`, instanceID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE id=$1`, objectID)
+		_, _ = pool.Exec(ctx, `DELETE FROM workflow_definitions WHERE id=$1`, definitionID)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.60:5000"))
+	act := func(action string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"action": action, "comment": "확인"})
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/"+instanceID+"/actions", strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	// Off by default: existing deployments keep working after an upgrade.
+	if got := act("approve").Code; got != http.StatusOK {
+		t.Fatalf("self-approval with the control off returned %d, want 200", got)
+	}
+	_, _ = pool.Exec(ctx, `UPDATE workflow_instances SET status='pending',current_step=0,completed_at=NULL WHERE id=$1`, instanceID)
+
+	if _, err := pool.Exec(ctx, `UPDATE settings SET value='{"blockSelfApproval":true}' WHERE key='workflow.separation_of_duties'`); err != nil {
+		t.Fatalf("enable control: %v", err)
+	}
+	if got := act("approve").Code; got != http.StatusForbidden {
+		t.Errorf("self-approval with the control on returned %d, want 403", got)
+	}
+	if got := act("reject").Code; got != http.StatusForbidden {
+		t.Errorf("self-rejection with the control on returned %d, want 403", got)
+	}
+	// Returning for revision hands the request back rather than deciding it.
+	if got := act("return").Code; got != http.StatusOK {
+		t.Errorf("returning one's own request was blocked with %d, want 200", got)
+	}
+}

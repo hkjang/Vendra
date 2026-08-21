@@ -45,7 +45,9 @@ import {
   X,
 } from "lucide-react";
 import { api, can, post, Principal, Version } from "./api";
-import { Loading, Logo, PageErrorBoundary, Toast } from "./components";
+import { Loading, Logo, PageErrorBoundary } from "./components";
+import { ToastProvider } from "./feedback";
+import { useNotify } from "./toast-context";
 import NotificationCenter from "./NotificationCenter";
 import CommandPalette, { QuickNavigationItem } from "./CommandPalette";
 
@@ -78,6 +80,14 @@ async function fetchSession(): Promise<Session> {
 }
 
 export default function App() {
+  return (
+    <ToastProvider>
+      <AppRoutes />
+    </ToastProvider>
+  );
+}
+
+function AppRoutes() {
   const location = useLocation();
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
@@ -146,7 +156,8 @@ function SupplierRegistration() {
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState<Version>();
   useEffect(() => {
-    api<Version>("/api/version").then(setVersion);
+    // Decoration only; registration works without the version line.
+    api<Version>("/api/version").then(setVersion, () => {});
   }, []);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -273,9 +284,13 @@ function Login({ onLogin }: { onLogin: () => void }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    api<Version>("/api/version").then(setVersion);
+    // Both are decoration on this screen: the form still works without a
+    // version line or an SSO button, so a failure here must not raise an alert
+    // the visitor cannot act on.
+    api<Version>("/api/version").then(setVersion, () => {});
     api<{ enabled: boolean; issuer?: string }>("/api/auth/oidc/config").then(
       setOIDC,
+      () => {},
     );
   }, []);
   async function submit(e: FormEvent<HTMLFormElement>) {
@@ -563,7 +578,7 @@ function Shell({
   const [profile, setProfile] = useState(false);
   const [commandPalette, setCommandPalette] = useState(false);
   const [search, setSearch] = useState("");
-  const [toast, setToast] = useState("");
+  const notify = useNotify();
   const navigation = useRef<HTMLElement>(null);
   const groups = navGroups
     .map((g) => ({
@@ -822,14 +837,14 @@ function Shell({
                 <Route
                   path="/profile"
                   element={
-                    <Profile user={user} version={version} notify={setToast} />
+                    <Profile user={user} version={version} notify={notify} />
                   }
                 />
                 <Route
                   path="/admin/*"
                   element={
                     can(user, "*") ? (
-                      <Admin notify={setToast} />
+                      <Admin notify={notify} />
                     ) : (
                       <Navigate to="/" />
                     )
@@ -860,7 +875,6 @@ function Shell({
           </PageErrorBoundary>
         </main>
       </section>
-      {toast && <Toast message={toast} onClose={() => setToast("")} />}
       {commandPalette && (
         <CommandPalette
           items={quickItems}
