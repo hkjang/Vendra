@@ -1469,3 +1469,83 @@ func TestContractAmountAlertOnlyCountsItsOwnSupplier(t *testing.T) {
 		t.Error("a genuine overrun by the contract's own supplier raised no alert")
 	}
 }
+
+// TestSpendTransactionOrganisationIsScoped guards the grouping key of the
+// organisation-level spend report: an unchecked value attributes a supplier's
+// spend to a division the filer has nothing to do with.
+func TestSpendTransactionOrganisationIsScoped(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var mine, other string
+	for _, seed := range []struct {
+		name string
+		dest *string
+	}{{"지출검증 본부", &mine}, {"지출검증 타본부", &other}} {
+		if err := pool.QueryRow(ctx, `INSERT INTO organizations(name,path) VALUES($1,'/') ON CONFLICT DO NOTHING RETURNING id`, seed.name).Scan(seed.dest); err != nil {
+			if err := pool.QueryRow(ctx, `SELECT id FROM organizations WHERE name=$1`, seed.name).Scan(seed.dest); err != nil {
+				t.Fatalf("seed org: %v", err)
+			}
+		}
+	}
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status,organization_id) VALUES('SUP-SPEND-TEST','지출 검증 공급사','333-33-33333','active',$1)
+		ON CONFLICT(supplier_number) DO UPDATE SET organization_id=excluded.organization_id RETURNING id`, mine).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('spend_dept_buyer','지출검증 구매','["supplier.read","spend.read","spend.create"]','department',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions,data_scope='department' RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	const email = "spend-buyer@vendra.test"
+	const password = "SpendPassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,organization_id) VALUES($1,'지출 검증자',$2,'internal','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,organization_id=excluded.organization_id,status='active' RETURNING id`, email, hash, mine).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, roleID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM spend_transactions WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='spend_dept_buyer'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-SPEND-TEST'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM organizations WHERE name IN ('지출검증 본부','지출검증 타본부')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	token := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.190:5000"))
+	file := func(number, org string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{
+			"transactionNumber": number, "supplierId": supplierID, "organizationId": org,
+			"itemName": "검증 품목", "amount": 1000, "transactionDate": "2026-08-01",
+		})
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/spend/transactions", strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	if got := file("SPEND-TEST-OTHER", other).Code; got != http.StatusForbidden {
+		t.Errorf("attributing spend to another organisation returned %d, want 403", got)
+	}
+	var misattributed int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM spend_transactions WHERE organization_id=$1`, other).Scan(&misattributed); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if misattributed != 0 {
+		t.Error("spend was attributed to an organisation the filer cannot see")
+	}
+	if got := file("SPEND-TEST-MINE", mine).Code; got != http.StatusCreated {
+		t.Errorf("filing against the caller's own organisation returned %d, want 201", got)
+	}
+}
