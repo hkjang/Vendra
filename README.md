@@ -29,7 +29,7 @@
 - 문서: 파일시스템 저장, 버전, 만료일, SHA-256 Checksum, 다운로드 감사 추적
 - Intelligence: Spend 집중도, 공급망 Network, 공급업체 추천, OpenAI 호환 AI Analyst
 - Integration: REST/OpenAPI 3.1, 조회 전용 MCP 도구, PostgreSQL Job/Notification Adapter
-- UX: `Ctrl/⌘ K` 빠른 이동, 최근 메뉴, 반응형 탐색, 접근성 포커스와 가독성 기준
+- UX: 업무 관제탑, `Ctrl/⌘ K` 빠른 이동, 필터·정렬·열 저장 보기, 일괄 처리, 입력 자동 저장, 반응형 탐색과 접근성 기준
 - 운영: 자동 DB migration, JSON log, 관리자 실시간 로그 뷰어, 알림 센터, liveness/readiness, 비-root/read-only Docker 실행
 
 ## 빠른 시작
@@ -39,7 +39,7 @@
 ```bash
 cp .env.example .env
 openssl rand -base64 32  # 출력값을 ENCRYPTION_KEY에 입력
-docker load < vendra-v0.2.0.tar.gz
+docker load < vendra-v0.3.0.tar.gz
 docker compose up -d
 ```
 
@@ -86,8 +86,8 @@ Git tag `vX.Y.Z`를 push하면 GitHub Actions가 다음 규칙을 강제합니�
 로컬에서도 같은 결과를 만들 수 있습니다.
 
 ```bash
-sh scripts/offline-release.sh 0.2.0
-docker load < dist/vendra-v0.2.0.tar.gz
+sh scripts/offline-release.sh 0.3.0
+docker load < dist/vendra-v0.3.0.tar.gz
 ```
 
 이미지는 UI 정적 파일, timezone/CA 인증서와 Go 서버를 포함합니다. 실행 중 CDN이나 외부 패키지 저장소를 사용하지 않습니다. Keycloak, AI, webhook 등 선택 연동은 관리자 설정에서 비활성 상태가 기본입니다.

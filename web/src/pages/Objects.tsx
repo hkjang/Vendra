@@ -1,19 +1,31 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   AlertCircle,
   BarChart3,
+  BookmarkPlus,
   Bot,
   CalendarClock,
+  Check,
   ClipboardCheck,
+  Columns3,
   FileSearch,
   Filter,
   Plus,
   Search,
   Send,
+  Share2,
   ShieldAlert,
+  Trash2,
 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, date, money, post } from "../api";
+import { api, date, del, money, post, put } from "../api";
 import {
   Badge,
   Empty,
@@ -25,6 +37,16 @@ import {
 } from "../components";
 import { statusTone } from "../status";
 import { BusinessObject, Supplier } from "../types";
+
+const defaultObjectColumns = ["supplier", "status", "amount", "risk", "start", "due"];
+const objectColumnOptions = [
+  { key: "supplier", label: "공급업체" },
+  { key: "status", label: "상태" },
+  { key: "amount", label: "금액" },
+  { key: "risk", label: "Risk" },
+  { key: "start", label: "시작일" },
+  { key: "due", label: "기한 · 종료" },
+];
 
 const configs: Record<
   string,
@@ -146,18 +168,33 @@ function ObjectList({ type }: { type: string }) {
   const [params, setParams] = useSearchParams();
   const q = params.get("q") || "";
   const status = params.get("status") || "";
-  const requestKey = `${c.endpoint}\u0000${q}\u0000${status}`;
+  const order = params.get("order") || "updated_desc";
+  const requestKey = `${c.endpoint}\u0000${q}\u0000${status}\u0000${order}`;
   const [result, setResult] = useState<{
     key: string;
     items: BusinessObject[];
   }>({ key: "", items: [] });
   const [modal, setModal] = useState(false);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [views, setViews] = useState<SavedView[]>([]);
+  const [activeView, setActiveView] = useState("");
+  const [viewModal, setViewModal] = useState(false);
+  const [columnModal, setColumnModal] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState(defaultObjectColumns);
+  const [viewName, setViewName] = useState("");
+  const [shareView, setShareView] = useState(false);
+  const [canShareViews, setCanShareViews] = useState(false);
+  const [viewError, setViewError] = useState("");
+  const loadSequence = useRef(0);
+  const viewContext = `object:${type}`;
   const load = useCallback(() => {
+    const sequence = ++loadSequence.current;
     return api<{ items: BusinessObject[] }>(
-      `${c.endpoint}?q=${encodeURIComponent(q)}&status=${status}`,
-    ).then((response) => setResult({ key: requestKey, items: response.items }));
-  }, [c.endpoint, q, requestKey, status]);
+      `${c.endpoint}?q=${encodeURIComponent(q)}&status=${status}&order=${order}`,
+    ).then((response) => {
+      if (sequence === loadSequence.current) setResult({ key: requestKey, items: response.items });
+    });
+  }, [c.endpoint, order, q, requestKey, status]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -166,11 +203,70 @@ function ObjectList({ type }: { type: string }) {
       .then((x) => setSuppliers(x.items))
       .catch(() => {});
   }, []);
+  const loadViews = useCallback(() => {
+    return api<{ items: SavedView[]; canShare: boolean }>(
+      `/api/v1/me/saved-views?context=${encodeURIComponent(viewContext)}`,
+    )
+      .then((response) => {
+        setViews(response.items);
+        setCanShareViews(response.canShare);
+      })
+      .catch(() => setViews([]));
+  }, [viewContext]);
+  useEffect(() => {
+    void loadViews();
+  }, [loadViews]);
   function set(key: string, v: string) {
     const n = new URLSearchParams(params);
     if (v) n.set(key, v);
     else n.delete(key);
+    setActiveView("");
     setParams(n);
+  }
+  function applyView(id: string) {
+    setActiveView(id);
+    const selected = views.find((view) => view.id === id);
+    if (!selected) {
+      setParams({});
+      setVisibleColumns(defaultObjectColumns);
+      return;
+    }
+    const next = new URLSearchParams();
+    for (const [key, value] of Object.entries(selected.filters)) {
+      if (typeof value === "string" && value) next.set(key, value);
+    }
+    setVisibleColumns(selected.columns?.length ? selected.columns : defaultObjectColumns);
+    setParams(next);
+  }
+  async function saveView(event: FormEvent) {
+    event.preventDefault();
+    setViewError("");
+    try {
+      await post("/api/v1/me/saved-views", {
+        name: viewName,
+        context: viewContext,
+        filters: { q, status, order },
+        columns: visibleColumns,
+        shared: shareView,
+      });
+      setViewModal(false);
+      setViewName("");
+      setShareView(false);
+      await loadViews();
+    } catch (cause) {
+      setViewError(cause instanceof Error ? cause.message : "보기를 저장하지 못했습니다");
+    }
+  }
+  async function removeView() {
+    const selected = views.find((view) => view.id === activeView);
+    if (!selected?.owned) return;
+    try {
+      await del(`/api/v1/me/saved-views/${selected.id}`);
+      setActiveView("");
+      await loadViews();
+    } catch (cause) {
+      setViewError(cause instanceof Error ? cause.message : "보기를 삭제하지 못했습니다");
+    }
   }
   const loading = result.key !== requestKey;
   const items = loading ? [] : result.items;
@@ -187,7 +283,7 @@ function ObjectList({ type }: { type: string }) {
           </button>
         }
       />
-      <div className="toolbar">
+      <div className="toolbar object-toolbar">
         <div className="search-box">
           <Search />
           <input
@@ -205,7 +301,39 @@ function ObjectList({ type }: { type: string }) {
           <option value="completed">완료</option>
           <option value="rejected">반려</option>
         </select>
+        <select value={order} onChange={(event) => set("order", event.target.value)} aria-label="정렬 기준">
+          <option value="updated_desc">최근 수정순</option>
+          <option value="due_asc">기한 임박순</option>
+          <option value="amount_desc">금액 높은순</option>
+          <option value="title_asc">제목 가나다순</option>
+        </select>
+        <div className="saved-view-tools">
+          <select
+            value={activeView}
+            onChange={(event) => applyView(event.target.value)}
+            aria-label="저장된 보기"
+          >
+            <option value="">기본 보기</option>
+            {views.map((view) => (
+              <option value={view.id} key={view.id}>
+                {view.shared ? "공유 · " : ""}{view.name}
+              </option>
+            ))}
+          </select>
+          <button className="button ghost" onClick={() => setViewModal(true)}>
+            <BookmarkPlus />보기 저장
+          </button>
+          <button className="icon-button" onClick={() => setColumnModal(true)} title="표시 열 설정" aria-label="표시 열 설정">
+            <Columns3 />
+          </button>
+          {views.find((view) => view.id === activeView)?.owned && (
+            <button className="icon-button" onClick={() => void removeView()} title="현재 보기 삭제" aria-label="현재 보기 삭제">
+              <Trash2 />
+            </button>
+          )}
+        </div>
       </div>
+      {viewError && !viewModal && <div className="form-error"><AlertCircle />{viewError}</div>}
       {loading ? (
         <Loading />
       ) : (
@@ -213,6 +341,7 @@ function ObjectList({ type }: { type: string }) {
           items={items}
           empty={`${c.title} 데이터가 없습니다`}
           onSubmit={load}
+          visibleColumns={visibleColumns}
         />
       )}{" "}
       {modal && (
@@ -227,23 +356,88 @@ function ObjectList({ type }: { type: string }) {
           }}
         />
       )}
+      {viewModal && (
+        <Modal
+          title="현재 보기를 저장"
+          description="검색어와 상태 필터를 저장해 다시 사용하거나 같은 조직에 공유할 수 있습니다."
+          onClose={() => setViewModal(false)}
+        >
+          <form onSubmit={saveView}>
+            <Field label="보기 이름" required>
+              <input autoFocus required maxLength={60} value={viewName} onChange={(event) => setViewName(event.target.value)} placeholder="예: 이번 달 만료 계약" />
+            </Field>
+            <div className="saved-view-preview">
+              <Filter />
+              <span><b>현재 조건</b><small>검색어 {q || "없음"} · 상태 {status || "전체"} · 표시 열 {visibleColumns.length + 1}개</small></span>
+            </div>
+            <label className="checkbox-line saved-view-share">
+              <input type="checkbox" disabled={!canShareViews} checked={shareView} onChange={(event) => setShareView(event.target.checked)} />
+              <Share2 />{canShareViews ? "같은 조직 사용자에게 공유" : "조직 소속 사용자만 공유할 수 있습니다"}
+            </label>
+            {viewError && <div className="form-error"><AlertCircle />{viewError}</div>}
+            <div className="form-actions">
+              <button type="button" className="button secondary" onClick={() => setViewModal(false)}>취소</button>
+              <button className="button"><BookmarkPlus />보기 저장</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {columnModal && (
+        <Modal title="표시 열 설정" description="업무에 필요한 열만 남기고 저장된 보기에 함께 보관할 수 있습니다." onClose={() => setColumnModal(false)}>
+          <div className="column-picker">
+            <label><input type="checkbox" checked disabled />번호 · 제목 <small>필수</small></label>
+            {objectColumnOptions.map((column) => (
+              <label key={column.key}>
+                <input
+                  type="checkbox"
+                  checked={visibleColumns.includes(column.key)}
+                  onChange={(event) => {
+                    setActiveView("");
+                    setVisibleColumns((current) => event.target.checked ? [...current, column.key] : current.filter((key) => key !== column.key));
+                  }}
+                />
+                {column.label}
+              </label>
+            ))}
+          </div>
+          <div className="form-actions">
+            <button className="button secondary" onClick={() => setVisibleColumns(defaultObjectColumns)}>기본값 복원</button>
+            <button className="button" onClick={() => setColumnModal(false)}><Check />적용</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
+
+type SavedView = {
+  id: string;
+  name: string;
+  context: string;
+  filters: Record<string, unknown>;
+  columns: string[];
+  shared: boolean;
+  owned: boolean;
+};
 
 function ObjectTable({
   items,
   empty,
   onSubmit,
+  visibleColumns,
 }: {
   items: BusinessObject[];
   empty: string;
   onSubmit: () => void;
+  visibleColumns: string[];
 }) {
   const [analysis, setAnalysis] = useState<{
     title: string;
     content: unknown;
   }>();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState("");
   async function submit(id: string, type: string) {
     await post(`${configs[type].endpoint}/${id}/submit`, {});
     onSubmit();
@@ -264,25 +458,69 @@ function ObjectTable({
       });
     }
   }
+  async function submitSelected() {
+    const targets = items.filter((item) => selected.has(item.id) && item.status === "draft");
+    if (!targets.length) return;
+    setBulkBusy(true);
+    setBulkMessage("");
+    const results = await Promise.allSettled(
+      targets.map((item) => post(`${configs[item.objectType].endpoint}/${item.id}/submit`, {})),
+    );
+    const succeeded = results.filter((result) => result.status === "fulfilled").length;
+    const failed = results.length - succeeded;
+    setSelected(new Set());
+    setBulkBusy(false);
+    setBulkMessage(failed ? `${succeeded}건 처리, ${failed}건 실패했습니다.` : `${succeeded}건을 승인 요청했습니다.`);
+    onSubmit();
+  }
+  const selectable = items.filter((item) => item.status === "draft");
+  function toggleSelection(id: string) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
   return (
     <div className="data-card">
+      {(selected.size > 0 || bulkMessage) && (
+        <div className="table-bulk-actions">
+          <span><Check />{selected.size ? `${selected.size}건 선택` : bulkMessage}</span>
+          {selected.size > 0 && <>
+            <button className="button ghost" onClick={() => setSelected(new Set())}>선택 해제</button>
+            <button className="button" disabled={bulkBusy} onClick={() => void submitSelected()}><Send />{bulkBusy ? "처리 중…" : "일괄 승인 요청"}</button>
+          </>}
+        </div>
+      )}
       {items.length ? (
         <table>
           <thead>
             <tr>
+              <th className="selection-cell">
+                <input
+                  type="checkbox"
+                  aria-label="모든 초안 선택"
+                  checked={selectable.length > 0 && selectable.every((item) => selected.has(item.id))}
+                  onChange={(event) => setSelected(event.target.checked ? new Set(selectable.map((item) => item.id)) : new Set())}
+                />
+              </th>
               <th>번호 · 제목</th>
-              <th>공급업체</th>
-              <th>상태</th>
-              <th>금액</th>
-              <th>Risk</th>
-              <th>시작일</th>
-              <th>기한 · 종료</th>
+              {visibleColumns.includes("supplier") && <th>공급업체</th>}
+              {visibleColumns.includes("status") && <th>상태</th>}
+              {visibleColumns.includes("amount") && <th>금액</th>}
+              {visibleColumns.includes("risk") && <th>Risk</th>}
+              {visibleColumns.includes("start") && <th>시작일</th>}
+              {visibleColumns.includes("due") && <th>기한 · 종료</th>}
               <th />
             </tr>
           </thead>
           <tbody>
             {items.map((o) => (
               <tr key={o.id}>
+                <td className="selection-cell">
+                  <input type="checkbox" aria-label={`${o.title} 선택`} disabled={o.status !== "draft"} checked={selected.has(o.id)} onChange={() => toggleSelection(o.id)} />
+                </td>
                 <td>
                   <span className="stack">
                     {o.objectType === "rfq" || o.objectType === "rfp" ? (
@@ -298,20 +536,20 @@ function ObjectTable({
                     <small>{o.number}</small>
                   </span>
                 </td>
-                <td>{o.supplierName || "—"}</td>
-                <td>
+                {visibleColumns.includes("supplier") && <td>{o.supplierName || "—"}</td>}
+                {visibleColumns.includes("status") && <td>
                   <Badge tone={statusTone(o.status)}>{o.status}</Badge>
-                </td>
-                <td className="number">{money(o.amount)}</td>
-                <td>
+                </td>}
+                {visibleColumns.includes("amount") && <td className="number">{money(o.amount)}</td>}
+                {visibleColumns.includes("risk") && <td>
                   {o.riskLevel ? (
                     <RiskBadge level={o.riskLevel} />
                   ) : (
                     <span>—</span>
                   )}
-                </td>
-                <td>{date(o.startDate)}</td>
-                <td>{date(o.endDate || o.dueDate)}</td>
+                </td>}
+                {visibleColumns.includes("start") && <td>{date(o.startDate)}</td>}
+                {visibleColumns.includes("due") && <td>{date(o.endDate || o.dueDate)}</td>}
                 <td>
                   <div className="row-actions">
                     {o.objectType === "contract" && (
@@ -375,8 +613,55 @@ function NewObject({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [draftState, setDraftState] = useState<"loading" | "restored" | "saving" | "saved" | "error">("loading");
+  const formRef = useRef<HTMLFormElement>(null);
+  const saveTimer = useRef<number | undefined>(undefined);
+  const draftRequest = useRef<Promise<void> | null>(null);
+  const submitted = useRef(false);
+  const draftDirty = useRef(false);
+  const draftKey = `new-object:${type}`;
+  const saveDraft = useCallback(async () => {
+    if (!formRef.current || submitted.current) return;
+    const payload = formPayload(formRef.current);
+    if (!Object.values(payload).some((value) => value !== "" && value !== false)) return;
+    setDraftState("saving");
+    const request = put(`/api/v1/me/drafts/${draftKey}`, { payload })
+      .then(() => setDraftState("saved"))
+      .catch(() => setDraftState("error"))
+      .then(() => undefined);
+    draftRequest.current = request;
+    await request;
+    if (draftRequest.current === request) draftRequest.current = null;
+  }, [draftKey]);
+  useEffect(() => {
+    let active = true;
+    api<{ draft: { payload: Record<string, unknown> } | null }>(`/api/v1/me/drafts/${draftKey}`)
+      .then((result) => {
+        if (!active || submitted.current || draftDirty.current) return;
+        if (!result.draft || !formRef.current) {
+          setDraftState("saved");
+          return;
+        }
+        restoreForm(formRef.current, result.draft.payload);
+        setDraftState("restored");
+      })
+      .catch(() => active && setDraftState("error"));
+    return () => {
+      active = false;
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    };
+  }, [draftKey]);
+  function queueDraft() {
+    draftDirty.current = true;
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    setDraftState("saving");
+    saveTimer.current = window.setTimeout(() => void saveDraft(), 700);
+  }
   async function save(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    submitted.current = true;
+    if (draftRequest.current) await draftRequest.current;
     setBusy(true);
     setError("");
     const d = new FormData(e.currentTarget);
@@ -416,8 +701,10 @@ function NewObject({
           capa: d.get("capa"),
         },
       });
+      await del(`/api/v1/me/drafts/${draftKey}`).catch(() => undefined);
       onSaved();
     } catch (e) {
+      submitted.current = false;
       setError(e instanceof Error ? e.message : "저장하지 못했습니다");
     } finally {
       setBusy(false);
@@ -427,10 +714,20 @@ function NewObject({
     <Modal
       title={config.create}
       description={`${config.title} 기본정보를 입력하세요. 저장 후 세부 조건과 문서를 추가할 수 있습니다.`}
-      onClose={onClose}
+      onClose={() => {
+        void saveDraft();
+        onClose();
+      }}
       wide
     >
-      <form onSubmit={save}>
+      <form ref={formRef} onSubmit={save} onInput={queueDraft} onChange={queueDraft}>
+        <div className={`draft-status ${draftState}`} aria-live="polite">
+          {draftState === "loading" && "임시저장 확인 중…"}
+          {draftState === "restored" && "이전에 작성하던 내용을 복원했습니다."}
+          {draftState === "saving" && "입력 내용 저장 중…"}
+          {draftState === "saved" && "입력 내용이 자동 저장됩니다."}
+          {draftState === "error" && "자동 저장을 확인할 수 없습니다. 직접 저장해 주세요."}
+        </div>
         <div className="form-grid">
           <Field label="제목" required>
             <input
@@ -596,7 +893,7 @@ function NewObject({
           </div>
         )}
         <div className="form-actions">
-          <button type="button" className="button secondary" onClick={onClose}>
+          <button type="button" className="button secondary" onClick={() => { void saveDraft(); onClose(); }}>
             취소
           </button>
           <button className="button" disabled={busy}>
@@ -606,6 +903,23 @@ function NewObject({
       </form>
     </Modal>
   );
+}
+
+function formPayload(form: HTMLFormElement) {
+  const payload: Record<string, string | boolean> = {};
+  for (const element of Array.from(form.elements)) {
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) || !element.name) continue;
+    payload[element.name] = element instanceof HTMLInputElement && element.type === "checkbox" ? element.checked : element.value;
+  }
+  return payload;
+}
+
+function restoreForm(form: HTMLFormElement, payload: Record<string, unknown>) {
+  for (const [name, value] of Object.entries(payload)) {
+    const element = form.elements.namedItem(name);
+    if (element instanceof HTMLInputElement && element.type === "checkbox") element.checked = value === true;
+    else if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) element.value = typeof value === "string" ? value : "";
+  }
 }
 
 function SearchPage() {

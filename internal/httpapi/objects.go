@@ -67,12 +67,15 @@ func (a *App) listObjects(objectType string) http.HandlerFunc {
 		q := strings.TrimSpace(r.URL.Query().Get("q"))
 		status := strings.TrimSpace(r.URL.Query().Get("status"))
 		supplierID := strings.TrimSpace(r.URL.Query().Get("supplierId"))
+		order := strings.TrimSpace(r.URL.Query().Get("order"))
 		limit := parseLimit(r, 100)
 		organizationID := ""
 		if p.OrganizationID != nil {
 			organizationID = *p.OrganizationID
 		}
-		rows, err := a.db.Query(r.Context(), objectSelect+` WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.status=$2) AND ($3='' OR o.supplier_id=$3::uuid) AND ($4='' OR o.title ILIKE '%'||$4||'%' OR o.number ILIKE '%'||$4||'%') AND (vendra_org_in_scope(o.organization_id,$6,NULLIF($7,'')::uuid) OR ($6='own' AND o.owner_id=$8::uuid)) ORDER BY o.updated_at DESC LIMIT $5`, objectType, status, supplierID, q, limit, p.DataScope, organizationID, p.ID)
+		orderBy := objectOrderBy(order, hasPermission(p, objectType+".amount.read"))
+		query := objectSelect + ` WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.status=$2) AND ($3='' OR o.supplier_id=$3::uuid) AND ($4='' OR o.title ILIKE '%'||$4||'%' OR o.number ILIKE '%'||$4||'%') AND (vendra_org_in_scope(o.organization_id,$6,NULLIF($7,'')::uuid) OR ($6='own' AND o.owner_id=$8::uuid)) ORDER BY ` + orderBy + ` LIMIT $5`
+		rows, err := a.db.Query(r.Context(), query, objectType, status, supplierID, q, limit, p.DataScope, organizationID, p.ID)
 		if err != nil {
 			logDB(err)
 			writeError(w, 500, "database_error", "목록을 조회하지 못했습니다")
@@ -90,6 +93,20 @@ func (a *App) listObjects(objectType string) http.HandlerFunc {
 		}
 		writeJSON(w, 200, map[string]any{"items": items, "count": len(items)})
 	}
+}
+
+func objectOrderBy(order string, amountVisible bool) string {
+	switch order {
+	case "due_asc":
+		return "COALESCE(o.due_date,o.end_date) ASC NULLS LAST, o.updated_at DESC"
+	case "amount_desc":
+		if amountVisible {
+			return "o.amount DESC NULLS LAST, o.updated_at DESC"
+		}
+	case "title_asc":
+		return "o.title ASC, o.updated_at DESC"
+	}
+	return "o.updated_at DESC"
 }
 
 func (a *App) createObject(objectType string) http.HandlerFunc {

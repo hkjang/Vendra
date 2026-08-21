@@ -112,6 +112,10 @@ func TestOpenAPICoversCoreSurfaces(t *testing.T) {
 		"/api/v1/portal/sourcing/{id}/response":       http.MethodPut,
 		"/api/v1/portal/purchase-orders/{id}/confirm": http.MethodPost,
 		"/api/v1/ai/contracts/{id}/analyze":           http.MethodPost,
+		"/api/v1/me/work-inbox":                       http.MethodGet,
+		"/api/v1/me/work-items/state":                 http.MethodPost,
+		"/api/v1/me/saved-views":                      http.MethodPost,
+		"/api/v1/me/drafts/{key}":                     http.MethodPut,
 	}
 	for path, method := range required {
 		if specification.Paths[path][strings.ToLower(method)] == nil {

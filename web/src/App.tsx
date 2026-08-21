@@ -28,6 +28,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ReceiptText,
+  Radar,
   Search,
   Settings,
   ShieldCheck,
@@ -49,6 +50,7 @@ import SupplierNetwork from "./pages/SupplierNetwork";
 import NotificationCenter from "./NotificationCenter";
 import SourcingWorkspace from "./pages/Sourcing";
 import CommandPalette, { QuickNavigationItem } from "./CommandPalette";
+import WorkInbox from "./pages/WorkInbox";
 
 type Session = { user: Principal; version: Version };
 
@@ -504,6 +506,11 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     label: "내 업무",
     items: [
       {
+        label: "업무 관제탑",
+        path: "/work",
+        icon: Radar,
+      },
+      {
         label: "내 승인함",
         path: "/approvals",
         icon: ClipboardCheck,
@@ -776,6 +783,7 @@ function Shell({
             <Route path="/suppliers" element={<Suppliers />} />
             <Route path="/suppliers/:id" element={<SupplierDetail />} />
             <Route path="/approvals" element={<Approvals />} />
+            <Route path="/work" element={<WorkInbox />} />
             <Route path="/ai" element={<AIAnalyst />} />
             <Route
               path="/profile"

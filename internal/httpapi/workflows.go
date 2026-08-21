@@ -118,6 +118,7 @@ func (a *App) listApprovals(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	items := []map[string]any{}
+	roles := principalRoleCodes(r.Context(), a, p.ID)
 	for rows.Next() {
 		var id, typ, obj, status string
 		var step int
@@ -137,7 +138,7 @@ func (a *App) listApprovals(w http.ResponseWriter, r *http.Request) {
 		}
 		current := stepList[step]
 		role, _ := current["role"].(string)
-		if role != "" && !principalHasRole(r.Context(), a, p.ID, role) && !hasPermission(p, "*") {
+		if role != "" && !roles[role] && !hasPermission(p, "*") {
 			continue
 		}
 		var c any
@@ -145,6 +146,22 @@ func (a *App) listApprovals(w http.ResponseWriter, r *http.Request) {
 		items = append(items, map[string]any{"id": id, "objectType": typ, "objectId": obj, "status": status, "currentStep": step, "currentStepDefinition": current, "context": c, "requestedBy": requester, "createdAt": created, "workflowName": workflow, "number": number, "title": title, "amount": amount, "supplierName": supplier})
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func principalRoleCodes(ctx context.Context, a *App, userID string) map[string]bool {
+	rows, err := a.db.Query(ctx, `SELECT r.code FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1`, userID)
+	if err != nil {
+		return map[string]bool{}
+	}
+	defer rows.Close()
+	roles := map[string]bool{}
+	for rows.Next() {
+		var code string
+		if rows.Scan(&code) == nil {
+			roles[code] = true
+		}
+	}
+	return roles
 }
 
 func principalHasRole(ctx context.Context, a *App, userID, role string) bool {

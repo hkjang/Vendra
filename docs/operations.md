@@ -17,12 +17,16 @@ Request ID로 한 요청의 흐름을 추적할 수 있습니다. UI 검색창�
 
 Embedded, ordered SQL migrations run inside a PostgreSQL transaction at startup. `schema_migrations` prevents reapplication. Back up before upgrading and never run two different Vendra versions against the same schema during migration.
 
+## Productivity data
+
+업무 관제탑의 확인·보류 상태, 저장된 보기와 입력 자동 저장 내용은 현재 로그인 사용자에 귀속되어 PostgreSQL에 저장됩니다. 기한이 변경되면 새 업무 신호가 생성되며, 자동 저장 초안은 해당 업무를 정상 등록할 때 삭제됩니다. 이 데이터도 일반 업무 데이터와 함께 PostgreSQL 백업에 포함됩니다.
+
 ## Release and rollback
 
 Load the target archive and update the exact tag in `compose.yaml`. For rollback, restore the matching PostgreSQL/document backup if a newer migration is not backward compatible.
 
 ```bash
-docker load < vendra-v0.2.0.tar.gz
+docker load < vendra-v0.3.0.tar.gz
 docker compose up -d
 docker compose ps
 curl -fsS http://localhost:8080/health/ready
