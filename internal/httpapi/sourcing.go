@@ -270,7 +270,19 @@ func (a *App) listSourcingQuestions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) writeSourcingQuestions(w http.ResponseWriter, r *http.Request, sourcingID, supplierID string) {
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',q.id,'sourcingId',q.sourcing_id,'supplierId',q.supplier_id,'supplierName',s.name,'askedBy',u.display_name,'question',q.question,'answer',q.answer,'answeredBy',a.display_name,'visibility',q.visibility,'askedAt',q.asked_at,'answeredAt',q.answered_at) FROM sourcing_questions q JOIN users u ON u.id=q.asked_by LEFT JOIN users a ON a.id=q.answered_by LEFT JOIN suppliers s ON s.id=q.supplier_id WHERE q.sourcing_id=$1 AND ($2='' OR q.visibility='participants' OR (q.visibility='private' AND q.supplier_id=$2::uuid)) AND ($2='' OR q.visibility<>'internal') ORDER BY q.asked_at`, sourcingID, supplierID)
+	// A participant-visible question carries the asker's identity. Showing it to
+	// the other bidders would disclose who else was invited, so for portal
+	// viewers the attribution survives only on their own questions. Buyer
+	// announcements have no supplier and stay attributed.
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object(
+		 'id',q.id,'sourcingId',q.sourcing_id,
+		 'supplierId',CASE WHEN $2='' OR q.supplier_id IS NULL OR q.supplier_id=$2::uuid THEN q.supplier_id END,
+		 'supplierName',CASE WHEN $2='' OR q.supplier_id IS NULL OR q.supplier_id=$2::uuid THEN s.name END,
+		 'askedBy',CASE WHEN $2='' OR q.supplier_id IS NULL OR q.supplier_id=$2::uuid THEN u.display_name END,
+		 'mine',$2<>'' AND q.supplier_id=$2::uuid,
+		 'question',q.question,'answer',q.answer,'answeredBy',a.display_name,'visibility',q.visibility,'askedAt',q.asked_at,'answeredAt',q.answered_at)
+		FROM sourcing_questions q JOIN users u ON u.id=q.asked_by LEFT JOIN users a ON a.id=q.answered_by LEFT JOIN suppliers s ON s.id=q.supplier_id
+		WHERE q.sourcing_id=$1 AND ($2='' OR q.visibility='participants' OR (q.visibility='private' AND q.supplier_id=$2::uuid)) AND ($2='' OR q.visibility<>'internal') ORDER BY q.asked_at`, sourcingID, supplierID)
 	if err != nil {
 		writeError(w, 500, "database_error", "질의응답을 조회하지 못했습니다")
 		return

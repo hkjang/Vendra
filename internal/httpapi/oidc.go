@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -17,14 +18,30 @@ import (
 )
 
 type oidcSettings struct {
-	Enabled      bool     `json:"enabled"`
-	Issuer       string   `json:"issuer"`
-	ClientID     string   `json:"clientId"`
-	Scopes       []string `json:"scopes"`
-	AutoCreate   bool     `json:"autoCreate"`
-	DefaultRole  string   `json:"defaultRole"`
-	ClientSecret string   `json:"-"`
+	Enabled     bool     `json:"enabled"`
+	Issuer      string   `json:"issuer"`
+	ClientID    string   `json:"clientId"`
+	Scopes      []string `json:"scopes"`
+	AutoCreate  bool     `json:"autoCreate"`
+	DefaultRole string   `json:"defaultRole"`
+	// RequireVerifiedEmail is a pointer so an absent key means "on". It gates
+	// the two paths that trust the provider's email claim: attaching an identity
+	// to an account that already exists, and creating a new one.
+	RequireVerifiedEmail *bool  `json:"requireVerifiedEmail"`
+	ClientSecret         string `json:"-"`
 }
+
+func (s oidcSettings) requiresVerifiedEmail() bool {
+	return s.RequireVerifiedEmail == nil || *s.RequireVerifiedEmail
+}
+
+// oidcEmailClaimTrusted reports whether the email claim may be used to decide
+// which account the caller gets. An already-linked subject identifies the
+// account by itself, so its email needs no verification.
+func oidcEmailClaimTrusted(s oidcSettings, alreadyLinked, emailVerified bool) bool {
+	return alreadyLinked || emailVerified || !s.requiresVerifiedEmail()
+}
+
 type oidcFlow struct {
 	State     string `json:"state"`
 	Nonce     string `json:"nonce"`
@@ -168,11 +185,26 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = claims.PreferredUsername
 	}
+	// A subject that is already linked identifies the account on its own, so the
+	// email claim carries no authority there and needs no verification.
 	var userID string
-	err = a.db.QueryRow(r.Context(), `SELECT id FROM users WHERE oidc_subject=$1 OR email=$2`, claims.Subject, email).Scan(&userID)
-	if err != nil && !s.AutoCreate {
-		writeError(w, 403, "oidc_user_missing", "등록된 사용자만 로그인할 수 있습니다")
-		return
+	linked := a.db.QueryRow(r.Context(), `SELECT id FROM users WHERE oidc_subject=$1`, claims.Subject).Scan(&userID) == nil
+	if !linked {
+		// Everything below decides who the caller is from the email claim. An
+		// identity provider that lets a user set an unverified address would
+		// otherwise hand out any existing account, including an administrator's,
+		// to whoever claims its address.
+		if !oidcEmailClaimTrusted(s, linked, claims.EmailVerified) {
+			slog.Warn("rejected OIDC sign-in with an unverified email",
+				"email", email, "subject", claims.Subject, "request_id", requestID(r.Context()))
+			a.audit.recordAnonymous(r, "oidc_unverified_email", "user", "", email, map[string]any{"subject": claims.Subject})
+			writeError(w, 403, "oidc_email_unverified", "이메일이 검증되지 않은 계정으로는 로그인할 수 없습니다")
+			return
+		}
+		if a.db.QueryRow(r.Context(), `SELECT id FROM users WHERE email=$1`, email).Scan(&userID) != nil && !s.AutoCreate {
+			writeError(w, 403, "oidc_user_missing", "등록된 사용자만 로그인할 수 있습니다")
+			return
+		}
 	}
 	if userID == "" {
 		tx, e := a.db.Begin(r.Context())
