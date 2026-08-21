@@ -113,7 +113,7 @@ func (a *App) aiAnalyze(w http.ResponseWriter, r *http.Request) {
 	if s.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+s.APIKey)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outboundClient.Do(req)
 	if err != nil {
 		writeError(w, 502, "ai_unavailable", "AI 모델에 연결할 수 없습니다")
 		return
@@ -201,7 +201,7 @@ func callAI(ctx context.Context, s aiSettings, system, user string) (string, any
 	if s.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+s.APIKey)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outboundClient.Do(req)
 	if err != nil {
 		return "", nil, fmt.Errorf("AI 모델에 연결할 수 없습니다: %w", err)
 	}

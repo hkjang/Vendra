@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
-
 	"github.com/hkjang/Vendra/internal/security"
 )
 
@@ -115,12 +113,12 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	var hash any
 	if in.Password != "" {
-		b, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+		b, err := a.hashPassword(r.Context(), in.Password)
 		if err != nil {
-			writeError(w, 500, "password_error", "비밀번호를 처리하지 못했습니다")
+			writePasswordError(w, err)
 			return
 		}
-		hash = string(b)
+		hash = b
 	}
 	if in.UserType == "" {
 		in.UserType = "internal"

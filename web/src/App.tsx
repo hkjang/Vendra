@@ -1,4 +1,12 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  FormEvent,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   Navigate,
   Route,
@@ -37,20 +45,27 @@ import {
   X,
 } from "lucide-react";
 import { api, can, post, Principal, Version } from "./api";
-import { Logo, Toast } from "./components";
-import Dashboard from "./pages/Dashboard";
-import Suppliers, { SupplierDetail } from "./pages/Suppliers";
-import Objects from "./pages/Objects";
-import Approvals from "./pages/Approvals";
-import AIAnalyst from "./pages/AIAnalyst";
-import Profile from "./pages/Profile";
-import Admin from "./pages/Admin";
-import Portal from "./pages/Portal";
-import SupplierNetwork from "./pages/SupplierNetwork";
+import { Loading, Logo, PageErrorBoundary, Toast } from "./components";
 import NotificationCenter from "./NotificationCenter";
-import SourcingWorkspace from "./pages/Sourcing";
 import CommandPalette, { QuickNavigationItem } from "./CommandPalette";
-import WorkInbox from "./pages/WorkInbox";
+
+// Pages load on demand. A supplier only ever renders Portal, and most internal
+// users never open the administration console, so shipping every screen in the
+// first payload makes everyone pay for pages they cannot reach.
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Suppliers = lazy(() => import("./pages/Suppliers"));
+const SupplierDetail = lazy(() =>
+  import("./pages/Suppliers").then((m) => ({ default: m.SupplierDetail })),
+);
+const Objects = lazy(() => import("./pages/Objects"));
+const Approvals = lazy(() => import("./pages/Approvals"));
+const AIAnalyst = lazy(() => import("./pages/AIAnalyst"));
+const Profile = lazy(() => import("./pages/Profile"));
+const Admin = lazy(() => import("./pages/Admin"));
+const Portal = lazy(() => import("./pages/Portal"));
+const SupplierNetwork = lazy(() => import("./pages/SupplierNetwork"));
+const SourcingWorkspace = lazy(() => import("./pages/Sourcing"));
+const WorkInbox = lazy(() => import("./pages/WorkInbox"));
 
 type Session = { user: Principal; version: Version };
 
@@ -102,13 +117,26 @@ export default function App() {
   if (!session) return <Login onLogin={load} />;
   if (session.user.userType === "supplier")
     return (
-      <Portal
-        user={session.user}
-        version={session.version}
-        onLogout={() => logout(setSession)}
-      />
+      <PageErrorBoundary>
+        <Suspense fallback={<PageFallback />}>
+          <Portal
+            user={session.user}
+            version={session.version}
+            onLogout={() => logout(setSession)}
+          />
+        </Suspense>
+      </PageErrorBoundary>
     );
   return <Shell session={session} onLogout={() => logout(setSession)} />;
+}
+
+function PageFallback() {
+  return (
+    <div className="boot">
+      <Logo />
+      <div className="boot-line" />
+    </div>
+  );
 }
 
 function SupplierRegistration() {
@@ -557,7 +585,11 @@ function Shell({
           { label: "서비스 관리", path: "/admin", group: "관리자" },
           { label: "사용자 · 권한", path: "/admin/users", group: "관리자" },
           { label: "Workflow", path: "/admin/workflow", group: "관리자" },
-          { label: "평가 · Risk 규칙", path: "/admin/scorecard", group: "관리자" },
+          {
+            label: "평가 · Risk 규칙",
+            path: "/admin/scorecard",
+            group: "관리자",
+          },
           { label: "Lifecycle", path: "/admin/lifecycle", group: "관리자" },
           { label: "감사로그", path: "/admin/audit", group: "관리자" },
           { label: "서버 로그", path: "/admin/logs", group: "관리자" },
@@ -778,47 +810,54 @@ function Shell({
           </div>
         </header>
         <main className="main-content" id="main-content" tabIndex={-1}>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/suppliers" element={<Suppliers />} />
-            <Route path="/suppliers/:id" element={<SupplierDetail />} />
-            <Route path="/approvals" element={<Approvals />} />
-            <Route path="/work" element={<WorkInbox />} />
-            <Route path="/ai" element={<AIAnalyst />} />
-            <Route
-              path="/profile"
-              element={
-                <Profile user={user} version={version} notify={setToast} />
-              }
-            />
-            <Route
-              path="/admin/*"
-              element={
-                can(user, "*") ? (
-                  <Admin notify={setToast} />
-                ) : (
-                  <Navigate to="/" />
-                )
-              }
-            />
-            <Route path="/search" element={<Objects type="search" />} />
-            <Route
-              path="/evaluations"
-              element={<Objects type="evaluation" />}
-            />
-            <Route path="/risks" element={<Objects type="risk" />} />
-            <Route path="/spend" element={<Objects type="spend" />} />
-            <Route path="/network" element={<SupplierNetwork />} />
-            <Route path="/sourcing/:type/:id" element={<SourcingWorkspace />} />
-            {objectPages.map((x) => (
-              <Route
-                key={x.path}
-                path={x.path}
-                element={<Objects type={x.type} />}
-              />
-            ))}
-            <Route path="*" element={<Navigate to="/" />} />
-          </Routes>
+          <PageErrorBoundary>
+            <Suspense fallback={<Loading label="화면을 불러오는 중" />}>
+              <Routes>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/suppliers" element={<Suppliers />} />
+                <Route path="/suppliers/:id" element={<SupplierDetail />} />
+                <Route path="/approvals" element={<Approvals />} />
+                <Route path="/work" element={<WorkInbox />} />
+                <Route path="/ai" element={<AIAnalyst />} />
+                <Route
+                  path="/profile"
+                  element={
+                    <Profile user={user} version={version} notify={setToast} />
+                  }
+                />
+                <Route
+                  path="/admin/*"
+                  element={
+                    can(user, "*") ? (
+                      <Admin notify={setToast} />
+                    ) : (
+                      <Navigate to="/" />
+                    )
+                  }
+                />
+                <Route path="/search" element={<Objects type="search" />} />
+                <Route
+                  path="/evaluations"
+                  element={<Objects type="evaluation" />}
+                />
+                <Route path="/risks" element={<Objects type="risk" />} />
+                <Route path="/spend" element={<Objects type="spend" />} />
+                <Route path="/network" element={<SupplierNetwork />} />
+                <Route
+                  path="/sourcing/:type/:id"
+                  element={<SourcingWorkspace />}
+                />
+                {objectPages.map((x) => (
+                  <Route
+                    key={x.path}
+                    path={x.path}
+                    element={<Objects type={x.type} />}
+                  />
+                ))}
+                <Route path="*" element={<Navigate to="/" />} />
+              </Routes>
+            </Suspense>
+          </PageErrorBoundary>
         </main>
       </section>
       {toast && <Toast message={toast} onClose={() => setToast("")} />}

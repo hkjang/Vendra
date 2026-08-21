@@ -44,7 +44,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, staticDir s
 	if err := bootstrapAdmin(ctx, pool, cfg.BootstrapAdmin, cfg.BootstrapAdminPassword); err != nil {
 		return nil, fmt.Errorf("bootstrap administrator: %w", err)
 	}
-	app := &App{db: pool, vault: vault, auth: authService{db: pool}, audit: auditor{db: pool}, logs: observability.DefaultStore(), staticDir: staticDir}
+	app := &App{db: pool, vault: vault, auth: authService{db: pool, audit: auditor{db: pool}}, audit: auditor{db: pool}, logs: observability.DefaultStore(), staticDir: staticDir}
 	go app.runBackground(ctx)
 	return app, nil
 }
@@ -75,6 +75,7 @@ func (a *App) Handler() http.Handler {
 func (a *App) registerAPI(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/me", a.me)
 	m.HandleFunc("PATCH /api/v1/me", a.updateMe)
+	m.HandleFunc("POST /api/v1/me/password", a.changeMyPassword)
 	m.HandleFunc("GET /api/v1/me/api-keys", a.listAPIKeys)
 	m.HandleFunc("POST /api/v1/me/api-keys", a.createAPIKey)
 	m.HandleFunc("POST /api/v1/me/api-keys/{id}/rotate", a.rotateAPIKey)
@@ -156,6 +157,7 @@ func (a *App) registerAPI(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/admin/users", require("*", a.listUsers))
 	m.HandleFunc("POST /api/v1/admin/users", require("*", a.createUser))
 	m.HandleFunc("PATCH /api/v1/admin/users/{id}", require("*", a.updateUser))
+	m.HandleFunc("POST /api/v1/admin/users/{id}/password", require("*", a.resetUserPassword))
 	m.HandleFunc("GET /api/v1/admin/roles", require("*", a.listRoles))
 	m.HandleFunc("POST /api/v1/admin/roles", require("*", a.createRole))
 	m.HandleFunc("PATCH /api/v1/admin/roles/{id}", require("*", a.updateRole))
@@ -263,6 +265,14 @@ func (a *App) serveSPA(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := os.Stat(target)
 	if err != nil || info.IsDir() {
+		// Only extension-less paths are client-side routes. A missing asset must
+		// 404 rather than receive index.html: after an upgrade a stale tab asks
+		// for a deleted chunk, and answering with HTML makes the browser fail on
+		// the MIME type instead of on an honest 404.
+		if ext := filepath.Ext(clean); ext != "" && ext != ".html" {
+			writeError(w, 404, "not_found", "찾을 수 없습니다")
+			return
+		}
 		target = filepath.Join(base, "index.html")
 	}
 	data, err := os.ReadFile(target)

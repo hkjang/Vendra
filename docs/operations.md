@@ -4,7 +4,7 @@
 
 - `/health/live`: process liveness
 - `/health/ready`: PostgreSQL readiness
-- `/metrics`: Prometheus exposition (build, HTTP 요청/오류/지연, PostgreSQL pool)
+- `/metrics`: Prometheus exposition (build, HTTP 요청/오류/지연, 로그인 실패/잠금, PostgreSQL pool)
 - stdout: structured JSON request/application logs with request ID
 - 관리자 UI: `서비스 관리 → 서버 로그`에서 현재 프로세스의 최근 로그 검색, 레벨 필터, 자동 갱신, 속성 확인과 JSON 내보내기
 - Docker `HEALTHCHECK`: readiness endpoint every 30 seconds
@@ -15,7 +15,28 @@ Request ID로 한 요청의 흐름을 추적할 수 있습니다. UI 검색창�
 
 ## Database migration
 
-Embedded, ordered SQL migrations run inside a PostgreSQL transaction at startup. `schema_migrations` prevents reapplication. Back up before upgrading and never run two different Vendra versions against the same schema during migration.
+Embedded, ordered SQL migrations run inside a PostgreSQL transaction at startup. `schema_migrations` prevents reapplication. 기동 시 PostgreSQL advisory lock을 잡으므로 여러 인스턴스가 동시에 올라와도 마이그레이션은 한 번에 하나씩 적용되고, 나머지 인스턴스는 완료를 기다린 뒤 이미 적용된 버전을 건너뜁니다. Back up before upgrading and never run two different Vendra versions against the same schema during migration.
+
+## Notification adapters
+
+`notification.adapters`는 어댑터 배열입니다. 각 항목은 `name`, `type`(`log`, `slack`, `mattermost`, `webhook`, `email`, `sms`, `internal_messenger`), `url`, `enabled`을 가지며 `timeoutSeconds`로 호출 상한을 정합니다. 생략하면 10초이고 1~120초로 제한됩니다.
+
+```json
+[{ "name": "ops-slack", "type": "slack", "url": "https://...", "enabled": true, "timeoutSeconds": 10 }]
+```
+
+배경 작업은 매시간 최대 50건을 순차 전송하며, 응답하지 않는 어댑터는 설정된 시간에 끊고 다음 건으로 넘어갑니다. 5회 실패한 전송은 재시도하지 않습니다. 한 번의 배경 작업 전체에도 30분 상한이 있어 어떤 통합이나 질의도 매시간 반복 실행을 영구히 멈출 수 없습니다.
+
+## Retention
+
+만료된 운영 데이터는 시간당 백그라운드 스윕이 정리합니다. `maintenance.retention` 설정으로 조정하며 `0`은 해당 스윕을 끕니다.
+
+| 키 | 기본값 | 대상 |
+|---|---|---|
+| `expiredSessionDays` | 7 | 만료 시각이 지난 `sessions` 행 |
+| `loginAttemptDays` | 30 | `login_attempts` 로그인 시도 이력 |
+
+만료된 세션은 이미 인증에 사용할 수 없으므로 삭제해도 동작이 바뀌지 않습니다. 업무 데이터, 감사로그와 알림은 이 스윕이 건드리지 않습니다.
 
 ## Productivity data
 

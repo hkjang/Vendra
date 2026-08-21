@@ -11,19 +11,15 @@ import (
 )
 
 type notificationAdapter struct {
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	URL     string `json:"url"`
-	Enabled bool   `json:"enabled"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	URL            string `json:"url"`
+	Enabled        bool   `json:"enabled"`
+	TimeoutSeconds int    `json:"timeoutSeconds"`
 }
 
 func (a *App) runBackground(ctx context.Context) {
-	if err := a.scheduleNotifications(ctx); err != nil {
-		slog.Error("notification scheduling failed", "error", err)
-	}
-	if err := a.dispatchNotifications(ctx); err != nil {
-		slog.Error("notification dispatch failed", "error", err)
-	}
+	a.runBackgroundOnce(ctx)
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {
@@ -31,13 +27,27 @@ func (a *App) runBackground(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := a.scheduleNotifications(ctx); err != nil {
-				slog.Error("notification scheduling failed", "error", err)
-			}
-			if err := a.dispatchNotifications(ctx); err != nil {
-				slog.Error("notification dispatch failed", "error", err)
-			}
+			a.runBackgroundOnce(ctx)
 		}
+	}
+}
+
+// backgroundPassTimeout keeps one pass well inside the tick interval. Without
+// it a single stuck query or integration would end the loop for good, silently
+// stopping notifications and the retention sweep until the process restarts.
+const backgroundPassTimeout = 30 * time.Minute
+
+func (a *App) runBackgroundOnce(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, backgroundPassTimeout)
+	defer cancel()
+	if err := a.scheduleNotifications(ctx); err != nil {
+		slog.Error("notification scheduling failed", "error", err)
+	}
+	if err := a.dispatchNotifications(ctx); err != nil {
+		slog.Error("notification dispatch failed", "error", err)
+	}
+	if err := a.purgeExpired(ctx); err != nil {
+		slog.Error("retention sweep failed", "error", err)
 	}
 }
 
@@ -155,12 +165,16 @@ func deliverNotification(ctx context.Context, adapter notificationAdapter, title
 			return fmt.Errorf("adapter URL is empty")
 		}
 		payload, _ := json.Marshal(map[string]any{"text": title + "\n" + body, "title": title, "body": body, "severity": severity})
+		// Bound every delivery: one unresponsive adapter must not stall the rest
+		// of the batch, nor the background loop that runs it.
+		ctx, cancel := context.WithTimeout(ctx, adapter.timeout())
+		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.URL, bytes.NewReader(payload))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := outboundClient.Do(req)
 		if err != nil {
 			return err
 		}
