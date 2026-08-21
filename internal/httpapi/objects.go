@@ -393,3 +393,15 @@ func objectNumber(t string) string {
 	return fmt.Sprintf("%s-%s", prefix, strings.ToUpper(strings.ReplaceAll(timeNowID(), "-", "")))
 }
 func timeNowID() string { token, _ := randomToken(6); return token }
+
+// readableObjectTypes lists the business object types the principal may read,
+// for queries that must filter by type in SQL rather than after a LIMIT.
+func readableObjectTypes(p Principal) []string {
+	types := make([]string, 0, len(objectRoutes))
+	for _, route := range objectRoutes {
+		if hasPermission(p, route.objectType+".read") {
+			types = append(types, route.objectType)
+		}
+	}
+	return types
+}

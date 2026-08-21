@@ -756,3 +756,84 @@ func TestSourcingQuestionsHideCompetitorIdentity(t *testing.T) {
 		t.Error("internal reviewers lost the asker attribution they need")
 	}
 }
+
+// TestGlobalSearchDoesNotLoseResultsToPermissionFiltering covers a reviewer who
+// may read only one object type. The permission filter used to run after the
+// query's LIMIT, so their matches were crowded out by types they cannot see.
+func TestGlobalSearchDoesNotLoseResultsToPermissionFiltering(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	// 40 issues are newer than the contracts, more than the query's limit of 30.
+	for i := 0; i < 40; i++ {
+		if _, err := pool.Exec(ctx, `INSERT INTO business_objects(object_type,number,title,status,owner_id,created_by,organization_id) VALUES('issue',$1,$2,'open',$3,$3,NULL) ON CONFLICT DO NOTHING`,
+			fmt.Sprintf("SEARCHTEST-ISSUE-%02d", i), fmt.Sprintf("검색시험 이슈 %02d", i), adminID); err != nil {
+			t.Fatalf("seed issue: %v", err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := pool.Exec(ctx, `INSERT INTO business_objects(object_type,number,title,status,owner_id,created_by,organization_id,updated_at) VALUES('contract',$1,$2,'active',$3,$3,NULL,now()-interval '1 day') ON CONFLICT DO NOTHING`,
+			fmt.Sprintf("SEARCHTEST-CONTRACT-%02d", i), fmt.Sprintf("검색시험 계약 %02d", i), adminID); err != nil {
+			t.Fatalf("seed contract: %v", err)
+		}
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number LIKE 'SEARCHTEST-%'`) })
+
+	// A user who may read contracts and nothing else.
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('search_contract_only','계약 전용 조회','["contract.read"]','company',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions,data_scope='company' RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	const email = "search-limited@vendra.test"
+	const password = "SearchPassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status) VALUES($1,'계약 검토자',$2,'internal','active')
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,status='active' RETURNING id`, email, hash).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, roleID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='search_contract_only'`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	token := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.100:5000"))
+	w := doRequest(t, handler, http.MethodGet, "/api/v1/search?q="+url.QueryEscape("검색시험"), token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("search returned %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Items []struct {
+			Type   string `json:"type"`
+			Number string `json:"number"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	contracts := 0
+	for _, item := range body.Items {
+		if item.Type == "contract" {
+			contracts++
+		}
+		if item.Type == "issue" {
+			t.Errorf("an issue leaked to a user without issue.read: %s", item.Number)
+		}
+	}
+	if contracts != 3 {
+		t.Errorf("found %d of 3 contracts; the newer issues used to consume the whole limit", contracts)
+	}
+}
