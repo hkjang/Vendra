@@ -144,6 +144,7 @@ func (a *App) aiAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := outboundClient.Do(req)
 	if err != nil {
+		slog.Error("ai call failed", "error", err, "request_id", requestID(r.Context()))
 		writeError(w, 502, "ai_unavailable", "AI 모델에 연결할 수 없습니다")
 		return
 	}
@@ -191,7 +192,10 @@ func (a *App) aiAnalyzeContract(w http.ResponseWriter, r *http.Request) {
 	user := "다음 Vendra 계약 데이터에서 주요 조건과 위험조항을 추출하세요: " + string(contractJSON)
 	answer, usage, err := callAI(r.Context(), s, system, user)
 	if err != nil {
-		writeError(w, 502, "ai_error", err.Error())
+		// The transport error names the configured endpoint, which is often an
+		// internal host. The operator needs it; the caller does not.
+		slog.Error("ai call failed", "error", err, "request_id", requestID(r.Context()))
+		writeError(w, 502, "ai_unavailable", "AI 모델에 연결할 수 없습니다")
 		return
 	}
 	var extraction map[string]any
