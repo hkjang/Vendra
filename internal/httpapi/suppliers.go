@@ -104,6 +104,11 @@ func (a *App) listSuppliers(w http.ResponseWriter, r *http.Request) {
 			items = append(items, redactSupplier(p, s))
 		}
 	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "공급업체를 조회하지 못했습니다")
+		return
+	}
 	items, truncated := truncate(items, limit)
 	writeJSON(w, 200, map[string]any{"items": items, "count": len(items), "limit": limit, "truncated": truncated})
 }
@@ -202,7 +207,11 @@ func (a *App) getSupplier(w http.ResponseWriter, r *http.Request) {
 	}
 	var activeContracts, openIssues int
 	var delivery, quality float64
-	_ = a.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE object_type='contract' AND status IN('active','approved')),count(*) FILTER(WHERE object_type='issue' AND status NOT IN('closed','resolved')),COALESCE(100.0*count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed') AND (due_date IS NULL OR CASE WHEN COALESCE(data->>'deliveredAt','') ~ '^\d{4}-\d{2}-\d{2}' THEN left(data->>'deliveredAt',10)::date ELSE updated_at::date END<=due_date))/NULLIF(count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed')),0),0),COALESCE(avg(score) FILTER(WHERE object_type IN('quality','inspection')),0) FROM business_objects WHERE supplier_id=$1 AND deleted_at IS NULL`, id).Scan(&activeContracts, &openIssues, &delivery, &quality)
+	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE object_type='contract' AND status IN('active','approved')),count(*) FILTER(WHERE object_type='issue' AND status NOT IN('closed','resolved')),COALESCE(100.0*count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed') AND (due_date IS NULL OR CASE WHEN COALESCE(data->>'deliveredAt','') ~ '^\d{4}-\d{2}-\d{2}' THEN left(data->>'deliveredAt',10)::date ELSE updated_at::date END<=due_date))/NULLIF(count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed')),0),0),COALESCE(avg(score) FILTER(WHERE object_type IN('quality','inspection')),0) FROM business_objects WHERE supplier_id=$1 AND deleted_at IS NULL`, id).Scan(&activeContracts, &openIssues, &delivery, &quality); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "공급업체 요약을 조회하지 못했습니다")
+		return
+	}
 	writeJSON(w, 200, map[string]any{"supplier": redactSupplier(p, s), "metrics": map[string]any{"activeContracts": activeContracts, "openIssues": openIssues, "deliveryPerformance": delivery, "qualityPerformance": quality}})
 }
 
@@ -358,6 +367,11 @@ func (a *App) supplierObjects(w http.ResponseWriter, r *http.Request) {
 			items = append(items, o)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "연관 데이터를 조회하지 못했습니다")
+		return
+	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 
@@ -375,12 +389,20 @@ func (a *App) supplierActivity(w http.ResponseWriter, r *http.Request) {
 	items := []map[string]any{}
 	for rows.Next() {
 		var encoded []byte
-		if rows.Scan(&encoded) == nil {
-			var item map[string]any
-			if json.Unmarshal(encoded, &item) == nil {
-				items = append(items, item)
-			}
+		if err := rows.Scan(&encoded); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "활동 이력을 조회하지 못했습니다")
+			return
 		}
+		var item map[string]any
+		if json.Unmarshal(encoded, &item) == nil {
+			items = append(items, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "활동 이력을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -402,9 +424,17 @@ func (a *App) listContacts(w http.ResponseWriter, r *http.Request) {
 		var title, dept, email, phone *string
 		var primary, emailVerified bool
 		var created any
-		if rows.Scan(&id, &name, &title, &dept, &email, &phone, &primary, &emailVerified, &created) == nil {
-			items = append(items, map[string]any{"id": id, "name": name, "title": title, "department": dept, "email": email, "phone": phone, "primary": primary, "emailVerified": emailVerified, "createdAt": created})
+		if err := rows.Scan(&id, &name, &title, &dept, &email, &phone, &primary, &emailVerified, &created); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "담당자를 조회하지 못했습니다")
+			return
 		}
+		items = append(items, map[string]any{"id": id, "name": name, "title": title, "department": dept, "email": email, "phone": phone, "primary": primary, "emailVerified": emailVerified, "createdAt": created})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "담당자를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }

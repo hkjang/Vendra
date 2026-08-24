@@ -61,12 +61,20 @@ func (a *App) listWorkflows(w http.ResponseWriter, r *http.Request) {
 		var version int
 		var creator *string
 		var created, updated any
-		if rows.Scan(&id, &name, &typ, &enabled, &conditions, &steps, &version, &creator, &created, &updated) == nil {
-			var c, s any
-			_ = json.Unmarshal(conditions, &c)
-			_ = json.Unmarshal(steps, &s)
-			items = append(items, map[string]any{"id": id, "name": name, "objectType": typ, "enabled": enabled, "conditions": c, "steps": s, "version": version, "createdBy": creator, "createdAt": created, "updatedAt": updated})
+		if err := rows.Scan(&id, &name, &typ, &enabled, &conditions, &steps, &version, &creator, &created, &updated); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "워크플로를 조회하지 못했습니다")
+			return
 		}
+		var c, s any
+		_ = json.Unmarshal(conditions, &c)
+		_ = json.Unmarshal(steps, &s)
+		items = append(items, map[string]any{"id": id, "name": name, "objectType": typ, "enabled": enabled, "conditions": c, "steps": s, "version": version, "createdBy": creator, "createdAt": created, "updatedAt": updated})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "워크플로를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -155,7 +163,12 @@ func (a *App) listApprovals(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	items := []map[string]any{}
-	roles := principalRoleCodes(r.Context(), a, p.ID)
+	roles, err := principalRoleCodes(r.Context(), a, p.ID)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "승인함을 조회하지 못했습니다")
+		return
+	}
 	for rows.Next() {
 		var id, typ, obj, status string
 		var step int
@@ -165,8 +178,10 @@ func (a *App) listApprovals(w http.ResponseWriter, r *http.Request) {
 		var workflow string
 		var number, title, supplier *string
 		var amount *float64
-		if rows.Scan(&id, &typ, &obj, &status, &step, &context, &requester, &created, &workflow, &steps, &number, &title, &amount, &supplier) != nil {
-			continue
+		if err := rows.Scan(&id, &typ, &obj, &status, &step, &context, &requester, &created, &workflow, &steps, &number, &title, &amount, &supplier); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "승인함을 조회하지 못했습니다")
+			return
 		}
 		stepList := instanceSteps(context, steps)
 		if step >= len(stepList) {
@@ -181,23 +196,31 @@ func (a *App) listApprovals(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(context, &c)
 		items = append(items, map[string]any{"id": id, "objectType": typ, "objectId": obj, "status": status, "currentStep": step, "currentStepDefinition": current, "context": c, "requestedBy": requester, "createdAt": created, "workflowName": workflow, "number": number, "title": title, "amount": amount, "supplierName": supplier})
 	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "승인함을 조회하지 못했습니다")
+		return
+	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 
-func principalRoleCodes(ctx context.Context, a *App, userID string) map[string]bool {
+// A role list that silently comes back short changes what the caller believes
+// the user may approve, so a failed lookup is returned rather than swallowed.
+func principalRoleCodes(ctx context.Context, a *App, userID string) (map[string]bool, error) {
 	rows, err := a.db.Query(ctx, `SELECT r.code FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1`, userID)
 	if err != nil {
-		return map[string]bool{}
+		return nil, err
 	}
 	defer rows.Close()
 	roles := map[string]bool{}
 	for rows.Next() {
 		var code string
-		if rows.Scan(&code) == nil {
-			roles[code] = true
+		if err := rows.Scan(&code); err != nil {
+			return nil, err
 		}
+		roles[code] = true
 	}
-	return roles
+	return roles, rows.Err()
 }
 
 func principalHasRole(ctx context.Context, a *App, userID, role string) bool {

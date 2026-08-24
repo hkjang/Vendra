@@ -102,6 +102,11 @@ func (a *App) listObjects(objectType string) http.HandlerFunc {
 			}
 			items = append(items, redactObject(p, o))
 		}
+		if err := rows.Err(); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "목록을 조회하지 못했습니다")
+			return
+		}
 		items, truncated := truncate(items, limit)
 		writeJSON(w, 200, map[string]any{"items": items, "count": len(items), "limit": limit, "truncated": truncated})
 	}
@@ -373,16 +378,19 @@ func (a *App) matchingWorkflow(r *http.Request, objectType string, object busine
 	for rows.Next() {
 		var id string
 		var steps, rawConditions []byte
-		if rows.Scan(&id, &steps, &rawConditions) != nil {
-			continue
+		if err := rows.Scan(&id, &steps, &rawConditions); err != nil {
+			return "", nil, err
 		}
 		var conditions workflowConditions
-		if json.Unmarshal(rawConditions, &conditions) != nil {
-			continue
+		if err := json.Unmarshal(rawConditions, &conditions); err != nil {
+			return "", nil, err
 		}
 		if workflowMatches(conditions, object) {
 			return id, steps, nil
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", nil, err
 	}
 	return "", nil, pgx.ErrNoRows
 }

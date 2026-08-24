@@ -56,7 +56,12 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]workInboxItem, 0, 64)
 	if hasPermission(p, "workflow.read") {
-		roles := principalRoleCodes(r.Context(), a, p.ID)
+		roles, err := principalRoleCodes(r.Context(), a, p.ID)
+		if err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "승인 업무를 조회하지 못했습니다")
+			return
+		}
 		rows, err := a.db.Query(r.Context(), `SELECT i.id,i.object_type,i.object_id,i.current_step,d.name,d.steps,
 		 COALESCE(o.number,''),COALESCE(o.title,'승인 요청'),COALESCE(s.name,''),
 		 to_char(COALESCE(o.due_date,(i.created_at + interval '2 days')::date),'YYYY-MM-DD'),
@@ -76,8 +81,10 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 			var id, objectType, objectID, workflow, number, title, supplier, due, created string
 			var step int
 			var steps []byte
-			if rows.Scan(&id, &objectType, &objectID, &step, &workflow, &steps, &number, &title, &supplier, &due, &created) != nil {
-				continue
+			if err := rows.Scan(&id, &objectType, &objectID, &step, &workflow, &steps, &number, &title, &supplier, &due, &created); err != nil {
+				logDB(err)
+				writeError(w, 500, "database_error", "승인 업무를 조회하지 못했습니다")
+				return
 			}
 			var definitions []map[string]any
 			_ = json.Unmarshal(steps, &definitions)
@@ -93,6 +100,11 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 				stepName = "승인 검토"
 			}
 			items = append(items, newWorkItem("approval:"+id, "approval", "approval", title, workflow+" · "+stepName, objectType, objectID, number, supplier, due, created, "/approvals?selected="+id, true))
+		}
+		if err := rows.Err(); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "승인 업무를 조회하지 못했습니다")
+			return
 		}
 		rows.Close()
 	}
@@ -111,7 +123,12 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	for rows.Next() {
 		var id, objectType, number, title, supplier, due, created string
-		if rows.Scan(&id, &objectType, &number, &title, &supplier, &due, &created) != nil || !hasPermission(p, objectType+".read") {
+		if err := rows.Scan(&id, &objectType, &number, &title, &supplier, &due, &created); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "기한 업무를 조회하지 못했습니다")
+			return
+		}
+		if !hasPermission(p, objectType+".read") {
 			continue
 		}
 		kind, category, description := "due_task", "task", "처리 기한이 다가오는 업무입니다."
@@ -123,6 +140,11 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 			category, description = "risk", "조치 기한 전 원인과 개선 계획을 확인하세요."
 		}
 		items = append(items, newWorkItem(datedWorkKey(kind, id, due), kind, category, title, description, objectType, id, number, supplier, due, created, objectListURL(objectType, number), false))
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "기한 업무를 조회하지 못했습니다")
+		return
 	}
 	rows.Close()
 
@@ -139,17 +161,25 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 		}
 		for rows.Next() {
 			var id, riskType, severity, description, supplierID, supplier, due, created string
-			if rows.Scan(&id, &riskType, &severity, &description, &supplierID, &supplier, &due, &created) == nil {
-				if description == "" {
-					description = severity + " 리스크의 완화 계획과 현재 상태를 검토하세요."
-				}
-				item := newWorkItem(datedWorkKey("risk", id, due), "risk_review", "risk", riskType, description, "risk", id, "", supplier, due, created, "/suppliers/"+supplierID+"?tab=Risks", false)
-				severityUrgency := notificationUrgency(severity)
-				if urgencyRank(severityUrgency) < urgencyRank(item.Urgency) {
-					item.Urgency = severityUrgency
-				}
-				items = append(items, item)
+			if err := rows.Scan(&id, &riskType, &severity, &description, &supplierID, &supplier, &due, &created); err != nil {
+				logDB(err)
+				writeError(w, 500, "database_error", "리스크 검토 업무를 조회하지 못했습니다")
+				return
 			}
+			if description == "" {
+				description = severity + " 리스크의 완화 계획과 현재 상태를 검토하세요."
+			}
+			item := newWorkItem(datedWorkKey("risk", id, due), "risk_review", "risk", riskType, description, "risk", id, "", supplier, due, created, "/suppliers/"+supplierID+"?tab=Risks", false)
+			severityUrgency := notificationUrgency(severity)
+			if urgencyRank(severityUrgency) < urgencyRank(item.Urgency) {
+				item.Urgency = severityUrgency
+			}
+			items = append(items, item)
+		}
+		if err := rows.Err(); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "리스크 검토 업무를 조회하지 못했습니다")
+			return
 		}
 		rows.Close()
 	}
@@ -168,13 +198,21 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 		}
 		for rows.Next() {
 			var id, name, documentType, supplierID, supplier, due, created string
-			if rows.Scan(&id, &name, &documentType, &supplierID, &supplier, &due, &created) == nil {
-				targetURL := "/search?q=" + url.QueryEscape(name)
-				if supplierID != "" {
-					targetURL = "/suppliers/" + supplierID + "?tab=Documents"
-				}
-				items = append(items, newWorkItem(datedWorkKey("document", id, due), "document_expiry", "document", name, documentType+" 문서의 갱신 또는 재제출이 필요합니다.", "document", id, documentType, supplier, due, created, targetURL, false))
+			if err := rows.Scan(&id, &name, &documentType, &supplierID, &supplier, &due, &created); err != nil {
+				logDB(err)
+				writeError(w, 500, "database_error", "문서 만료 업무를 조회하지 못했습니다")
+				return
 			}
+			targetURL := "/search?q=" + url.QueryEscape(name)
+			if supplierID != "" {
+				targetURL = "/suppliers/" + supplierID + "?tab=Documents"
+			}
+			items = append(items, newWorkItem(datedWorkKey("document", id, due), "document_expiry", "document", name, documentType+" 문서의 갱신 또는 재제출이 필요합니다.", "document", id, documentType, supplier, due, created, targetURL, false))
+		}
+		if err := rows.Err(); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "문서 만료 업무를 조회하지 못했습니다")
+			return
 		}
 		rows.Close()
 	}
@@ -187,15 +225,23 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	for rows.Next() {
 		var id, kind, title, body, severity, objectType, objectID, created string
-		if rows.Scan(&id, &kind, &title, &body, &severity, &objectType, &objectID, &created) == nil {
-			itemURL := objectListURL(objectType, "")
-			if objectType == "supplier" && objectID != "" {
-				itemURL = "/suppliers/" + objectID
-			}
-			item := newWorkItem("notification:"+id, kind, "notification", title, body, objectType, objectID, "", "", "", created, itemURL, true)
-			item.Urgency = notificationUrgency(severity)
-			items = append(items, item)
+		if err := rows.Scan(&id, &kind, &title, &body, &severity, &objectType, &objectID, &created); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "알림 업무를 조회하지 못했습니다")
+			return
 		}
+		itemURL := objectListURL(objectType, "")
+		if objectType == "supplier" && objectID != "" {
+			itemURL = "/suppliers/" + objectID
+		}
+		item := newWorkItem("notification:"+id, kind, "notification", title, body, objectType, objectID, "", "", "", created, itemURL, true)
+		item.Urgency = notificationUrgency(severity)
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "알림 업무를 조회하지 못했습니다")
+		return
 	}
 	rows.Close()
 
@@ -262,9 +308,10 @@ func (a *App) loadWorkItemStates(r *http.Request, userID string) (map[string]wor
 	for rows.Next() {
 		var key, state string
 		var snoozed *time.Time
-		if rows.Scan(&key, &state, &snoozed) == nil {
-			states[key] = workItemState{State: state, SnoozedUntil: snoozed}
+		if err := rows.Scan(&key, &state, &snoozed); err != nil {
+			return nil, err
 		}
+		states[key] = workItemState{State: state, SnoozedUntil: snoozed}
 	}
 	return states, rows.Err()
 }
@@ -422,12 +469,20 @@ func (a *App) listSavedViews(w http.ResponseWriter, r *http.Request) {
 		var filters, columns []byte
 		var shared bool
 		var created, updated any
-		if rows.Scan(&id, &ownerID, &name, &contextName, &filters, &columns, &shared, &created, &updated) == nil {
-			var filterValue, columnValue any
-			_ = json.Unmarshal(filters, &filterValue)
-			_ = json.Unmarshal(columns, &columnValue)
-			items = append(items, map[string]any{"id": id, "name": name, "context": contextName, "filters": filterValue, "columns": columnValue, "shared": shared, "owned": ownerID == p.ID, "createdAt": created, "updatedAt": updated})
+		if err := rows.Scan(&id, &ownerID, &name, &contextName, &filters, &columns, &shared, &created, &updated); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "저장된 보기를 조회하지 못했습니다")
+			return
 		}
+		var filterValue, columnValue any
+		_ = json.Unmarshal(filters, &filterValue)
+		_ = json.Unmarshal(columns, &columnValue)
+		items = append(items, map[string]any{"id": id, "name": name, "context": contextName, "filters": filterValue, "columns": columnValue, "shared": shared, "owned": ownerID == p.ID, "createdAt": created, "updatedAt": updated})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "저장된 보기를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items, "canShare": p.OrganizationID != nil})
 }

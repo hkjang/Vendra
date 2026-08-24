@@ -77,22 +77,49 @@ func (a *App) aiAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		supplier = redactSupplier(p, supplier)
 		var objects []businessObject
-		rows, _ := a.db.Query(r.Context(), objectSelect+` WHERE o.supplier_id=$1 AND o.deleted_at IS NULL AND (vendra_org_in_scope(o.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND o.owner_id=$4::uuid)) ORDER BY o.updated_at DESC LIMIT 50`, id, p.DataScope, organizationID, p.ID)
-		if rows != nil {
-			for rows.Next() {
-				o, e := scanObject(rows)
-				if e == nil {
-					objects = append(objects, redactObject(p, o))
-				}
+		rows, err := a.db.Query(r.Context(), objectSelect+` WHERE o.supplier_id=$1 AND o.deleted_at IS NULL AND (vendra_org_in_scope(o.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND o.owner_id=$4::uuid)) ORDER BY o.updated_at DESC LIMIT 50`, id, p.DataScope, organizationID, p.ID)
+		if err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "컨텍스트를 조회하지 못했습니다")
+			return
+		}
+		for rows.Next() {
+			o, err := scanObject(rows)
+			if err != nil {
+				rows.Close()
+				logDB(err)
+				writeError(w, 500, "database_error", "컨텍스트를 조회하지 못했습니다")
+				return
 			}
-			rows.Close()
+			objects = append(objects, redactObject(p, o))
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "컨텍스트를 조회하지 못했습니다")
+			return
 		}
 		contextData = append(contextData, map[string]any{"supplier": supplier, "recentRecords": objects})
 	}
 	if len(in.SupplierIDs) == 0 {
-		supplierSummary, _ := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',id,'name',name,'status',status,'grade',grade,'riskLevel',risk_level,'score',score,'annualSpend',CASE WHEN $4 THEN annual_spend END,'categories',categories) FROM suppliers WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 100`, p.DataScope, organizationID, p.ID, showSpend)
-		expiring, _ := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'supplierName',s.name,'amount',CASE WHEN $4 THEN o.amount END,'endDate',o.end_date,'riskLevel',o.risk_level) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='contract' AND o.end_date BETWEEN current_date AND current_date+365 AND o.deleted_at IS NULL AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND o.owner_id=$3::uuid)) ORDER BY o.end_date LIMIT 100`, p.DataScope, organizationID, p.ID, hasPermission(p, "contract.amount.read"))
-		issues, _ := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'title',o.title,'supplierName',s.name,'status',o.status,'riskLevel',o.risk_level,'data',o.data) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='issue' AND o.status NOT IN('closed','resolved') AND o.deleted_at IS NULL AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND o.owner_id=$3::uuid)) ORDER BY o.updated_at DESC LIMIT 100`, p.DataScope, organizationID, p.ID)
+		supplierSummary, err := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',id,'name',name,'status',status,'grade',grade,'riskLevel',risk_level,'score',score,'annualSpend',CASE WHEN $4 THEN annual_spend END,'categories',categories) FROM suppliers WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 100`, p.DataScope, organizationID, p.ID, showSpend)
+		if err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "컨텍스트를 조회하지 못했습니다")
+			return
+		}
+		expiring, err := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'supplierName',s.name,'amount',CASE WHEN $4 THEN o.amount END,'endDate',o.end_date,'riskLevel',o.risk_level) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='contract' AND o.end_date BETWEEN current_date AND current_date+365 AND o.deleted_at IS NULL AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND o.owner_id=$3::uuid)) ORDER BY o.end_date LIMIT 100`, p.DataScope, organizationID, p.ID, hasPermission(p, "contract.amount.read"))
+		if err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "컨텍스트를 조회하지 못했습니다")
+			return
+		}
+		issues, err := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'title',o.title,'supplierName',s.name,'status',o.status,'riskLevel',o.risk_level,'data',o.data) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='issue' AND o.status NOT IN('closed','resolved') AND o.deleted_at IS NULL AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND o.owner_id=$3::uuid)) ORDER BY o.updated_at DESC LIMIT 100`, p.DataScope, organizationID, p.ID)
+		if err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "컨텍스트를 조회하지 못했습니다")
+			return
+		}
 		contextData = append(contextData, map[string]any{"portfolioSuppliers": supplierSummary, "expiringContracts": expiring, "openIssues": issues})
 	}
 	contextJSON, _ := json.Marshal(contextData)
@@ -363,7 +390,11 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 			return nil, err
 		}
 		defer rows.Close()
-		return supplierSummaryRows(rows), nil
+		items, err := supplierSummaryRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		return items, nil
 	case "get_supplier":
 		s, err := scanSupplier(a.db.QueryRow(ctx, supplierSelect+` WHERE id=$1 AND deleted_at IS NULL`, stringValue(args, "id")))
 		if err != nil {
@@ -382,7 +413,11 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 			return nil, err
 		}
 		defer rows.Close()
-		return supplierSummaryRows(rows), nil
+		items, err := supplierSummaryRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		return items, nil
 	case "get_supplier_risk":
 		if !a.supplierScopeAllowed(r, stringValue(args, "supplierId")) {
 			return nil, mcpToolError("data scope denied")
@@ -413,23 +448,19 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 	}
 }
 
-type rowScanner interface {
-	Next() bool
-	Scan(...any) error
-}
-
-func supplierSummaryRows(rows rowScanner) []map[string]any {
+func supplierSummaryRows(rows rowScanner) ([]map[string]any, error) {
 	items := []map[string]any{}
 	for rows.Next() {
 		var id, num, name, status, risk string
 		var grade *string
 		var score *float64
 		var spend float64
-		if rows.Scan(&id, &num, &name, &status, &grade, &risk, &score, &spend) == nil {
-			items = append(items, map[string]any{"id": id, "number": num, "name": name, "status": status, "grade": grade, "riskLevel": risk, "score": score, "annualSpend": spend})
+		if err := rows.Scan(&id, &num, &name, &status, &grade, &risk, &score, &spend); err != nil {
+			return nil, err
 		}
+		items = append(items, map[string]any{"id": id, "number": num, "name": name, "status": status, "grade": grade, "riskLevel": risk, "score": score, "annualSpend": spend})
 	}
-	return items
+	return items, rows.Err()
 }
 func (a *App) mcpJSONRows(ctx context.Context, query string, args ...any) ([]any, error) {
 	rows, err := a.db.Query(ctx, query, args...)
@@ -437,16 +468,7 @@ func (a *App) mcpJSONRows(ctx context.Context, query string, args ...any) ([]any
 		return nil, err
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
-	}
-	return items, nil
+	return scanJSONRows(rows)
 }
 func (a *App) mcpObjects(r *http.Request, typ string, args map[string]any) ([]any, error) {
 	p, _ := principalFrom(r.Context())

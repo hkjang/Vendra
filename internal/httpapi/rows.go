@@ -1,0 +1,83 @@
+package httpapi
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// rowScanner is the part of pgx.Rows a read path actually uses. Err is the
+// method that matters: pgx reports a failure raised partway through a result
+// set there, not from Query.
+type rowScanner interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+}
+
+// scanJSONRows collects rows made of a single jsonb column.
+//
+// pgx reports a failed query while the rows are being read rather than when
+// Query returns, so a loop that ignores rows.Err turns a failure into an empty
+// result: the spend report says nothing was spent, the approval list says
+// nothing is waiting for you, the audit trail says nobody did anything. Those
+// answers are indistinguishable from the truth and far more damaging than an
+// error, so every read path has to tell "there are no rows" apart from "we
+// could not read them".
+func scanJSONRows(rows rowScanner) ([]any, error) {
+	items := []any{}
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, err
+		}
+		items = append(items, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// searchSource runs one leg of a multi-source search, keeping a failed leg
+// distinguishable from a leg that matched nothing.
+func searchSource(rows pgx.Rows, err error, scan func(pgx.Rows) (map[string]any, error)) ([]map[string]any, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		item, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// dateParam reads an optional YYYY-MM-DD filter. A malformed date is the
+// caller's mistake, so it is answered as one rather than reaching PostgreSQL
+// and failing there as a server error.
+func dateParam(w http.ResponseWriter, r *http.Request, name, label string) (string, bool) {
+	value := strings.TrimSpace(r.URL.Query().Get(name))
+	if value == "" {
+		return "", true
+	}
+	if _, err := time.Parse("2006-01-02", value); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", label+"은(는) YYYY-MM-DD 형식이어야 합니다")
+		return "", false
+	}
+	return value, true
+}
