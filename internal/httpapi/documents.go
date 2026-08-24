@@ -291,7 +291,21 @@ func (a *App) serveDocument(w http.ResponseWriter, r *http.Request, inline bool)
 		action = "preview"
 	}
 	a.audit.record(r, action, "document", r.PathValue("id"), nil, map[string]any{"name": name})
-	_, _ = io.Copy(w, f)
+	// The response advertises a checksum the server never verified. A size
+	// mismatch was already noticed and reported; a changed file of the same
+	// length went out unremarked, which is the case a checksum exists for.
+	// The bytes cannot be recalled once sent, so the mismatch is recorded
+	// loudly enough for an operator to find it.
+	digest := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(w, digest), f); err != nil {
+		slog.Warn("document transfer ended early", "document_id", r.PathValue("id"), "error", err, "request_id", requestID(r.Context()))
+		return
+	}
+	if served := hex.EncodeToString(digest.Sum(nil)); served != checksum {
+		slog.Error("document content does not match its recorded checksum",
+			"document_id", r.PathValue("id"), "recorded", checksum, "served", served,
+			"request_id", requestID(r.Context()))
+	}
 }
 
 func (a *App) listDocumentSignatures(w http.ResponseWriter, r *http.Request) {
