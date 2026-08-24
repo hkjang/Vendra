@@ -77,11 +77,35 @@ export function money(value?: number | null) {
   }).format(value);
 }
 
+const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 function parseTimestamp(value?: string | null) {
   if (!value) return undefined;
+  // A bare YYYY-MM-DD is a calendar date, not an instant. `new Date` reads it as
+  // UTC midnight, which renders as the previous day everywhere west of UTC — a
+  // contract ending on the 24th showed as the 23rd. Build it in local time so
+  // the day a person typed is the day they see.
+  if (CALENDAR_DATE.test(value)) {
+    const [year, month, day] = value.split("-").map(Number);
+    return new Date(year, month - 1, day);
+  }
   // PostgreSQL may serialize UTC offsets as `+00`; browsers require `+00:00`.
   const parsed = new Date(value.replace(/([+-]\d{2})$/, "$1:00"));
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+/**
+ * A date as YYYY-MM-DD in the viewer's own calendar. `toISOString` answers in
+ * UTC, so it names yesterday for the first nine hours of every Korean day.
+ */
+export function isoDate(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Today in the viewer's own calendar. */
+export function todayISO() {
+  return isoDate(new Date());
 }
 
 export function date(value?: string | null) {

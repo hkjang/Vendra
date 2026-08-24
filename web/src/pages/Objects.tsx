@@ -25,7 +25,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, date, del, money, post, put } from "../api";
+import { api, date, del, isoDate, money, post, put, todayISO } from "../api";
 import {
   Badge,
   Empty,
@@ -1067,12 +1067,10 @@ function RiskIntelligence() {
           <span>검토일 경과</span>
           <strong>
             {
-              open.filter(
-                (x) =>
-                  x.reviewDate &&
-                  new Date(x.reviewDate).getTime() <
-                    new Date().setHours(0, 0, 0, 0),
-              ).length
+              // Both sides are calendar dates, so compare them as such rather
+              // than routing one through a UTC instant.
+              open.filter((x) => x.reviewDate && x.reviewDate < todayISO())
+                .length
             }
           </strong>
         </div>
@@ -1211,9 +1209,9 @@ function SpendPage() {
   const [from, setFrom] = useState(() => {
     const d = new Date();
     d.setFullYear(d.getFullYear() - 1);
-    return d.toISOString().slice(0, 10);
+    return isoDate(d);
   });
-  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [to, setTo] = useState(todayISO);
   useEffect(() => {
     const grouping = groupBy === "supplier" ? "" : groupBy;
     api<{ items: SpendRow[] }>(
