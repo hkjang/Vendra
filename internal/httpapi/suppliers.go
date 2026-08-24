@@ -313,10 +313,21 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		bankCipher = c
-		var workflowEnabled bool
-		_ = a.db.QueryRow(r.Context(), `SELECT COALESCE((value #>> '{}')::boolean,false) FROM settings WHERE key='workflow.approval_enabled'`).Scan(&workflowEnabled)
-		var bankApproval bool
-		_ = a.db.QueryRow(r.Context(), `SELECT COALESCE((value->>'bankChangeApproval')::boolean,true) FROM settings WHERE key='supplier.registration'`).Scan(&bankApproval)
+		workflowEnabled, err := a.boolSetting(r.Context(), `SELECT COALESCE((value #>> '{}')::boolean,false) FROM settings WHERE key='workflow.approval_enabled'`, false)
+		if err != nil {
+			logDB(err)
+			writeControlUnavailable(w)
+			return
+		}
+		// An unconfigured supplier.registration still requires approval, which
+		// the COALESCE says but the old code lost: a missing row scanned as
+		// false and waved the change through.
+		bankApproval, err := a.boolSetting(r.Context(), `SELECT COALESCE((value->>'bankChangeApproval')::boolean,true) FROM settings WHERE key='supplier.registration'`, true)
+		if err != nil {
+			logDB(err)
+			writeControlUnavailable(w)
+			return
+		}
 		bankChangePending = workflowEnabled && bankApproval
 	}
 	if bankChangePending {
