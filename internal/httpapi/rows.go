@@ -113,3 +113,27 @@ func writeControlUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "5")
 	writeError(w, http.StatusServiceUnavailable, "settings_unavailable", "결재 설정을 확인할 수 없어 처리를 중단했습니다. 잠시 후 다시 시도하세요")
 }
+
+// orgInScope renders the data-scope predicate as inline SQL instead of calling
+// vendra_org_in_scope, which PostgreSQL evaluates once per row.
+//
+// A SQL function is only inlined when its body has no subquery, and the
+// division branch needs one to walk the organisation tree — so every scoped
+// scan paid a function call per row. Written out, the descendant lookup is
+// uncorrelated, and the planner hoists it into a single hashed subplan.
+//
+// Measured over 100,000 business objects:
+//
+//	scope        function   inline
+//	company        127 ms    7.4 ms
+//	department     238 ms    7.0 ms
+//	division       463 ms    8.9 ms
+//
+// The function itself is kept: the single-row checks call it once, where the
+// per-row cost does not arise.
+func orgInScope(column, scopeParam, orgParam string) string {
+	return "(" + scopeParam + "='company'" +
+		" OR (" + scopeParam + "='department' AND " + column + "=NULLIF(" + orgParam + ",'')::uuid)" +
+		" OR (" + scopeParam + "='division' AND " + column + " IN (SELECT vo.id FROM organizations vo, organizations vp" +
+		" WHERE vp.id=NULLIF(" + orgParam + ",'')::uuid AND (vo.path||vo.id||'/') LIKE (vp.path||vp.id||'/')||'%')))"
+}

@@ -70,7 +70,7 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 		 JOIN workflow_definitions d ON d.id=i.definition_id
 		 LEFT JOIN business_objects o ON o.id=i.object_id
 		 LEFT JOIN suppliers s ON s.id=o.supplier_id
-		 WHERE i.status='pending' AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid)
+		 WHERE i.status='pending' AND (`+orgInScope("o.organization_id", "$1", "$2")+`
 		   OR ($1='own' AND (o.owner_id=$3::uuid OR i.requested_by=$3::uuid)))
 		 ORDER BY i.created_at LIMIT 200`, p.DataScope, organizationID, p.ID)
 		if err != nil {
@@ -115,7 +115,7 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 	 FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id
 	 WHERE o.deleted_at IS NULL AND o.status NOT IN('completed','closed','resolved','ended','terminated','rejected')
 	 AND CASE WHEN o.object_type='contract' THEN o.end_date ELSE o.due_date END BETWEEN current_date-365 AND current_date+180
-	 AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND o.owner_id=$3::uuid))
+	 AND (`+orgInScope("o.organization_id", "$1", "$2")+` OR ($1='own' AND o.owner_id=$3::uuid))
 	 ORDER BY CASE WHEN o.object_type='contract' THEN o.end_date ELSE o.due_date END LIMIT 300`, p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "기한 업무를 조회하지 못했습니다")
@@ -153,7 +153,7 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 		 COALESCE(to_char(r.review_date,'YYYY-MM-DD'),''),to_char(r.created_at,'YYYY-MM-DD"T"HH24:MI:SSOF')
 		 FROM risks r JOIN suppliers s ON s.id=r.supplier_id
 		 WHERE r.status NOT IN('closed','resolved') AND (r.review_date BETWEEN current_date-365 AND current_date+30 OR (r.review_date IS NULL AND r.severity IN('HIGH','CRITICAL')))
-		 AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND COALESCE(r.owner_id,s.owner_id)=$3::uuid))
+		 AND s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$1", "$2")+` OR ($1='own' AND COALESCE(r.owner_id,s.owner_id)=$3::uuid))
 		 ORDER BY r.review_date LIMIT 200`, p.DataScope, organizationID, p.ID)
 		if err != nil {
 			writeError(w, 500, "database_error", "리스크 검토 업무를 조회하지 못했습니다")
@@ -190,7 +190,7 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 		 FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id
 		 WHERE d.status='active' AND d.expires_at BETWEEN current_date-365 AND current_date+30
 		 AND ((d.supplier_id IS NULL AND ($1='company' OR d.uploaded_by=$3::uuid))
-		   OR vendra_org_in_scope(s.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND COALESCE(d.uploaded_by,s.owner_id)=$3::uuid))
+		   OR `+orgInScope("s.organization_id", "$1", "$2")+` OR ($1='own' AND COALESCE(d.uploaded_by,s.owner_id)=$3::uuid))
 		 ORDER BY d.expires_at LIMIT 200`, p.DataScope, organizationID, p.ID)
 		if err != nil {
 			writeError(w, 500, "database_error", "문서 만료 업무를 조회하지 못했습니다")

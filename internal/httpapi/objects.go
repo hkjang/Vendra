@@ -86,7 +86,7 @@ func (a *App) listObjects(objectType string) http.HandlerFunc {
 			organizationID = *p.OrganizationID
 		}
 		orderBy := objectOrderBy(order, hasPermission(p, objectType+".amount.read"))
-		query := objectSelect + ` WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.status=$2) AND ($3='' OR o.supplier_id=$3::uuid) AND ($4='' OR o.title ILIKE '%'||$4||'%' OR o.number ILIKE '%'||$4||'%') AND (vendra_org_in_scope(o.organization_id,$6,NULLIF($7,'')::uuid) OR ($6='own' AND o.owner_id=$8::uuid)) ORDER BY ` + orderBy + ` LIMIT $5`
+		query := objectSelect + ` WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.status=$2) AND ($3='' OR o.supplier_id=$3::uuid) AND ($4='' OR o.title ILIKE '%'||$4||'%' OR o.number ILIKE '%'||$4||'%') AND (` + orgInScope("o.organization_id", "$6", "$7") + ` OR ($6='own' AND o.owner_id=$8::uuid)) ORDER BY ` + orderBy + ` LIMIT $5`
 		rows, err := a.db.Query(r.Context(), query, objectType, status, supplierID, q, limit+1, p.DataScope, organizationID, p.ID)
 		if err != nil {
 			logDB(err)

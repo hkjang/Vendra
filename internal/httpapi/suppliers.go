@@ -90,7 +90,7 @@ func (a *App) listSuppliers(w http.ResponseWriter, r *http.Request) {
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
-	rows, err := a.db.Query(r.Context(), supplierSelect+` WHERE deleted_at IS NULL AND ($1='' OR status=$1) AND ($2='' OR risk_level=$2) AND ($3='' OR name ILIKE '%'||$3||'%' OR business_number ILIKE '%'||$3||'%' OR supplier_number ILIKE '%'||$3||'%') AND (vendra_org_in_scope(organization_id,$5,NULLIF($6,'')::uuid) OR ($5='own' AND owner_id=$7::uuid)) ORDER BY updated_at DESC LIMIT $4`, status, risk, q, limit+1, p.DataScope, organizationID, p.ID)
+	rows, err := a.db.Query(r.Context(), supplierSelect+` WHERE deleted_at IS NULL AND ($1='' OR status=$1) AND ($2='' OR risk_level=$2) AND ($3='' OR name ILIKE '%'||$3||'%' OR business_number ILIKE '%'||$3||'%' OR supplier_number ILIKE '%'||$3||'%') AND (`+orgInScope("organization_id", "$5", "$6")+` OR ($5='own' AND owner_id=$7::uuid)) ORDER BY updated_at DESC LIMIT $4`, status, risk, q, limit+1, p.DataScope, organizationID, p.ID)
 	if err != nil {
 		logDB(err)
 		writeError(w, 500, "database_error", "공급업체를 조회하지 못했습니다")
