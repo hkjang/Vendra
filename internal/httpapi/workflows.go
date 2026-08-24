@@ -168,7 +168,7 @@ func (a *App) listApprovals(w http.ResponseWriter, r *http.Request) {
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT i.id,i.object_type,i.object_id,i.status,i.current_step,i.context,i.requested_by,i.created_at,d.name,d.steps,o.number,o.title,o.amount,s.name FROM workflow_instances i JOIN workflow_definitions d ON d.id=i.definition_id LEFT JOIN business_objects o ON o.id=i.object_id LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE i.status='pending' AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND (o.owner_id=$3::uuid OR i.requested_by=$3::uuid))) ORDER BY i.created_at`, p.DataScope, organizationID, p.ID)
+	rows, err := a.db.Query(r.Context(), `SELECT i.id,i.object_type,i.object_id,i.status,i.current_step,i.context,i.requested_by,i.created_at,d.name,d.steps,o.number,o.title,o.amount,s.name FROM workflow_instances i JOIN workflow_definitions d ON d.id=i.definition_id LEFT JOIN business_objects o ON o.id=i.object_id LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE i.status='pending' AND (`+orgInScope("o.organization_id", "$1", "$2")+` OR ($1='own' AND (o.owner_id=$3::uuid OR i.requested_by=$3::uuid))) ORDER BY i.created_at`, p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "승인함을 조회하지 못했습니다")
 		return

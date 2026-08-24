@@ -127,7 +127,7 @@ func (a *App) aiAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		supplier = redactSupplier(p, supplier)
 		var objects []businessObject
-		rows, err := a.db.Query(r.Context(), objectSelect+` WHERE o.supplier_id=$1 AND o.deleted_at IS NULL AND (vendra_org_in_scope(o.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND o.owner_id=$4::uuid)) ORDER BY o.updated_at DESC LIMIT 50`, id, p.DataScope, organizationID, p.ID)
+		rows, err := a.db.Query(r.Context(), objectSelect+` WHERE o.supplier_id=$1 AND o.deleted_at IS NULL AND (`+orgInScope("o.organization_id", "$2", "$3")+` OR ($2='own' AND o.owner_id=$4::uuid)) ORDER BY o.updated_at DESC LIMIT 50`, id, p.DataScope, organizationID, p.ID)
 		if err != nil {
 			logDB(err)
 			writeError(w, 500, "database_error", "컨텍스트를 조회하지 못했습니다")
@@ -152,19 +152,19 @@ func (a *App) aiAnalyze(w http.ResponseWriter, r *http.Request) {
 		contextData = append(contextData, map[string]any{"supplier": supplier, "recentRecords": objects})
 	}
 	if len(in.SupplierIDs) == 0 {
-		supplierSummary, err := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',id,'name',name,'status',status,'grade',grade,'riskLevel',risk_level,'score',score,'annualSpend',CASE WHEN $4 THEN annual_spend END,'categories',categories) FROM suppliers WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 100`, p.DataScope, organizationID, p.ID, showSpend)
+		supplierSummary, err := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',id,'name',name,'status',status,'grade',grade,'riskLevel',risk_level,'score',score,'annualSpend',CASE WHEN $4 THEN annual_spend END,'categories',categories) FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 100`, p.DataScope, organizationID, p.ID, showSpend)
 		if err != nil {
 			logDB(err)
 			writeError(w, 500, "database_error", "컨텍스트를 조회하지 못했습니다")
 			return
 		}
-		expiring, err := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'supplierName',s.name,'amount',CASE WHEN $4 THEN o.amount END,'endDate',o.end_date,'riskLevel',o.risk_level) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='contract' AND o.end_date BETWEEN current_date AND current_date+365 AND o.deleted_at IS NULL AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND o.owner_id=$3::uuid)) ORDER BY o.end_date LIMIT 100`, p.DataScope, organizationID, p.ID, hasPermission(p, "contract.amount.read"))
+		expiring, err := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'supplierName',s.name,'amount',CASE WHEN $4 THEN o.amount END,'endDate',o.end_date,'riskLevel',o.risk_level) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='contract' AND o.end_date BETWEEN current_date AND current_date+365 AND o.deleted_at IS NULL AND (`+orgInScope("o.organization_id", "$1", "$2")+` OR ($1='own' AND o.owner_id=$3::uuid)) ORDER BY o.end_date LIMIT 100`, p.DataScope, organizationID, p.ID, hasPermission(p, "contract.amount.read"))
 		if err != nil {
 			logDB(err)
 			writeError(w, 500, "database_error", "컨텍스트를 조회하지 못했습니다")
 			return
 		}
-		issues, err := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'title',o.title,'supplierName',s.name,'status',o.status,'riskLevel',o.risk_level,'data',o.data) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='issue' AND o.status NOT IN('closed','resolved') AND o.deleted_at IS NULL AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND o.owner_id=$3::uuid)) ORDER BY o.updated_at DESC LIMIT 100`, p.DataScope, organizationID, p.ID)
+		issues, err := a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'title',o.title,'supplierName',s.name,'status',o.status,'riskLevel',o.risk_level,'data',o.data) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='issue' AND o.status NOT IN('closed','resolved') AND o.deleted_at IS NULL AND (`+orgInScope("o.organization_id", "$1", "$2")+` OR ($1='own' AND o.owner_id=$3::uuid)) ORDER BY o.updated_at DESC LIMIT 100`, p.DataScope, organizationID, p.ID)
 		if err != nil {
 			logDB(err)
 			writeError(w, 500, "database_error", "컨텍스트를 조회하지 못했습니다")
@@ -457,7 +457,7 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 	switch name {
 	case "search_suppliers":
 		q := stringValue(args, "query")
-		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%') AND (vendra_org_in_scope(organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT 100`, q, p.DataScope, organizationID, p.ID, showSpend)
+		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT 100`, q, p.DataScope, organizationID, p.ID, showSpend)
 		if err != nil {
 			return nil, err
 		}
@@ -480,7 +480,7 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		return redactSupplier(p, s), nil
 	case "compare_suppliers":
 		ids := stringSlice(args["ids"])
-		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE id=ANY($1::uuid[]) AND deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name`, ids, p.DataScope, organizationID, p.ID, showSpend)
+		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE id=ANY($1::uuid[]) AND deleted_at IS NULL AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name`, ids, p.DataScope, organizationID, p.ID, showSpend)
 		if err != nil {
 			return nil, err
 		}
@@ -513,13 +513,13 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		// thousand years would otherwise pull the whole contract table into one
 		// answer for a model to read.
 		days := intNumber(args["days"], 180, 3650)
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'supplierId',o.supplier_id,'supplierName',s.name,'endDate',o.end_date,'amount',CASE WHEN $5 THEN o.amount END,'status',o.status) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='contract' AND o.deleted_at IS NULL AND o.end_date BETWEEN current_date AND current_date+($1::int) AND (vendra_org_in_scope(o.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND o.owner_id=$4::uuid)) ORDER BY o.end_date LIMIT 100`, days, p.DataScope, organizationID, p.ID, hasPermission(p, "contract.amount.read"))
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'supplierId',o.supplier_id,'supplierName',s.name,'endDate',o.end_date,'amount',CASE WHEN $5 THEN o.amount END,'status',o.status) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='contract' AND o.deleted_at IS NULL AND o.end_date BETWEEN current_date AND current_date+($1::int) AND (`+orgInScope("o.organization_id", "$2", "$3")+` OR ($2='own' AND o.owner_id=$4::uuid)) ORDER BY o.end_date LIMIT 100`, days, p.DataScope, organizationID, p.ID, hasPermission(p, "contract.amount.read"))
 	case "analyze_spend":
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'annualSpend',annual_spend,'share',round(100*annual_spend/NULLIF(sum(annual_spend) OVER(),0),2),'riskLevel',risk_level,'score',score) FROM suppliers WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 100`, p.DataScope, organizationID, p.ID)
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'annualSpend',annual_spend,'share',round(100*annual_spend/NULLIF(sum(annual_spend) OVER(),0),2),'riskLevel',risk_level,'score',score) FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 100`, p.DataScope, organizationID, p.ID)
 	case "recommend_suppliers":
 		category := stringValue(args, "category")
 		minScore, _ := args["minScore"].(float64)
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'categories',categories,'score',score,'grade',grade,'riskLevel',risk_level,'annualSpend',CASE WHEN $6 THEN annual_spend END) FROM suppliers WHERE deleted_at IS NULL AND status IN('active','approved') AND ($1='' OR categories ? $1) AND COALESCE(score,0)>=$2 AND risk_level NOT IN('CRITICAL') AND (vendra_org_in_scope(organization_id,$3,NULLIF($4,'')::uuid) OR ($3='own' AND owner_id=$5::uuid)) ORDER BY score DESC NULLS LAST,risk_level LIMIT 50`, category, minScore, p.DataScope, organizationID, p.ID, showSpend)
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'categories',categories,'score',score,'grade',grade,'riskLevel',risk_level,'annualSpend',CASE WHEN $6 THEN annual_spend END) FROM suppliers WHERE deleted_at IS NULL AND status IN('active','approved') AND ($1='' OR categories ? $1) AND COALESCE(score,0)>=$2 AND risk_level NOT IN('CRITICAL') AND (`+orgInScope("organization_id", "$3", "$4")+` OR ($3='own' AND owner_id=$5::uuid)) ORDER BY score DESC NULLS LAST,risk_level LIMIT 50`, category, minScore, p.DataScope, organizationID, p.ID, showSpend)
 	default:
 		return nil, mcpToolError("unknown tool: %s", name)
 	}
@@ -554,7 +554,7 @@ func (a *App) mcpObjects(r *http.Request, typ string, args map[string]any) ([]an
 		organizationID = *p.OrganizationID
 	}
 	showAmount := hasPermission(p, typ+".amount.read")
-	return a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'status',o.status,'supplierId',o.supplier_id,'supplierName',s.name,'amount',CASE WHEN $7 THEN o.amount END,'dueDate',o.due_date,'endDate',o.end_date,'riskLevel',o.risk_level,'data',o.data) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.supplier_id=$2::uuid) AND ($3='' OR o.title ILIKE '%'||$3||'%' OR o.number ILIKE '%'||$3||'%') AND (vendra_org_in_scope(o.organization_id,$4,NULLIF($5,'')::uuid) OR ($4='own' AND o.owner_id=$6::uuid)) ORDER BY o.updated_at DESC LIMIT 100`, typ, stringValue(args, "supplierId"), stringValue(args, "query"), p.DataScope, organizationID, p.ID, showAmount)
+	return a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'status',o.status,'supplierId',o.supplier_id,'supplierName',s.name,'amount',CASE WHEN $7 THEN o.amount END,'dueDate',o.due_date,'endDate',o.end_date,'riskLevel',o.risk_level,'data',o.data) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.supplier_id=$2::uuid) AND ($3='' OR o.title ILIKE '%'||$3||'%' OR o.number ILIKE '%'||$3||'%') AND (`+orgInScope("o.organization_id", "$4", "$5")+` OR ($4='own' AND o.owner_id=$6::uuid)) ORDER BY o.updated_at DESC LIMIT 100`, typ, stringValue(args, "supplierId"), stringValue(args, "query"), p.DataScope, organizationID, p.ID, showAmount)
 }
 func stringSlice(v any) []string {
 	xs, _ := v.([]any)

@@ -17,7 +17,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	var total, active, newCount, highRisk, expiring, openIssues, activeRFQ, activeRFP, overdueDeliveries, pendingApprovals, pendingScreenings int
 	var spend, avgScore, contractValue, deliveryCompliance, defectRate float64
-	err := a.db.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE status='active'),count(*) FILTER(WHERE created_at>=date_trunc('month',now())),count(*) FILTER(WHERE risk_level IN('HIGH','CRITICAL')),COALESCE(sum(annual_spend),0),COALESCE(avg(score),0) FROM suppliers WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&total, &active, &newCount, &highRisk, &spend, &avgScore)
+	err := a.db.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE status='active'),count(*) FILTER(WHERE created_at>=date_trunc('month',now())),count(*) FILTER(WHERE risk_level IN('HIGH','CRITICAL')),COALESCE(sum(annual_spend),0),COALESCE(avg(score),0) FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&total, &active, &newCount, &highRisk, &spend, &avgScore)
 	if err != nil {
 		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
 		return
@@ -25,7 +25,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	if !showAmounts {
 		spend = 0
 	}
-	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE object_type='contract' AND end_date BETWEEN current_date AND current_date+180),count(*) FILTER(WHERE object_type='issue' AND status NOT IN('closed','resolved')),COALESCE(sum(amount) FILTER(WHERE object_type='contract' AND status IN('active','approved')),0),COALESCE(100.0*count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed') AND (due_date IS NULL OR CASE WHEN COALESCE(data->>'deliveredAt','') ~ '^\d{4}-\d{2}-\d{2}' THEN left(data->>'deliveredAt',10)::date ELSE updated_at::date END<=due_date)) / NULLIF(count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed')),0),0),COALESCE(100.0*count(*) FILTER(WHERE object_type IN('quality','inspection') AND (status IN('rejected','defect','ncr','return') OR COALESCE(data->>'defect','false') IN ('true','1','yes'))) / NULLIF(count(*) FILTER(WHERE object_type IN('quality','inspection')),0),0),count(*) FILTER(WHERE object_type='rfq' AND status IN('open','active','pending_approval')),count(*) FILTER(WHERE object_type='rfp' AND status IN('open','active','pending_approval')),count(*) FILTER(WHERE object_type='delivery' AND due_date<current_date AND status NOT IN('completed','accepted','closed')) FROM business_objects WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&expiring, &openIssues, &contractValue, &deliveryCompliance, &defectRate, &activeRFQ, &activeRFP, &overdueDeliveries); err != nil {
+	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE object_type='contract' AND end_date BETWEEN current_date AND current_date+180),count(*) FILTER(WHERE object_type='issue' AND status NOT IN('closed','resolved')),COALESCE(sum(amount) FILTER(WHERE object_type='contract' AND status IN('active','approved')),0),COALESCE(100.0*count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed') AND (due_date IS NULL OR CASE WHEN COALESCE(data->>'deliveredAt','') ~ '^\d{4}-\d{2}-\d{2}' THEN left(data->>'deliveredAt',10)::date ELSE updated_at::date END<=due_date)) / NULLIF(count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed')),0),0),COALESCE(100.0*count(*) FILTER(WHERE object_type IN('quality','inspection') AND (status IN('rejected','defect','ncr','return') OR COALESCE(data->>'defect','false') IN ('true','1','yes'))) / NULLIF(count(*) FILTER(WHERE object_type IN('quality','inspection')),0),0),count(*) FILTER(WHERE object_type='rfq' AND status IN('open','active','pending_approval')),count(*) FILTER(WHERE object_type='rfp' AND status IN('open','active','pending_approval')),count(*) FILTER(WHERE object_type='delivery' AND due_date<current_date AND status NOT IN('completed','accepted','closed')) FROM business_objects WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&expiring, &openIssues, &contractValue, &deliveryCompliance, &defectRate, &activeRFQ, &activeRFP, &overdueDeliveries); err != nil {
 		logDB(err)
 		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
 		return
@@ -33,17 +33,17 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	if !showAmounts {
 		contractValue = 0
 	}
-	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FROM workflow_instances wi JOIN business_objects o ON o.id=wi.object_id WHERE wi.status='pending' AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND o.owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&pendingApprovals); err != nil {
+	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FROM workflow_instances wi JOIN business_objects o ON o.id=wi.object_id WHERE wi.status='pending' AND (`+orgInScope("o.organization_id", "$1", "$2")+` OR ($1='own' AND o.owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&pendingApprovals); err != nil {
 		logDB(err)
 		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
 		return
 	}
-	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FROM suppliers WHERE deleted_at IS NULL AND status='screening' AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&pendingScreenings); err != nil {
+	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FROM suppliers WHERE deleted_at IS NULL AND status='screening' AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&pendingScreenings); err != nil {
 		logDB(err)
 		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
 		return
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT id,name,annual_spend,risk_level,score FROM suppliers WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 5`, p.DataScope, organizationID, p.ID)
+	rows, err := a.db.Query(r.Context(), `SELECT id,name,annual_spend,risk_level,score FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 5`, p.DataScope, organizationID, p.ID)
 	if err != nil {
 		logDB(err)
 		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
@@ -105,7 +105,7 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 	if hasPermission(p, "supplier.read") || hasPermission(p, "*.read") {
-		rows, err := a.db.Query(r.Context(), `SELECT id,supplier_number,name,status FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (vendra_org_in_scope(organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		rows, err := a.db.Query(r.Context(), `SELECT id,supplier_number,name,status FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
 		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
 			var id, num, title, status string
 			err := rows.Scan(&id, &num, &title, &status)
@@ -119,7 +119,7 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 	// whichever contracts happened to fall inside the newest thirty rows of
 	// every type, and silently lost the rest.
 	if readable := readableObjectTypes(p); len(readable) > 0 {
-		rows, err := a.db.Query(r.Context(), `SELECT id,object_type,number,title,status FROM business_objects WHERE deleted_at IS NULL AND object_type=ANY($5) AND (title ILIKE '%'||$1||'%' OR number ILIKE '%'||$1||'%') AND (vendra_org_in_scope(organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND owner_id=$4::uuid)) ORDER BY updated_at DESC LIMIT 30`, q, p.DataScope, organizationID, p.ID, readable)
+		rows, err := a.db.Query(r.Context(), `SELECT id,object_type,number,title,status FROM business_objects WHERE deleted_at IS NULL AND object_type=ANY($5) AND (title ILIKE '%'||$1||'%' OR number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY updated_at DESC LIMIT 30`, q, p.DataScope, organizationID, p.ID, readable)
 		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
 			var id, typ, num, title, status string
 			err := rows.Scan(&id, &typ, &num, &title, &status)
@@ -129,7 +129,7 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasPermission(p, "supplier.read") || hasPermission(p, "*.read") {
-		rows, err := a.db.Query(r.Context(), `SELECT c.id,'contact',COALESCE(c.title,''),c.name,'active',c.supplier_id FROM supplier_contacts c JOIN suppliers s ON s.id=c.supplier_id WHERE (c.name ILIKE '%'||$1||'%' OR c.email ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		rows, err := a.db.Query(r.Context(), `SELECT c.id,'contact',COALESCE(c.title,''),c.name,'active',c.supplier_id FROM supplier_contacts c JOIN suppliers s ON s.id=c.supplier_id WHERE (c.name ILIKE '%'||$1||'%' OR c.email ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
 		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
 			var id, typ, num, title, status, supplierID string
 			err := rows.Scan(&id, &typ, &num, &title, &status, &supplierID)
@@ -139,7 +139,7 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasPermission(p, "document.read") || hasPermission(p, "*.read") {
-		rows, err := a.db.Query(r.Context(), `SELECT d.id,d.document_type,d.name,d.status,d.supplier_id FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id WHERE d.name ILIKE '%'||$1||'%' AND ((d.supplier_id IS NULL AND ($2='company' OR d.uploaded_by=$4::uuid)) OR vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		rows, err := a.db.Query(r.Context(), `SELECT d.id,d.document_type,d.name,d.status,d.supplier_id FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id WHERE d.name ILIKE '%'||$1||'%' AND ((d.supplier_id IS NULL AND ($2='company' OR d.uploaded_by=$4::uuid)) OR `+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
 		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
 			var id, num, title, status string
 			var supplierID *string
@@ -154,7 +154,7 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasPermission(p, "evaluation.read") || hasPermission(p, "*.read") {
-		rows, err := a.db.Query(r.Context(), `SELECT e.id,COALESCE(t.name,e.evaluation_type),s.name,e.status,e.supplier_id FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id LEFT JOIN scorecard_templates t ON t.id=e.template_id WHERE (s.name ILIKE '%'||$1||'%' OR COALESCE(t.name,e.evaluation_type) ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		rows, err := a.db.Query(r.Context(), `SELECT e.id,COALESCE(t.name,e.evaluation_type),s.name,e.status,e.supplier_id FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id LEFT JOIN scorecard_templates t ON t.id=e.template_id WHERE (s.name ILIKE '%'||$1||'%' OR COALESCE(t.name,e.evaluation_type) ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
 		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
 			var id, title, supplierName, status, supplierID string
 			err := rows.Scan(&id, &title, &supplierName, &status, &supplierID)
@@ -340,7 +340,7 @@ func (a *App) listAllRisks(w http.ResponseWriter, r *http.Request) {
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',r.id,'supplierId',r.supplier_id,'supplierName',s.name,'riskType',r.risk_type,'probability',r.probability,'impact',r.impact,'score',r.score,'severity',r.severity,'status',r.status,'description',r.description,'mitigation',r.mitigation,'reviewDate',r.review_date) FROM risks r JOIN suppliers s ON s.id=r.supplier_id WHERE s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) ORDER BY CASE r.severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,r.score DESC LIMIT $1`, parseLimit(r, 300), p.DataScope, organizationID, p.ID)
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',r.id,'supplierId',r.supplier_id,'supplierName',s.name,'riskType',r.risk_type,'probability',r.probability,'impact',r.impact,'score',r.score,'severity',r.severity,'status',r.status,'description',r.description,'mitigation',r.mitigation,'reviewDate',r.review_date) FROM risks r JOIN suppliers s ON s.id=r.supplier_id WHERE s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) ORDER BY CASE r.severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,r.score DESC LIMIT $1`, parseLimit(r, 300), p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "리스크를 조회하지 못했습니다")
 		return
@@ -361,7 +361,7 @@ func (a *App) listAllEvaluations(w http.ResponseWriter, r *http.Request) {
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',e.id,'supplierId',e.supplier_id,'supplierName',s.name,'evaluationType',e.evaluation_type,'status',e.status,'periodStart',e.period_start,'periodEnd',e.period_end,'totalScore',e.total_score,'grade',e.grade,'scores',e.scores,'createdAt',e.created_at) FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id WHERE s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) ORDER BY e.created_at DESC LIMIT $1`, parseLimit(r, 300), p.DataScope, organizationID, p.ID)
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',e.id,'supplierId',e.supplier_id,'supplierName',s.name,'evaluationType',e.evaluation_type,'status',e.status,'periodStart',e.period_start,'periodEnd',e.period_end,'totalScore',e.total_score,'grade',e.grade,'scores',e.scores,'createdAt',e.created_at) FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id WHERE s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) ORDER BY e.created_at DESC LIMIT $1`, parseLimit(r, 300), p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "평가를 조회하지 못했습니다")
 		return
@@ -394,13 +394,13 @@ func (a *App) spendAnalysis(w http.ResponseWriter, r *http.Request) {
 	var query string
 	switch groupBy {
 	case "category":
-		query = `SELECT jsonb_build_object('key',COALESCE(t.category,'미분류'),'amount',sum(t.amount),'transactionCount',count(*),'contractedAmount',sum(t.amount) FILTER(WHERE t.contracted),'nonContractedAmount',sum(t.amount) FILTER(WHERE NOT t.contracted)) FROM spend_transactions t JOIN suppliers s ON s.id=t.supplier_id WHERE ($1='' OR t.transaction_date>=$1::date) AND ($2='' OR t.transaction_date<=$2::date) AND (vendra_org_in_scope(s.organization_id,$4,NULLIF($5,'')::uuid) OR ($4='own' AND s.owner_id=$6::uuid)) GROUP BY t.category ORDER BY sum(t.amount) DESC LIMIT $3`
+		query = `SELECT jsonb_build_object('key',COALESCE(t.category,'미분류'),'amount',sum(t.amount),'transactionCount',count(*),'contractedAmount',sum(t.amount) FILTER(WHERE t.contracted),'nonContractedAmount',sum(t.amount) FILTER(WHERE NOT t.contracted)) FROM spend_transactions t JOIN suppliers s ON s.id=t.supplier_id WHERE ($1='' OR t.transaction_date>=$1::date) AND ($2='' OR t.transaction_date<=$2::date) AND (` + orgInScope("s.organization_id", "$4", "$5") + ` OR ($4='own' AND s.owner_id=$6::uuid)) GROUP BY t.category ORDER BY sum(t.amount) DESC LIMIT $3`
 	case "organization":
-		query = `SELECT jsonb_build_object('key',COALESCE(o.name,'미지정'),'organizationId',t.organization_id,'amount',sum(t.amount),'transactionCount',count(*)) FROM spend_transactions t JOIN suppliers s ON s.id=t.supplier_id LEFT JOIN organizations o ON o.id=t.organization_id WHERE ($1='' OR t.transaction_date>=$1::date) AND ($2='' OR t.transaction_date<=$2::date) AND (vendra_org_in_scope(s.organization_id,$4,NULLIF($5,'')::uuid) OR ($4='own' AND s.owner_id=$6::uuid)) GROUP BY t.organization_id,o.name ORDER BY sum(t.amount) DESC LIMIT $3`
+		query = `SELECT jsonb_build_object('key',COALESCE(o.name,'미지정'),'organizationId',t.organization_id,'amount',sum(t.amount),'transactionCount',count(*)) FROM spend_transactions t JOIN suppliers s ON s.id=t.supplier_id LEFT JOIN organizations o ON o.id=t.organization_id WHERE ($1='' OR t.transaction_date>=$1::date) AND ($2='' OR t.transaction_date<=$2::date) AND (` + orgInScope("s.organization_id", "$4", "$5") + ` OR ($4='own' AND s.owner_id=$6::uuid)) GROUP BY t.organization_id,o.name ORDER BY sum(t.amount) DESC LIMIT $3`
 	case "month":
-		query = `SELECT jsonb_build_object('key',to_char(date_trunc('month',t.transaction_date),'YYYY-MM'),'amount',sum(t.amount),'transactionCount',count(*),'contractedAmount',sum(t.amount) FILTER(WHERE t.contracted)) FROM spend_transactions t JOIN suppliers s ON s.id=t.supplier_id WHERE ($1='' OR t.transaction_date>=$1::date) AND ($2='' OR t.transaction_date<=$2::date) AND (vendra_org_in_scope(s.organization_id,$4,NULLIF($5,'')::uuid) OR ($4='own' AND s.owner_id=$6::uuid)) GROUP BY date_trunc('month',t.transaction_date) ORDER BY date_trunc('month',t.transaction_date) LIMIT $3`
+		query = `SELECT jsonb_build_object('key',to_char(date_trunc('month',t.transaction_date),'YYYY-MM'),'amount',sum(t.amount),'transactionCount',count(*),'contractedAmount',sum(t.amount) FILTER(WHERE t.contracted)) FROM spend_transactions t JOIN suppliers s ON s.id=t.supplier_id WHERE ($1='' OR t.transaction_date>=$1::date) AND ($2='' OR t.transaction_date<=$2::date) AND (` + orgInScope("s.organization_id", "$4", "$5") + ` OR ($4='own' AND s.owner_id=$6::uuid)) GROUP BY date_trunc('month',t.transaction_date) ORDER BY date_trunc('month',t.transaction_date) LIMIT $3`
 	default:
-		query = `SELECT jsonb_build_object('supplierId',s.id,'supplierName',s.name,'annualSpend',COALESCE(sum(t.amount),s.annual_spend),'sharePercent',round(100*COALESCE(sum(t.amount),s.annual_spend)/NULLIF(sum(COALESCE(sum(t.amount),s.annual_spend)) OVER(),0),2),'dependencyRisk',CASE WHEN COALESCE(sum(t.amount),s.annual_spend)/NULLIF(sum(COALESCE(sum(t.amount),s.annual_spend)) OVER(),0)>=.4 THEN 'HIGH' WHEN COALESCE(sum(t.amount),s.annual_spend)/NULLIF(sum(COALESCE(sum(t.amount),s.annual_spend)) OVER(),0)>=.2 THEN 'MEDIUM' ELSE 'LOW' END,'riskLevel',s.risk_level,'score',s.score,'categories',s.categories,'transactionCount',count(t.id),'contractedAmount',COALESCE(sum(t.amount) FILTER(WHERE t.contracted),0),'nonContractedAmount',COALESCE(sum(t.amount) FILTER(WHERE NOT t.contracted),0)) FROM suppliers s LEFT JOIN spend_transactions t ON t.supplier_id=s.id AND ($1='' OR t.transaction_date>=$1::date) AND ($2='' OR t.transaction_date<=$2::date) WHERE s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$4,NULLIF($5,'')::uuid) OR ($4='own' AND s.owner_id=$6::uuid)) GROUP BY s.id ORDER BY COALESCE(sum(t.amount),s.annual_spend) DESC LIMIT $3`
+		query = `SELECT jsonb_build_object('supplierId',s.id,'supplierName',s.name,'annualSpend',COALESCE(sum(t.amount),s.annual_spend),'sharePercent',round(100*COALESCE(sum(t.amount),s.annual_spend)/NULLIF(sum(COALESCE(sum(t.amount),s.annual_spend)) OVER(),0),2),'dependencyRisk',CASE WHEN COALESCE(sum(t.amount),s.annual_spend)/NULLIF(sum(COALESCE(sum(t.amount),s.annual_spend)) OVER(),0)>=.4 THEN 'HIGH' WHEN COALESCE(sum(t.amount),s.annual_spend)/NULLIF(sum(COALESCE(sum(t.amount),s.annual_spend)) OVER(),0)>=.2 THEN 'MEDIUM' ELSE 'LOW' END,'riskLevel',s.risk_level,'score',s.score,'categories',s.categories,'transactionCount',count(t.id),'contractedAmount',COALESCE(sum(t.amount) FILTER(WHERE t.contracted),0),'nonContractedAmount',COALESCE(sum(t.amount) FILTER(WHERE NOT t.contracted),0)) FROM suppliers s LEFT JOIN spend_transactions t ON t.supplier_id=s.id AND ($1='' OR t.transaction_date>=$1::date) AND ($2='' OR t.transaction_date<=$2::date) WHERE s.deleted_at IS NULL AND (` + orgInScope("s.organization_id", "$4", "$5") + ` OR ($4='own' AND s.owner_id=$6::uuid)) GROUP BY s.id ORDER BY COALESCE(sum(t.amount),s.annual_spend) DESC LIMIT $3`
 	}
 	rows, err := a.db.Query(r.Context(), query, from, to, parseLimit(r, 300), p.DataScope, organizationID, p.ID)
 	if err != nil {
@@ -485,7 +485,7 @@ func (a *App) supplierNetwork(w http.ResponseWriter, r *http.Request) {
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
-	nodeRows, err := a.db.Query(r.Context(), `SELECT id,name,risk_level,grade,CASE WHEN $4 THEN annual_spend ELSE 0 END,categories FROM suppliers WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 500`, p.DataScope, organizationID, p.ID, showSpend)
+	nodeRows, err := a.db.Query(r.Context(), `SELECT id,name,risk_level,grade,CASE WHEN $4 THEN annual_spend ELSE 0 END,categories FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 500`, p.DataScope, organizationID, p.ID, showSpend)
 	if err != nil {
 		writeError(w, 500, "database_error", "공급망을 조회하지 못했습니다")
 		return
@@ -512,7 +512,7 @@ func (a *App) supplierNetwork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "공급망을 조회하지 못했습니다")
 		return
 	}
-	edgeRows, err := a.db.Query(r.Context(), `SELECT r.id,r.source_supplier_id,r.target_supplier_id,r.relationship_type,r.criticality,r.supplied_categories,r.dependency_percent,r.notes FROM supplier_relationships r JOIN suppliers s ON s.id=r.source_supplier_id JOIN suppliers t ON t.id=r.target_supplier_id WHERE (r.valid_until IS NULL OR r.valid_until>=current_date) AND ((vendra_org_in_scope(s.organization_id,$1,NULLIF($2,'')::uuid) AND vendra_org_in_scope(t.organization_id,$1,NULLIF($2,'')::uuid)) OR ($1='own' AND s.owner_id=$3::uuid AND t.owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID)
+	edgeRows, err := a.db.Query(r.Context(), `SELECT r.id,r.source_supplier_id,r.target_supplier_id,r.relationship_type,r.criticality,r.supplied_categories,r.dependency_percent,r.notes FROM supplier_relationships r JOIN suppliers s ON s.id=r.source_supplier_id JOIN suppliers t ON t.id=r.target_supplier_id WHERE (r.valid_until IS NULL OR r.valid_until>=current_date) AND ((`+orgInScope("s.organization_id", "$1", "$2")+` AND `+orgInScope("t.organization_id", "$1", "$2")+`) OR ($1='own' AND s.owner_id=$3::uuid AND t.owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "공급망 관계를 조회하지 못했습니다")
 		return
