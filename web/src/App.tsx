@@ -36,6 +36,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ReceiptText,
+  RefreshCw,
   Radar,
   Search,
   Settings,
@@ -44,7 +45,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { api, can, post, Principal, Version } from "./api";
+import { api, APIError, can, post, Principal, Version } from "./api";
 import { Loading, Logo, PageErrorBoundary } from "./components";
 import { ToastProvider } from "./feedback";
 import { useNotify } from "./toast-context";
@@ -91,23 +92,32 @@ function AppRoutes() {
   const location = useLocation();
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [unavailable, setUnavailable] = useState(false);
+  // A refused session and an unanswerable one are different situations. Showing
+  // the login form during a database restart signs everyone out and invites them
+  // to retype a password that was never the problem.
+  const applyFailure = useCallback((reason: unknown) => {
+    setUnavailable(reason instanceof APIError && reason.status >= 500);
+    setSession(null);
+  }, []);
   const load = useCallback(async () => {
     try {
       setSession(await fetchSession());
-    } catch {
-      setSession(null);
+      setUnavailable(false);
+    } catch (e) {
+      applyFailure(e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyFailure]);
   useEffect(() => {
     let active = true;
     fetchSession()
       .then((next) => {
         if (active) setSession(next);
       })
-      .catch(() => {
-        if (active) setSession(null);
+      .catch((e) => {
+        if (active) applyFailure(e);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -115,7 +125,7 @@ function AppRoutes() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [applyFailure]);
   if (loading)
     return (
       <div className="boot">
@@ -124,6 +134,7 @@ function AppRoutes() {
       </div>
     );
   if (location.pathname === "/register") return <SupplierRegistration />;
+  if (unavailable) return <ServiceUnavailable onRetry={load} />;
   if (!session) return <Login onLogin={load} />;
   if (session.user.userType === "supplier")
     return (
@@ -138,6 +149,31 @@ function AppRoutes() {
       </PageErrorBoundary>
     );
   return <Shell session={session} onLogout={() => logout(setSession)} />;
+}
+
+// Shown when the server answered but could not tell us who is signed in — a
+// database restart, most often. Retrying is the right action; signing in again
+// is not.
+function ServiceUnavailable({ onRetry }: { onRetry: () => void }) {
+  return (
+    <main className="boot">
+      <Logo />
+      <div className="empty page-error" role="alert">
+        <div className="empty-icon">
+          <AlertCircle />
+        </div>
+        <h3>일시적으로 서비스에 연결할 수 없습니다</h3>
+        <p>
+          서비스가 재시작 중이거나 데이터베이스에 접근할 수 없습니다. 로그인
+          상태는 유지되며, 잠시 후 다시 시도하면 이어서 사용할 수 있습니다.
+        </p>
+        <button type="button" className="button" onClick={onRetry}>
+          <RefreshCw />
+          다시 시도
+        </button>
+      </div>
+    </main>
+  );
 }
 
 function PageFallback() {
