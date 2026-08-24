@@ -107,3 +107,48 @@ func TestSubmitRefusesWhenApprovalSettingUnreadable(t *testing.T) {
 		t.Error("the order was approved outright while the approval setting could not be read")
 	}
 }
+
+// The separation-of-duties policy has no safe zero value: unread, it permits
+// the requester to approve their own request. Every other policy reader starts
+// from a safe default and only overwrites it on a successful read; this one
+// started from the permissive value, so a failed lookup switched the control
+// off exactly when an administrator had switched it on.
+func TestSeparationOfDutiesReportsFailure(t *testing.T) {
+	app := &App{db: unreachablePool(t)}
+	policy, err := app.separationOfDuties(context.Background())
+	if err == nil {
+		t.Fatalf("policy = %+v with no error; an unreadable control was answered instead of refused", policy)
+	}
+	if policy.BlockSelfApproval {
+		t.Error("BlockSelfApproval = true alongside an error; the zero value is what a caller ignoring err would use")
+	}
+}
+
+// Approving one's own request must be refused, not permitted, when the policy
+// cannot be read.
+func TestSelfApprovalRefusedWhenPolicyUnreadable(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := t.Context()
+
+	if _, err := pool.Exec(ctx, `REVOKE SELECT ON settings FROM CURRENT_USER`); err != nil {
+		t.Skipf("the test role cannot revoke its own SELECT on settings: %v", err)
+	}
+	restored := false
+	t.Cleanup(func() {
+		// t.Context() is already cancelled once cleanup runs.
+		if !restored {
+			_, _ = pool.Exec(context.Background(), `GRANT SELECT ON settings TO CURRENT_USER`)
+		}
+	})
+	var readable bool
+	if err := pool.QueryRow(ctx, `SELECT true FROM settings LIMIT 1`).Scan(&readable); err == nil {
+		_, _ = pool.Exec(context.Background(), `GRANT SELECT ON settings TO CURRENT_USER`)
+		restored = true
+		t.Skip("the test role reads settings regardless of the revoke (superuser?)")
+	}
+
+	policy, err := app.separationOfDuties(ctx)
+	if err == nil {
+		t.Fatalf("policy = %+v, want a failure while settings is unreadable", policy)
+	}
+}

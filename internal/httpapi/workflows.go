@@ -37,13 +37,25 @@ type separationOfDuties struct {
 	BlockSelfApproval bool `json:"blockSelfApproval"`
 }
 
-func (a *App) separationOfDuties(ctx context.Context) separationOfDuties {
+// Unlike the login and password policies, this one has no safe value to start
+// from: its zero value permits self-approval. Reading it as "not configured"
+// whenever the lookup failed would switch the control off at the moment it
+// matters, so a failure is returned instead. A missing row still means the
+// documented default, which is what a fresh install has.
+func (a *App) separationOfDuties(ctx context.Context) (separationOfDuties, error) {
 	var policy separationOfDuties
 	var value []byte
-	if a.db.QueryRow(ctx, `SELECT value FROM settings WHERE key='workflow.separation_of_duties'`).Scan(&value) == nil {
-		_ = json.Unmarshal(value, &policy)
+	switch err := a.db.QueryRow(ctx, `SELECT value FROM settings WHERE key='workflow.separation_of_duties'`).Scan(&value); {
+	case err == nil:
+		if err := json.Unmarshal(value, &policy); err != nil {
+			return separationOfDuties{}, err
+		}
+		return policy, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return separationOfDuties{}, nil
+	default:
+		return separationOfDuties{}, err
 	}
-	return policy
 }
 
 func (a *App) listWorkflows(w http.ResponseWriter, r *http.Request) {
@@ -293,9 +305,17 @@ func (a *App) workflowAction(w http.ResponseWriter, r *http.Request) {
 	// Approving one's own request is the standard procurement fraud path, so an
 	// administrator can forbid it. Returning for revision stays allowed: it hands
 	// the request back rather than advancing it.
-	if in.Action != "return" && requestedBy != nil && *requestedBy == p.ID && a.separationOfDuties(r.Context()).BlockSelfApproval {
-		writeError(w, 403, "separation_of_duties", "본인이 요청한 건은 승인하거나 반려할 수 없습니다")
-		return
+	if in.Action != "return" && requestedBy != nil && *requestedBy == p.ID {
+		policy, err := a.separationOfDuties(r.Context())
+		if err != nil {
+			logDB(err)
+			writeControlUnavailable(w)
+			return
+		}
+		if policy.BlockSelfApproval {
+			writeError(w, 403, "separation_of_duties", "본인이 요청한 건은 승인하거나 반려할 수 없습니다")
+			return
+		}
 	}
 	_, err = tx.Exec(r.Context(), `INSERT INTO workflow_actions(instance_id,step,action,actor_id,comment) VALUES($1,$2,$3,$4,NULLIF($5,''))`, id, current, in.Action, p.ID, in.Comment)
 	nextStatus := "pending"
