@@ -48,7 +48,11 @@ func (a *App) changeMyPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	revoked := a.revokeSessions(r, p.ID, p.SessionID)
-	_, _ = a.db.Exec(r.Context(), `DELETE FROM login_attempts WHERE email=$1 AND NOT succeeded`, strings.ToLower(p.Email))
+	// The password already changed; failing here would deny a change that
+	// happened. An uncleared lockout expires on its own.
+	if _, err := a.db.Exec(r.Context(), `DELETE FROM login_attempts WHERE email=$1 AND NOT succeeded`, strings.ToLower(p.Email)); err != nil {
+		logDB(err)
+	}
 	a.audit.record(r, "change_password", "user", p.ID, nil, map[string]any{"revokedSessions": revoked})
 	writeJSON(w, 200, map[string]any{"ok": true, "revokedSessions": revoked})
 }
@@ -87,7 +91,11 @@ func (a *App) resetUserPassword(w http.ResponseWriter, r *http.Request) {
 		keep = actor.SessionID
 	}
 	revoked := a.revokeSessions(r, id, keep)
-	_, _ = a.db.Exec(r.Context(), `DELETE FROM login_attempts WHERE email=$1 AND NOT succeeded`, email)
+	// The password already changed; failing here would deny a change that
+	// happened. An uncleared lockout expires on its own.
+	if _, err := a.db.Exec(r.Context(), `DELETE FROM login_attempts WHERE email=$1 AND NOT succeeded`, email); err != nil {
+		logDB(err)
+	}
 	a.audit.record(r, "reset_password", "user", id, nil, map[string]any{"email": email, "revokedSessions": revoked})
 	writeJSON(w, 200, map[string]any{"ok": true, "revokedSessions": revoked})
 }

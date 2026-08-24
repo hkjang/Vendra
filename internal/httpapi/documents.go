@@ -331,13 +331,33 @@ func (a *App) signDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metadata := map[string]any{"meaning": in.Meaning, "comment": in.Comment, "documentChecksum": checksum, "requestId": requestID(r.Context())}
-	var id string
-	err := a.db.QueryRow(r.Context(), `INSERT INTO document_signatures(document_id,signer_id,signature_type,signature_metadata) VALUES($1,$2,$3,$4) ON CONFLICT(document_id,signer_id,signature_type) DO UPDATE SET signature_metadata=excluded.signature_metadata,signed_at=now() RETURNING id`, r.PathValue("id"), p.ID, in.SignatureType, raw(metadata)).Scan(&id)
+	// An approval signature is what approves the document. Storing the signature
+	// while the document stays unapproved leaves it signed and unusable.
+	tx, err := a.db.Begin(r.Context())
 	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "문서 서명을 저장하지 못했습니다")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var id string
+	err = tx.QueryRow(r.Context(), `INSERT INTO document_signatures(document_id,signer_id,signature_type,signature_metadata) VALUES($1,$2,$3,$4) ON CONFLICT(document_id,signer_id,signature_type) DO UPDATE SET signature_metadata=excluded.signature_metadata,signed_at=now() RETURNING id`, r.PathValue("id"), p.ID, in.SignatureType, raw(metadata)).Scan(&id)
+	if err != nil {
+		logDB(err)
 		writeError(w, 400, "save_failed", "문서 서명을 저장하지 못했습니다")
 		return
 	}
-	_, _ = a.db.Exec(r.Context(), `UPDATE documents SET status=CASE WHEN $2='approval' THEN 'approved' ELSE status END WHERE id=$1`, r.PathValue("id"), in.SignatureType)
+	_, err = tx.Exec(r.Context(), `UPDATE documents SET status=CASE WHEN $2='approval' THEN 'approved' ELSE status END WHERE id=$1`, r.PathValue("id"), in.SignatureType)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "save_failed", "문서 서명을 저장하지 못했습니다")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		logDB(err)
+		writeError(w, 500, "save_failed", "문서 서명을 저장하지 못했습니다")
+		return
+	}
 	a.audit.record(r, "sign", "document", r.PathValue("id"), nil, metadata)
 	writeJSON(w, 201, map[string]any{"id": id, "signedAt": time.Now(), "checksum": checksum})
 }

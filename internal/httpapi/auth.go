@@ -164,7 +164,9 @@ func (a authService) fromSession(ctx context.Context, token string) (Principal, 
 	if err := grantRows.Err(); err != nil {
 		return Principal{}, err
 	}
-	_, _ = a.db.Exec(ctx, `UPDATE sessions SET last_seen_at=now() WHERE id=$1 AND last_seen_at < now()-interval '5 minutes'`, sid)
+	if _, err := a.db.Exec(ctx, `UPDATE sessions SET last_seen_at=now() WHERE id=$1 AND last_seen_at < now()-interval '5 minutes'`, sid); err != nil {
+		logDB(err)
+	}
 	return p, nil
 }
 
@@ -194,7 +196,9 @@ func (a authService) fromAPIKey(ctx context.Context, token string) (Principal, e
 		}
 		p.Permissions = allowedScopes
 	}
-	_, _ = a.db.Exec(ctx, `UPDATE api_keys SET last_used_at=now() WHERE key_hash=$1`, security.TokenHash(token))
+	if _, err := a.db.Exec(ctx, `UPDATE api_keys SET last_used_at=now() WHERE key_hash=$1`, security.TokenHash(token)); err != nil {
+		logDB(err)
+	}
 	return p, nil
 }
 
@@ -263,8 +267,12 @@ func (a authService) login(w http.ResponseWriter, r *http.Request) {
 	recordLoginAttempt(r.Context(), a.db, email, ip, r.UserAgent(), true)
 	// A successful sign-in clears the account lockout so a legitimate owner is
 	// never held behind an attacker's failed attempts.
-	_, _ = a.db.Exec(r.Context(), `DELETE FROM login_attempts WHERE email=$1 AND NOT succeeded`, email)
-	_, _ = a.db.Exec(r.Context(), `UPDATE users SET last_login_at=now() WHERE id=$1`, userID)
+	if _, err := a.db.Exec(r.Context(), `DELETE FROM login_attempts WHERE email=$1 AND NOT succeeded`, email); err != nil {
+		logDB(err)
+	}
+	if _, err := a.db.Exec(r.Context(), `UPDATE users SET last_login_at=now() WHERE id=$1`, userID); err != nil {
+		logDB(err)
+	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, Secure: sessionConfig.SecureCookie || requestIsHTTPS(r), SameSite: http.SameSiteLaxMode, MaxAge: sessionConfig.TTLHours * 3600})
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
@@ -302,8 +310,16 @@ var timingDecoyHash = func() []byte {
 }()
 
 func (a authService) logout(w http.ResponseWriter, r *http.Request) {
+	// Clearing the cookie only stops this browser from sending the token. If the
+	// row survives, the token still authenticates anyone who kept a copy, so a
+	// failed delete must not be reported as a completed sign-out.
 	if c, err := r.Cookie(sessionCookie); err == nil {
-		_, _ = a.db.Exec(r.Context(), `DELETE FROM sessions WHERE token_hash=$1`, security.TokenHash(c.Value))
+		if _, err := a.db.Exec(r.Context(), `DELETE FROM sessions WHERE token_hash=$1`, security.TokenHash(c.Value)); err != nil {
+			logDB(err)
+			w.Header().Set("Retry-After", "5")
+			writeError(w, http.StatusServiceUnavailable, "logout_failed", "로그아웃을 완료하지 못했습니다. 세션이 아직 유효하니 잠시 후 다시 시도하세요")
+			return
+		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, MaxAge: -1, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusNoContent)

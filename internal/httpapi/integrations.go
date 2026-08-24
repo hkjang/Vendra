@@ -207,7 +207,9 @@ func (a *App) aiAnalyzeContract(w http.ResponseWriter, r *http.Request) {
 	}
 	legalReview, _ := extraction["legalReviewRequired"].(bool)
 	if legalReview {
-		_, _ = a.db.Exec(r.Context(), `UPDATE business_objects SET data=jsonb_set(data,'{legalReviewRequired}','true'::jsonb),updated_at=now() WHERE id=$1`, contract.ID)
+		if _, err := a.db.Exec(r.Context(), `UPDATE business_objects SET data=jsonb_set(data,'{legalReviewRequired}','true'::jsonb),updated_at=now() WHERE id=$1`, contract.ID); err != nil {
+			logDB(err)
+		}
 	}
 	a.audit.record(r, "contract_analysis", "contract", contract.ID, nil, map[string]any{"analysisId": id, "model": s.Model, "legalReviewRequired": legalReview})
 	writeJSON(w, 200, map[string]any{"id": id, "extraction": extraction, "model": s.Model, "usage": usage})

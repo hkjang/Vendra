@@ -155,9 +155,13 @@ func (a *App) dispatchNotifications(ctx context.Context) error {
 		}
 		deliveryErr := deliverNotification(ctx, adapter, x.title, x.body, x.severity)
 		if deliveryErr != nil {
-			_, _ = a.db.Exec(ctx, `UPDATE notification_deliveries SET attempts=attempts+1,response=$2 WHERE id=$1`, x.id, deliveryErr.Error())
+			if _, err := a.db.Exec(ctx, `UPDATE notification_deliveries SET attempts=attempts+1,response=$2 WHERE id=$1`, x.id, deliveryErr.Error()); err != nil {
+				logDB(err)
+			}
 		} else {
-			_, _ = a.db.Exec(ctx, `UPDATE notification_deliveries SET status='delivered',attempts=attempts+1,delivered_at=now(),response='ok' WHERE id=$1`, x.id)
+			if _, err := a.db.Exec(ctx, `UPDATE notification_deliveries SET status='delivered',attempts=attempts+1,delivered_at=now(),response='ok' WHERE id=$1`, x.id); err != nil {
+				logDB(err)
+			}
 		}
 	}
 	return nil
