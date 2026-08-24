@@ -139,11 +139,15 @@ func (a *App) dispatchNotifications(ctx context.Context) error {
 	items := []item{}
 	for rows.Next() {
 		var x item
-		if rows.Scan(&x.id, &x.adapter, &x.title, &x.body, &x.severity) == nil {
-			items = append(items, x)
+		if err := rows.Scan(&x.id, &x.adapter, &x.title, &x.body, &x.severity); err != nil {
+			return err
 		}
+		items = append(items, x)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	for _, x := range items {
 		adapter, ok := byName[x.adapter]
 		if !ok || !adapter.Enabled {
@@ -205,9 +209,17 @@ func (a *App) listNotifications(w http.ResponseWriter, r *http.Request) {
 		var id, kind, title, body, severity string
 		var typ, obj *string
 		var read, created any
-		if rows.Scan(&id, &kind, &title, &body, &severity, &typ, &obj, &read, &created) == nil {
-			items = append(items, map[string]any{"id": id, "kind": kind, "title": title, "body": body, "severity": severity, "objectType": typ, "objectId": obj, "readAt": read, "createdAt": created})
+		if err := rows.Scan(&id, &kind, &title, &body, &severity, &typ, &obj, &read, &created); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "알림을 조회하지 못했습니다")
+			return
 		}
+		items = append(items, map[string]any{"id": id, "kind": kind, "title": title, "body": body, "severity": severity, "objectType": typ, "objectId": obj, "readAt": read, "createdAt": created})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "알림을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }

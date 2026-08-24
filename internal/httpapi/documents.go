@@ -199,9 +199,17 @@ func (a *App) listDocuments(w http.ResponseWriter, r *http.Request) {
 		var version int
 		var size int64
 		var created any
-		if rows.Scan(&id, &linkedSupplierID, &objectType, &objectID, &typ, &name, &version, &contentType, &size, &checksum, &expires, &status, &uploader, &created) == nil {
-			items = append(items, map[string]any{"id": id, "supplierId": linkedSupplierID, "objectType": objectType, "objectId": objectID, "documentType": typ, "name": name, "version": version, "contentType": contentType, "size": size, "checksum": checksum, "expiresAt": expires, "status": status, "uploadedBy": uploader, "createdAt": created})
+		if err := rows.Scan(&id, &linkedSupplierID, &objectType, &objectID, &typ, &name, &version, &contentType, &size, &checksum, &expires, &status, &uploader, &created); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "문서를 조회하지 못했습니다")
+			return
 		}
+		items = append(items, map[string]any{"id": id, "supplierId": linkedSupplierID, "objectType": objectType, "objectId": objectID, "documentType": typ, "name": name, "version": version, "contentType": contentType, "size": size, "checksum": checksum, "expiresAt": expires, "status": status, "uploadedBy": uploader, "createdAt": created})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "문서를 조회하지 못했습니다")
+		return
 	}
 	items, truncated := truncate(items, limit)
 	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
@@ -282,11 +290,19 @@ func (a *App) listDocumentSignatures(w http.ResponseWriter, r *http.Request) {
 		var id, signer, name, email, typ string
 		var metadata []byte
 		var signed any
-		if rows.Scan(&id, &signer, &name, &email, &typ, &metadata, &signed) == nil {
-			var m any
-			_ = json.Unmarshal(metadata, &m)
-			items = append(items, map[string]any{"id": id, "signerId": signer, "signerName": name, "signerEmail": email, "signatureType": typ, "metadata": m, "signedAt": signed})
+		if err := rows.Scan(&id, &signer, &name, &email, &typ, &metadata, &signed); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "서명 이력을 조회하지 못했습니다")
+			return
 		}
+		var m any
+		_ = json.Unmarshal(metadata, &m)
+		items = append(items, map[string]any{"id": id, "signerId": signer, "signerName": name, "signerEmail": email, "signatureType": typ, "metadata": m, "signedAt": signed})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "서명 이력을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }

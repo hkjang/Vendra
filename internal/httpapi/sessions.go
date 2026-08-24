@@ -25,14 +25,21 @@ func (a *App) listMySessions(w http.ResponseWriter, r *http.Request) {
 		var ip *string
 		var userAgent string
 		var created, lastSeen, expires any
-		if rows.Scan(&id, &ip, &userAgent, &created, &lastSeen, &expires) != nil {
-			continue
+		if err := rows.Scan(&id, &ip, &userAgent, &created, &lastSeen, &expires); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "세션을 조회하지 못했습니다")
+			return
 		}
 		items = append(items, map[string]any{
 			"id": id, "ip": ip, "userAgent": userAgent,
 			"createdAt": created, "lastSeenAt": lastSeen, "expiresAt": expires,
 			"current": p.SessionID != nil && *p.SessionID == id,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "세션을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }

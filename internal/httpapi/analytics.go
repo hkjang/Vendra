@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -23,27 +25,50 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	if !showAmounts {
 		spend = 0
 	}
-	_ = a.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE object_type='contract' AND end_date BETWEEN current_date AND current_date+180),count(*) FILTER(WHERE object_type='issue' AND status NOT IN('closed','resolved')),COALESCE(sum(amount) FILTER(WHERE object_type='contract' AND status IN('active','approved')),0),COALESCE(100.0*count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed') AND (due_date IS NULL OR CASE WHEN COALESCE(data->>'deliveredAt','') ~ '^\d{4}-\d{2}-\d{2}' THEN left(data->>'deliveredAt',10)::date ELSE updated_at::date END<=due_date)) / NULLIF(count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed')),0),0),COALESCE(100.0*count(*) FILTER(WHERE object_type IN('quality','inspection') AND (status IN('rejected','defect','ncr','return') OR COALESCE(data->>'defect','false') IN ('true','1','yes'))) / NULLIF(count(*) FILTER(WHERE object_type IN('quality','inspection')),0),0),count(*) FILTER(WHERE object_type='rfq' AND status IN('open','active','pending_approval')),count(*) FILTER(WHERE object_type='rfp' AND status IN('open','active','pending_approval')),count(*) FILTER(WHERE object_type='delivery' AND due_date<current_date AND status NOT IN('completed','accepted','closed')) FROM business_objects WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&expiring, &openIssues, &contractValue, &deliveryCompliance, &defectRate, &activeRFQ, &activeRFP, &overdueDeliveries)
+	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE object_type='contract' AND end_date BETWEEN current_date AND current_date+180),count(*) FILTER(WHERE object_type='issue' AND status NOT IN('closed','resolved')),COALESCE(sum(amount) FILTER(WHERE object_type='contract' AND status IN('active','approved')),0),COALESCE(100.0*count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed') AND (due_date IS NULL OR CASE WHEN COALESCE(data->>'deliveredAt','') ~ '^\d{4}-\d{2}-\d{2}' THEN left(data->>'deliveredAt',10)::date ELSE updated_at::date END<=due_date)) / NULLIF(count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed')),0),0),COALESCE(100.0*count(*) FILTER(WHERE object_type IN('quality','inspection') AND (status IN('rejected','defect','ncr','return') OR COALESCE(data->>'defect','false') IN ('true','1','yes'))) / NULLIF(count(*) FILTER(WHERE object_type IN('quality','inspection')),0),0),count(*) FILTER(WHERE object_type='rfq' AND status IN('open','active','pending_approval')),count(*) FILTER(WHERE object_type='rfp' AND status IN('open','active','pending_approval')),count(*) FILTER(WHERE object_type='delivery' AND due_date<current_date AND status NOT IN('completed','accepted','closed')) FROM business_objects WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&expiring, &openIssues, &contractValue, &deliveryCompliance, &defectRate, &activeRFQ, &activeRFP, &overdueDeliveries); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
+		return
+	}
 	if !showAmounts {
 		contractValue = 0
 	}
-	_ = a.db.QueryRow(r.Context(), `SELECT count(*) FROM workflow_instances wi JOIN business_objects o ON o.id=wi.object_id WHERE wi.status='pending' AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND o.owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&pendingApprovals)
-	_ = a.db.QueryRow(r.Context(), `SELECT count(*) FROM suppliers WHERE deleted_at IS NULL AND status='screening' AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&pendingScreenings)
-	rows, _ := a.db.Query(r.Context(), `SELECT id,name,annual_spend,risk_level,score FROM suppliers WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 5`, p.DataScope, organizationID, p.ID)
+	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FROM workflow_instances wi JOIN business_objects o ON o.id=wi.object_id WHERE wi.status='pending' AND (vendra_org_in_scope(o.organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND o.owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&pendingApprovals); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
+		return
+	}
+	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FROM suppliers WHERE deleted_at IS NULL AND status='screening' AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&pendingScreenings); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
+		return
+	}
+	rows, err := a.db.Query(r.Context(), `SELECT id,name,annual_spend,risk_level,score FROM suppliers WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 5`, p.DataScope, organizationID, p.ID)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
+		return
+	}
+	defer rows.Close()
 	top := []map[string]any{}
-	if rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var id, name, risk string
-			var amount float64
-			var score *float64
-			if rows.Scan(&id, &name, &amount, &risk, &score) == nil {
-				if !showAmounts {
-					amount = 0
-				}
-				top = append(top, map[string]any{"id": id, "name": name, "annualSpend": amount, "riskLevel": risk, "score": score})
-			}
+	for rows.Next() {
+		var id, name, risk string
+		var amount float64
+		var score *float64
+		if err := rows.Scan(&id, &name, &amount, &risk, &score); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
+			return
 		}
+		if !showAmounts {
+			amount = 0
+		}
+		top = append(top, map[string]any{"id": id, "name": name, "annualSpend": amount, "riskLevel": risk, "score": score})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"kpis": map[string]any{"totalSuppliers": total, "activeSuppliers": active, "newSuppliers": newCount, "highRiskSuppliers": highRisk, "annualSpend": spend, "averageScore": avgScore, "expiringContracts": expiring, "openIssues": openIssues, "activeContractValue": contractValue, "deliveryCompliance": deliveryCompliance, "defectRate": defectRate, "activeRFQ": activeRFQ, "activeRFP": activeRFP, "overdueDeliveries": overdueDeliveries, "pendingApprovals": pendingApprovals, "pendingScreenings": pendingScreenings}, "topSuppliers": top})
 }
@@ -66,16 +91,27 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		organizationID = *p.OrganizationID
 	}
 	items := []map[string]any{}
+	// A leg that fails must not be mistaken for a leg that matched nothing:
+	// search quietly dropping a whole category reads as fact to the user, so a
+	// failure fails the search.
+	add := func(rows pgx.Rows, err error, scan func(pgx.Rows) (map[string]any, error)) bool {
+		found, err := searchSource(rows, err, scan)
+		if err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "검색하지 못했습니다")
+			return false
+		}
+		items = append(items, found...)
+		return true
+	}
 	if hasPermission(p, "supplier.read") || hasPermission(p, "*.read") {
-		rows, _ := a.db.Query(r.Context(), `SELECT id,supplier_number,name,status FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (vendra_org_in_scope(organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
-		if rows != nil {
-			for rows.Next() {
-				var id, num, title, status string
-				if rows.Scan(&id, &num, &title, &status) == nil {
-					items = append(items, map[string]any{"id": id, "type": "supplier", "number": num, "title": title, "status": status, "url": "/suppliers/" + id})
-				}
-			}
-			rows.Close()
+		rows, err := a.db.Query(r.Context(), `SELECT id,supplier_number,name,status FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (vendra_org_in_scope(organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
+			var id, num, title, status string
+			err := rows.Scan(&id, &num, &title, &status)
+			return map[string]any{"id": id, "type": "supplier", "number": num, "title": title, "status": status, "url": "/suppliers/" + id}, err
+		}) {
+			return
 		}
 	}
 	// Restrict by object type inside the query. Filtering after a LIMIT dropped
@@ -84,57 +120,47 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 	// every type, and silently lost the rest.
 	if readable := readableObjectTypes(p); len(readable) > 0 {
 		rows, err := a.db.Query(r.Context(), `SELECT id,object_type,number,title,status FROM business_objects WHERE deleted_at IS NULL AND object_type=ANY($5) AND (title ILIKE '%'||$1||'%' OR number ILIKE '%'||$1||'%') AND (vendra_org_in_scope(organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND owner_id=$4::uuid)) ORDER BY updated_at DESC LIMIT 30`, q, p.DataScope, organizationID, p.ID, readable)
-		if err != nil {
-			logDB(err)
-		} else {
-			for rows.Next() {
-				var id, typ, num, title, status string
-				if rows.Scan(&id, &typ, &num, &title, &status) == nil {
-					items = append(items, map[string]any{"id": id, "type": typ, "number": num, "title": title, "status": status})
-				}
-			}
-			rows.Close()
+		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
+			var id, typ, num, title, status string
+			err := rows.Scan(&id, &typ, &num, &title, &status)
+			return map[string]any{"id": id, "type": typ, "number": num, "title": title, "status": status}, err
+		}) {
+			return
 		}
 	}
 	if hasPermission(p, "supplier.read") || hasPermission(p, "*.read") {
-		rows, _ := a.db.Query(r.Context(), `SELECT c.id,'contact',COALESCE(c.title,''),c.name,'active',c.supplier_id FROM supplier_contacts c JOIN suppliers s ON s.id=c.supplier_id WHERE (c.name ILIKE '%'||$1||'%' OR c.email ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
-		if rows != nil {
-			for rows.Next() {
-				var id, typ, num, title, status, supplierID string
-				if rows.Scan(&id, &typ, &num, &title, &status, &supplierID) == nil {
-					items = append(items, map[string]any{"id": id, "type": typ, "number": num, "title": title, "status": status, "url": "/suppliers/" + supplierID})
-				}
-			}
-			rows.Close()
+		rows, err := a.db.Query(r.Context(), `SELECT c.id,'contact',COALESCE(c.title,''),c.name,'active',c.supplier_id FROM supplier_contacts c JOIN suppliers s ON s.id=c.supplier_id WHERE (c.name ILIKE '%'||$1||'%' OR c.email ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
+			var id, typ, num, title, status, supplierID string
+			err := rows.Scan(&id, &typ, &num, &title, &status, &supplierID)
+			return map[string]any{"id": id, "type": typ, "number": num, "title": title, "status": status, "url": "/suppliers/" + supplierID}, err
+		}) {
+			return
 		}
 	}
 	if hasPermission(p, "document.read") || hasPermission(p, "*.read") {
-		rows, _ := a.db.Query(r.Context(), `SELECT d.id,d.document_type,d.name,d.status,d.supplier_id FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id WHERE d.name ILIKE '%'||$1||'%' AND ((d.supplier_id IS NULL AND ($2='company' OR d.uploaded_by=$4::uuid)) OR vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
-		if rows != nil {
-			for rows.Next() {
-				var id, num, title, status string
-				var supplierID *string
-				if rows.Scan(&id, &num, &title, &status, &supplierID) == nil {
-					item := map[string]any{"id": id, "type": "document", "number": num, "title": title, "status": status}
-					if supplierID != nil {
-						item["url"] = "/suppliers/" + *supplierID
-					}
-					items = append(items, item)
-				}
+		rows, err := a.db.Query(r.Context(), `SELECT d.id,d.document_type,d.name,d.status,d.supplier_id FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id WHERE d.name ILIKE '%'||$1||'%' AND ((d.supplier_id IS NULL AND ($2='company' OR d.uploaded_by=$4::uuid)) OR vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
+			var id, num, title, status string
+			var supplierID *string
+			err := rows.Scan(&id, &num, &title, &status, &supplierID)
+			item := map[string]any{"id": id, "type": "document", "number": num, "title": title, "status": status}
+			if supplierID != nil {
+				item["url"] = "/suppliers/" + *supplierID
 			}
-			rows.Close()
+			return item, err
+		}) {
+			return
 		}
 	}
 	if hasPermission(p, "evaluation.read") || hasPermission(p, "*.read") {
-		rows, _ := a.db.Query(r.Context(), `SELECT e.id,COALESCE(t.name,e.evaluation_type),s.name,e.status,e.supplier_id FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id LEFT JOIN scorecard_templates t ON t.id=e.template_id WHERE (s.name ILIKE '%'||$1||'%' OR COALESCE(t.name,e.evaluation_type) ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
-		if rows != nil {
-			for rows.Next() {
-				var id, title, supplierName, status, supplierID string
-				if rows.Scan(&id, &title, &supplierName, &status, &supplierID) == nil {
-					items = append(items, map[string]any{"id": id, "type": "evaluation", "number": supplierName, "title": title, "status": status, "url": "/suppliers/" + supplierID + "?tab=Evaluations"})
-				}
-			}
-			rows.Close()
+		rows, err := a.db.Query(r.Context(), `SELECT e.id,COALESCE(t.name,e.evaluation_type),s.name,e.status,e.supplier_id FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id LEFT JOIN scorecard_templates t ON t.id=e.template_id WHERE (s.name ILIKE '%'||$1||'%' OR COALESCE(t.name,e.evaluation_type) ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (vendra_org_in_scope(s.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
+		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
+			var id, title, supplierName, status, supplierID string
+			err := rows.Scan(&id, &title, &supplierName, &status, &supplierID)
+			return map[string]any{"id": id, "type": "evaluation", "number": supplierName, "title": title, "status": status, "url": "/suppliers/" + supplierID + "?tab=Evaluations"}, err
+		}) {
+			return
 		}
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
@@ -157,9 +183,17 @@ func (a *App) listSupplierRisks(w http.ResponseWriter, r *http.Request) {
 		var prob, impact, score float64
 		var desc, mit, owner, review *string
 		var created, updated any
-		if rows.Scan(&id, &typ, &prob, &impact, &score, &severity, &status, &desc, &mit, &owner, &review, &created, &updated) == nil {
-			items = append(items, map[string]any{"id": id, "riskType": typ, "probability": prob, "impact": impact, "score": score, "severity": severity, "status": status, "description": desc, "mitigation": mit, "ownerId": owner, "reviewDate": review, "createdAt": created, "updatedAt": updated})
+		if err := rows.Scan(&id, &typ, &prob, &impact, &score, &severity, &status, &desc, &mit, &owner, &review, &created, &updated); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "리스크를 조회하지 못했습니다")
+			return
 		}
+		items = append(items, map[string]any{"id": id, "riskType": typ, "probability": prob, "impact": impact, "score": score, "severity": severity, "status": status, "description": desc, "mitigation": mit, "ownerId": owner, "reviewDate": review, "createdAt": created, "updatedAt": updated})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "리스크를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -210,11 +244,19 @@ func (a *App) listEvaluations(w http.ResponseWriter, r *http.Request) {
 		var total *float64
 		var grade, evaluator, comments, template *string
 		var created, updated any
-		if rows.Scan(&id, &typ, &status, &start, &end, &scores, &total, &grade, &evaluator, &comments, &created, &updated, &template) == nil {
-			var s any
-			_ = json.Unmarshal(scores, &s)
-			items = append(items, map[string]any{"id": id, "evaluationType": typ, "status": status, "periodStart": start, "periodEnd": end, "scores": s, "totalScore": total, "grade": grade, "evaluatorId": evaluator, "comments": comments, "templateName": template, "createdAt": created, "updatedAt": updated})
+		if err := rows.Scan(&id, &typ, &status, &start, &end, &scores, &total, &grade, &evaluator, &comments, &created, &updated, &template); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "평가를 조회하지 못했습니다")
+			return
 		}
+		var s any
+		_ = json.Unmarshal(scores, &s)
+		items = append(items, map[string]any{"id": id, "evaluationType": typ, "status": status, "periodStart": start, "periodEnd": end, "scores": s, "totalScore": total, "grade": grade, "evaluatorId": evaluator, "comments": comments, "templateName": template, "createdAt": created, "updatedAt": updated})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "평가를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -266,7 +308,11 @@ func (a *App) createEvaluation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	aggregateScore := total
-	_ = a.db.QueryRow(r.Context(), `SELECT COALESCE(avg(total_score),$2) FROM evaluations WHERE supplier_id=$1 AND status='completed'`, r.PathValue("id"), total).Scan(&aggregateScore)
+	if err := a.db.QueryRow(r.Context(), `SELECT COALESCE(avg(total_score),$2) FROM evaluations WHERE supplier_id=$1 AND status='completed'`, r.PathValue("id"), total).Scan(&aggregateScore); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "평가 결과를 조회하지 못했습니다")
+		return
+	}
 	aggregateGrade := "D"
 	for _, rule := range gradeRules {
 		min, _ := rule["min"].(float64)
@@ -292,14 +338,11 @@ func (a *App) listAllRisks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "리스크를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -316,14 +359,11 @@ func (a *App) listAllEvaluations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "평가를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -335,8 +375,14 @@ func (a *App) spendAnalysis(w http.ResponseWriter, r *http.Request) {
 		organizationID = *p.OrganizationID
 	}
 	groupBy := r.URL.Query().Get("groupBy")
-	from := r.URL.Query().Get("from")
-	to := r.URL.Query().Get("to")
+	from, ok := dateParam(w, r, "from", "시작일")
+	if !ok {
+		return
+	}
+	to, ok := dateParam(w, r, "to", "종료일")
+	if !ok {
+		return
+	}
 	var query string
 	switch groupBy {
 	case "category":
@@ -354,14 +400,11 @@ func (a *App) spendAnalysis(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "구매 분석을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }

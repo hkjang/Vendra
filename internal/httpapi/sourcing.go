@@ -32,14 +32,11 @@ func (a *App) listSourcingParticipants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "참여업체를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -105,14 +102,11 @@ func (a *App) portalSourcing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "견적·입찰 요청을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -216,14 +210,11 @@ func (a *App) sourcingComparison(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "비교표를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items, "selectionPolicy": "price + quality + delivery + risk + technical"})
 }
@@ -244,7 +235,11 @@ func (a *App) recalculateSourcing(r *http.Request, sourcingID string) error {
 func (a *App) evaluateSourcingResponse(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
 	var committeeCount, membership int
-	_ = a.db.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE user_id=$2) FROM sourcing_committee WHERE sourcing_id=(SELECT sourcing_id FROM sourcing_responses WHERE id=$1)`, r.PathValue("id"), p.ID).Scan(&committeeCount, &membership)
+	if err := a.db.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE user_id=$2) FROM sourcing_committee WHERE sourcing_id=(SELECT sourcing_id FROM sourcing_responses WHERE id=$1)`, r.PathValue("id"), p.ID).Scan(&committeeCount, &membership); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "평가위원을 조회하지 못했습니다")
+		return
+	}
 	if committeeCount > 0 && membership == 0 && !hasPermission(p, "*") {
 		writeError(w, 403, "not_evaluator", "지정된 평가위원만 제안서를 평가할 수 있습니다")
 		return
@@ -302,14 +297,11 @@ func (a *App) writeSourcingQuestions(w http.ResponseWriter, r *http.Request, sou
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "질의응답을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -420,14 +412,11 @@ func (a *App) listSourcingCommittee(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "평가위원을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -447,11 +436,19 @@ func (a *App) listSourcingCommitteeCandidates(w http.ResponseWriter, r *http.Req
 	items := []any{}
 	for rows.Next() {
 		var encoded []byte
-		if rows.Scan(&encoded) == nil {
-			var item any
-			_ = json.Unmarshal(encoded, &item)
-			items = append(items, item)
+		if err := rows.Scan(&encoded); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "평가위원 후보를 조회하지 못했습니다")
+			return
 		}
+		var item any
+		_ = json.Unmarshal(encoded, &item)
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "평가위원 후보를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }

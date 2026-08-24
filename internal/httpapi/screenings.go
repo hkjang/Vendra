@@ -60,13 +60,21 @@ func (a *App) listScreeningTemplates(w http.ResponseWriter, r *http.Request) {
 		var active bool
 		var templateItems, rules, documents []byte
 		var created, updated any
-		if rows.Scan(&id, &name, &active, &templateItems, &rules, &documents, &created, &updated) == nil {
-			var ti, rr, dd any
-			_ = json.Unmarshal(templateItems, &ti)
-			_ = json.Unmarshal(rules, &rr)
-			_ = json.Unmarshal(documents, &dd)
-			items = append(items, map[string]any{"id": id, "name": name, "active": active, "items": ti, "resultRules": rr, "requiredDocumentTypes": dd, "createdAt": created, "updatedAt": updated})
+		if err := rows.Scan(&id, &name, &active, &templateItems, &rules, &documents, &created, &updated); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "심사 템플릿을 조회하지 못했습니다")
+			return
 		}
+		var ti, rr, dd any
+		_ = json.Unmarshal(templateItems, &ti)
+		_ = json.Unmarshal(rules, &rr)
+		_ = json.Unmarshal(documents, &dd)
+		items = append(items, map[string]any{"id": id, "name": name, "active": active, "items": ti, "resultRules": rr, "requiredDocumentTypes": dd, "createdAt": created, "updatedAt": updated})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "심사 템플릿을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -113,14 +121,11 @@ func (a *App) listScreenings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "심사 이력을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }

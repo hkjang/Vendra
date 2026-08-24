@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -56,14 +55,11 @@ func (a *App) portalContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "담당자를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -153,6 +149,11 @@ func (a *App) portalWork(w http.ResponseWriter, r *http.Request) {
 			items = append(items, o)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "업무를 조회하지 못했습니다")
+		return
+	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 
@@ -168,14 +169,11 @@ func (a *App) portalEvaluations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var b []byte
-		if rows.Scan(&b) == nil {
-			var v any
-			_ = json.Unmarshal(b, &v)
-			items = append(items, v)
-		}
+	items, err := scanJSONRows(rows)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "평가 결과를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }

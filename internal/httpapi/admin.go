@@ -22,11 +22,19 @@ func (a *App) listSettings(w http.ResponseWriter, r *http.Request) {
 		var value []byte
 		var secret, configured bool
 		var updated any
-		if rows.Scan(&key, &value, &secret, &configured, &category, &updated) == nil {
-			var v any
-			_ = json.Unmarshal(value, &v)
-			items = append(items, map[string]any{"key": key, "value": v, "secret": secret, "secretConfigured": configured, "category": category, "updatedAt": updated})
+		if err := rows.Scan(&key, &value, &secret, &configured, &category, &updated); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "설정을 조회하지 못했습니다")
+			return
 		}
+		var v any
+		_ = json.Unmarshal(value, &v)
+		items = append(items, map[string]any{"key": key, "value": v, "secret": secret, "secretConfigured": configured, "category": category, "updatedAt": updated})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "설정을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -87,11 +95,19 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) {
 		var last any
 		var created any
 		var roles []byte
-		if rows.Scan(&id, &email, &name, &typ, &status, &org, &supplier, &locale, &tz, &last, &created, &roles) == nil {
-			var rs any
-			_ = json.Unmarshal(roles, &rs)
-			items = append(items, map[string]any{"id": id, "email": email, "displayName": name, "userType": typ, "status": status, "organizationId": org, "supplierId": supplier, "locale": locale, "timezone": tz, "lastLoginAt": last, "createdAt": created, "roles": rs})
+		if err := rows.Scan(&id, &email, &name, &typ, &status, &org, &supplier, &locale, &tz, &last, &created, &roles); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "사용자를 조회하지 못했습니다")
+			return
 		}
+		var rs any
+		_ = json.Unmarshal(roles, &rs)
+		items = append(items, map[string]any{"id": id, "email": email, "displayName": name, "userType": typ, "status": status, "organizationId": org, "supplierId": supplier, "locale": locale, "timezone": tz, "lastLoginAt": last, "createdAt": created, "roles": rs})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "사용자를 조회하지 못했습니다")
+		return
 	}
 	// One extra row was requested so the caller can be told the list is cut off
 	// rather than silently believing it saw everyone.
@@ -210,11 +226,19 @@ func (a *App) listRoles(w http.ResponseWriter, r *http.Request) {
 		var perms []byte
 		var system bool
 		var created any
-		if rows.Scan(&id, &code, &name, &perms, &scope, &system, &created) == nil {
-			var p any
-			_ = json.Unmarshal(perms, &p)
-			items = append(items, map[string]any{"id": id, "code": code, "name": name, "permissions": p, "dataScope": scope, "system": system, "createdAt": created})
+		if err := rows.Scan(&id, &code, &name, &perms, &scope, &system, &created); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "역할을 조회하지 못했습니다")
+			return
 		}
+		var p any
+		_ = json.Unmarshal(perms, &p)
+		items = append(items, map[string]any{"id": id, "code": code, "name": name, "permissions": p, "dataScope": scope, "system": system, "createdAt": created})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "역할을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -274,9 +298,17 @@ func (a *App) listOrganizations(w http.ResponseWriter, r *http.Request) {
 		var id, name, path string
 		var parent *string
 		var created any
-		if rows.Scan(&id, &name, &parent, &path, &created) == nil {
-			items = append(items, map[string]any{"id": id, "name": name, "parentId": parent, "path": path, "createdAt": created})
+		if err := rows.Scan(&id, &name, &parent, &path, &created); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "조직을 조회하지 못했습니다")
+			return
 		}
+		items = append(items, map[string]any{"id": id, "name": name, "parentId": parent, "path": path, "createdAt": created})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "조직을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -327,11 +359,19 @@ func (a *App) listAccessGrants(w http.ResponseWriter, r *http.Request) {
 		var typ, rid, delegator *string
 		var conditions []byte
 		var from, until, created any
-		if rows.Scan(&id, &uid, &email, &permission, &typ, &rid, &conditions, &from, &until, &delegator, &created) == nil {
-			var c any
-			_ = json.Unmarshal(conditions, &c)
-			items = append(items, map[string]any{"id": id, "userId": uid, "email": email, "permission": permission, "resourceType": typ, "resourceId": rid, "conditions": c, "validFrom": from, "validUntil": until, "delegatedBy": delegator, "createdAt": created})
+		if err := rows.Scan(&id, &uid, &email, &permission, &typ, &rid, &conditions, &from, &until, &delegator, &created); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "임시 권한을 조회하지 못했습니다")
+			return
 		}
+		var c any
+		_ = json.Unmarshal(conditions, &c)
+		items = append(items, map[string]any{"id": id, "userId": uid, "email": email, "permission": permission, "resourceType": typ, "resourceId": rid, "conditions": c, "validFrom": from, "validUntil": until, "delegatedBy": delegator, "createdAt": created})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "임시 권한을 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -396,9 +436,17 @@ func (a *App) listLifecycle(w http.ResponseWriter, r *http.Request) {
 		var id, typ, code, name, color string
 		var order int
 		var terminal, enabled bool
-		if rows.Scan(&id, &typ, &code, &name, &color, &order, &terminal, &enabled) == nil {
-			items = append(items, map[string]any{"id": id, "entityType": typ, "code": code, "name": name, "color": color, "sortOrder": order, "terminal": terminal, "enabled": enabled})
+		if err := rows.Scan(&id, &typ, &code, &name, &color, &order, &terminal, &enabled); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "상태를 조회하지 못했습니다")
+			return
 		}
+		items = append(items, map[string]any{"id": id, "entityType": typ, "code": code, "name": name, "color": color, "sortOrder": order, "terminal": terminal, "enabled": enabled})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "상태를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -454,12 +502,20 @@ func (a *App) listAudit(w http.ResponseWriter, r *http.Request) {
 	items := []map[string]any{}
 	for rows.Next() {
 		var encoded []byte
-		if rows.Scan(&encoded) == nil {
-			var item map[string]any
-			if json.Unmarshal(encoded, &item) == nil {
-				items = append(items, item)
-			}
+		if err := rows.Scan(&encoded); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "감사로그를 조회하지 못했습니다")
+			return
 		}
+		var item map[string]any
+		if json.Unmarshal(encoded, &item) == nil {
+			items = append(items, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "감사로그를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -492,12 +548,20 @@ func (a *App) listScorecards(w http.ResponseWriter, r *http.Request) {
 		var active bool
 		var c, g []byte
 		var created, updated any
-		if rows.Scan(&id, &name, &typ, &active, &c, &g, &created, &updated) == nil {
-			var criteria, grades any
-			_ = json.Unmarshal(c, &criteria)
-			_ = json.Unmarshal(g, &grades)
-			items = append(items, map[string]any{"id": id, "name": name, "evaluationType": typ, "active": active, "criteria": criteria, "gradeRules": grades, "createdAt": created, "updatedAt": updated})
+		if err := rows.Scan(&id, &name, &typ, &active, &c, &g, &created, &updated); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "평가표를 조회하지 못했습니다")
+			return
 		}
+		var criteria, grades any
+		_ = json.Unmarshal(c, &criteria)
+		_ = json.Unmarshal(g, &grades)
+		items = append(items, map[string]any{"id": id, "name": name, "evaluationType": typ, "active": active, "criteria": criteria, "gradeRules": grades, "createdAt": created, "updatedAt": updated})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "평가표를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
@@ -542,11 +606,19 @@ func (a *App) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 		var scopes []byte
 		var expires, last, revoked any
 		var created any
-		if rows.Scan(&id, &name, &prefix, &scopes, &expires, &last, &revoked, &created) == nil {
-			var s any
-			_ = json.Unmarshal(scopes, &s)
-			items = append(items, map[string]any{"id": id, "name": name, "prefix": prefix, "scopes": s, "expiresAt": expires, "lastUsedAt": last, "revokedAt": revoked, "createdAt": created})
+		if err := rows.Scan(&id, &name, &prefix, &scopes, &expires, &last, &revoked, &created); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "키를 조회하지 못했습니다")
+			return
 		}
+		var s any
+		_ = json.Unmarshal(scopes, &s)
+		items = append(items, map[string]any{"id": id, "name": name, "prefix": prefix, "scopes": s, "expiresAt": expires, "lastUsedAt": last, "revokedAt": revoked, "createdAt": created})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "키를 조회하지 못했습니다")
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
