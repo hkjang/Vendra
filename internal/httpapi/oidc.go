@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -93,10 +94,7 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 	state, _ := randomToken(24)
 	nonce, _ := randomToken(24)
 	verifier, _ := randomToken(32)
-	returnTo := r.URL.Query().Get("returnTo")
-	if !strings.HasPrefix(returnTo, "/") {
-		returnTo = "/"
-	}
+	returnTo := safeReturnTo(r.URL.Query().Get("returnTo"))
 	flow := oidcFlow{State: state, Nonce: nonce, Verifier: verifier, ReturnTo: returnTo, ExpiresAt: time.Now().Add(10 * time.Minute).Unix()}
 	b, _ := json.Marshal(flow)
 	encrypted, err := a.vault.Encrypt(string(b))
@@ -239,6 +237,32 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: sessionToken, Path: "/", HttpOnly: true, Secure: sessionConfig.SecureCookie || requestIsHTTPS(r), SameSite: http.SameSiteLaxMode, MaxAge: sessionConfig.TTLHours * 3600})
 	http.SetCookie(w, &http.Cookie{Name: "vendra_oidc_flow", Value: "", Path: "/api/auth/oidc/callback", HttpOnly: true, MaxAge: -1})
 	http.Redirect(w, r, flow.ReturnTo, http.StatusFound)
+}
+
+// safeReturnTo keeps the post-sign-in redirect inside this site.
+//
+// Requiring a leading slash is not enough: "//evil.com" has one, and a browser
+// reads it as a protocol-relative URL to another host. The redirect happens
+// immediately after the session cookie is set, so the user arrives on someone
+// else's page believing Vendra sent them there. A backslash in the same
+// position is normalised to a slash by browser URL parsers, so it is refused
+// too, along with anything carrying a scheme, a host, or a control character.
+func safeReturnTo(raw string) string {
+	const fallback = "/"
+	if raw == "" || !strings.HasPrefix(raw, "/") {
+		return fallback
+	}
+	if strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, `/\`) {
+		return fallback
+	}
+	if strings.ContainsFunc(raw, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return fallback
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.Opaque != "" {
+		return fallback
+	}
+	return parsed.String()
 }
 
 func requestOrigin(r *http.Request) string {
