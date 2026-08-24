@@ -332,12 +332,12 @@ func require(permission string, next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, 401, "unauthenticated", "로그인이 필요합니다")
 			return
 		}
-		grantAccess := hasGrantPermission(p, permission, r)
+		grantAccess, grantNamesRecord := hasGrantPermission(p, permission, r)
 		if !hasPermission(p, permission) && !grantAccess {
 			writeError(w, 403, "forbidden", fmt.Sprintf("%s 권한이 필요합니다", permission))
 			return
 		}
-		if grantAccess {
+		if grantNamesRecord {
 			r = r.WithContext(context.WithValue(r.Context(), grantAuthorizationKey, true))
 		}
 		next(w, r)
