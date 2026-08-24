@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -66,22 +67,33 @@ func bootstrapAdmin(ctx context.Context, db *pgxpool.Pool, email, password strin
 	return tx.Commit(ctx)
 }
 
+// errNoCredentials means the caller presented nothing usable, as opposed to the
+// check itself being impossible. The distinction matters: reporting a database
+// outage as an authentication failure signs every user out and tells anyone
+// trying to sign in that their password is wrong.
+var errNoCredentials = errors.New("no credentials")
+
 func (a authService) middleware(required bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, ok := a.authenticate(r)
-		if !ok {
+		p, err := a.authenticate(r)
+		switch {
+		case err == nil:
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
+		case errors.Is(err, errNoCredentials):
 			if required {
 				writeError(w, http.StatusUnauthorized, "unauthenticated", "로그인이 필요합니다")
 				return
 			}
 			next.ServeHTTP(w, r)
-			return
+		default:
+			logDB(err)
+			w.Header().Set("Retry-After", "5")
+			writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "일시적으로 로그인 상태를 확인할 수 없습니다. 잠시 후 다시 시도하세요")
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
 	})
 }
 
-func (a authService) authenticate(r *http.Request) (Principal, bool) {
+func (a authService) authenticate(r *http.Request) (Principal, error) {
 	ctx := r.Context()
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer vnd_") {
 		token := strings.TrimPrefix(auth, "Bearer ")
@@ -89,16 +101,25 @@ func (a authService) authenticate(r *http.Request) (Principal, bool) {
 	}
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil || cookie.Value == "" {
-		return Principal{}, false
+		return Principal{}, errNoCredentials
 	}
 	return a.fromSession(ctx, cookie.Value)
+}
+
+// credentialError maps a lookup result: no row means the credential is simply
+// not valid, anything else means the answer is unknown.
+func credentialError(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errNoCredentials
+	}
+	return err
 }
 
 func (a authService) scanPrincipal(row pgx.Row, p *Principal, permissions *[]byte, sessionID **string) error {
 	return row.Scan(&p.ID, &p.Email, &p.DisplayName, &p.UserType, &p.SupplierID, &p.OrganizationID, permissions, &p.DataScope, sessionID)
 }
 
-func (a authService) fromSession(ctx context.Context, token string) (Principal, bool) {
+func (a authService) fromSession(ctx context.Context, token string) (Principal, error) {
 	var p Principal
 	var perms []byte
 	var sid *string
@@ -112,7 +133,7 @@ func (a authService) fromSession(ctx context.Context, token string) (Principal, 
 		WHERE s.token_hash=$1 AND s.expires_at>now() AND u.status='active'
 		GROUP BY u.id,s.id`, security.TokenHash(token)), &p, &perms, &sid)
 	if err != nil {
-		return Principal{}, false
+		return Principal{}, credentialError(err)
 	}
 	_ = json.Unmarshal(perms, &p.Permissions)
 	p.SessionID = sid
@@ -139,10 +160,10 @@ func (a authService) fromSession(ctx context.Context, token string) (Principal, 
 		grantRows.Close()
 	}
 	_, _ = a.db.Exec(ctx, `UPDATE sessions SET last_seen_at=now() WHERE id=$1 AND last_seen_at < now()-interval '5 minutes'`, sid)
-	return p, true
+	return p, nil
 }
 
-func (a authService) fromAPIKey(ctx context.Context, token string) (Principal, bool) {
+func (a authService) fromAPIKey(ctx context.Context, token string) (Principal, error) {
 	var p Principal
 	var perms []byte
 	var ignored *string
@@ -152,7 +173,7 @@ func (a authService) fromAPIKey(ctx context.Context, token string) (Principal, b
 		FROM api_keys k JOIN users u ON u.id=k.user_id
 		WHERE k.key_hash=$1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND u.status='active'`, security.TokenHash(token)), &p, &perms, &ignored)
 	if err != nil {
-		return Principal{}, false
+		return Principal{}, credentialError(err)
 	}
 	_ = json.Unmarshal(perms, &p.Permissions)
 	var rolePermissionsJSON []byte
@@ -169,7 +190,7 @@ func (a authService) fromAPIKey(ctx context.Context, token string) (Principal, b
 		p.Permissions = allowedScopes
 	}
 	_, _ = a.db.Exec(ctx, `UPDATE api_keys SET last_used_at=now() WHERE key_hash=$1`, security.TokenHash(token))
-	return p, true
+	return p, nil
 }
 
 func (a authService) login(w http.ResponseWriter, r *http.Request) {
@@ -199,8 +220,17 @@ func (a authService) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var userID, hash string
-	if a.db.QueryRow(r.Context(), `SELECT id,password_hash FROM users WHERE email=$1 AND status='active'`, email).Scan(&userID, &hash) != nil {
+	switch lookupErr := a.db.QueryRow(r.Context(), `SELECT id,password_hash FROM users WHERE email=$1 AND status='active'`, email).Scan(&userID, &hash); {
+	case lookupErr == nil:
+	case errors.Is(lookupErr, pgx.ErrNoRows):
+		// Unknown account: fall through so bcrypt still runs and the response
+		// time does not reveal that the address is unregistered.
 		hash = ""
+	default:
+		logDB(lookupErr)
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "일시적으로 로그인을 처리할 수 없습니다. 잠시 후 다시 시도하세요")
+		return
 	}
 	// Always spend a bcrypt comparison so response timing does not reveal
 	// whether the account exists.
