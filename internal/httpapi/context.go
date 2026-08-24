@@ -89,7 +89,16 @@ func permissionMatches(got, wanted string) bool {
 		(strings.HasPrefix(got, "*.") && strings.HasSuffix(wanted, strings.TrimPrefix(got, "*")))
 }
 
-func hasGrantPermission(p Principal, wanted string, r *http.Request) bool {
+// hasGrantPermission reports whether a delegation lets this request past the
+// permission gate, and whether that delegation named the very record being
+// acted on.
+//
+// The distinction is the point. A delegation grants a permission; it does not
+// enlarge the data scope the permission runs inside. Only a delegation naming a
+// specific record may carry the caller past a scope check, and then only for
+// that record. Delegating "contract.read over contracts" used to raise the same
+// bypass flag and hand over every contract in the company.
+func hasGrantPermission(p Principal, wanted string, r *http.Request) (allowed, namesRecord bool) {
 	for _, grant := range p.AccessGrants {
 		if !permissionMatches(grant.Permission, wanted) {
 			continue
@@ -106,11 +115,15 @@ func hasGrantPermission(p Principal, wanted string, r *http.Request) bool {
 				continue
 			}
 		}
-		if grantConditionsMatch(p, r, grant.Conditions) {
-			return true
+		if !grantConditionsMatch(p, r, grant.Conditions) {
+			continue
 		}
+		if grant.ResourceID != nil {
+			return true, true
+		}
+		allowed = true
 	}
-	return false
+	return allowed, false
 }
 
 func grantConditionsMatch(p Principal, r *http.Request, conditions map[string]any) bool {

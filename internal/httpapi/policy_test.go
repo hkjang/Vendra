@@ -70,16 +70,20 @@ func TestConditionalResourceGrant(t *testing.T) {
 	}}}
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/suppliers/"+resourceID, nil)
 	r.SetPathValue("id", resourceID)
-	if !hasGrantPermission(p, "supplier.read", r) {
+	allowed, namesRecord := hasGrantPermission(p, "supplier.read", r)
+	if !allowed {
 		t.Fatal("matching conditional resource grant was rejected")
 	}
+	if !namesRecord {
+		t.Fatal("a grant naming this record should carry it past the scope check")
+	}
 	r.Method = http.MethodPost
-	if hasGrantPermission(p, "supplier.read", r) {
+	if allowed, _ := hasGrantPermission(p, "supplier.read", r); allowed {
 		t.Fatal("method condition was ignored")
 	}
 	r.Method = http.MethodGet
 	r.SetPathValue("id", "supplier-2")
-	if hasGrantPermission(p, "supplier.read", r) {
+	if allowed, _ := hasGrantPermission(p, "supplier.read", r); allowed {
 		t.Fatal("resource id condition was ignored")
 	}
 	if grantConditionsValid(map[string]any{"unsupported": true}) {
