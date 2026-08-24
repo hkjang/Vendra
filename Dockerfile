@@ -23,9 +23,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata && addgroup -S vendra && adduser -S -G vendra -h /app vendra
 WORKDIR /app
-COPY --from=backend /out/vendra /app/vendra
-COPY --from=web /src/web/dist /app/web/dist
-RUN mkdir -p /var/lib/vendra/documents && chown -R vendra:vendra /app /var/lib/vendra
+# Ownership is set as the files are copied. A recursive chown afterwards
+# rewrote every file's metadata, and a layer records a whole copy of anything it
+# touches — the binary and the whole frontend were shipped twice, which was
+# thirteen of the image's thirty-seven megabytes.
+COPY --from=backend --chown=vendra:vendra /out/vendra /app/vendra
+COPY --from=web --chown=vendra:vendra /src/web/dist /app/web/dist
+RUN mkdir -p /var/lib/vendra/documents && chown -R vendra:vendra /var/lib/vendra
 USER vendra
 EXPOSE 8080
 VOLUME ["/var/lib/vendra/documents"]
