@@ -166,7 +166,10 @@ func (a *App) portalSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "save_failed", "응답을 저장하지 못했습니다")
 		return
 	}
-	_, _ = a.db.Exec(r.Context(), `UPDATE sourcing_participants SET status=$3,viewed_at=COALESCE(viewed_at,now()) WHERE sourcing_id=$1 AND supplier_id=$2`, r.PathValue("id"), *p.SupplierID, status)
+	// A read receipt, not part of what the response reports.
+	if _, err := a.db.Exec(r.Context(), `UPDATE sourcing_participants SET status=$3,viewed_at=COALESCE(viewed_at,now()) WHERE sourcing_id=$1 AND supplier_id=$2`, r.PathValue("id"), *p.SupplierID, status); err != nil {
+		logDB(err)
+	}
 	a.audit.record(r, status, "sourcing_response", id, nil, map[string]any{"sourcingId": r.PathValue("id"), "supplierId": *p.SupplierID, "totalAmount": in.TotalAmount})
 	if in.Submit {
 		_ = a.recalculateSourcing(r, r.PathValue("id"))
@@ -502,9 +505,21 @@ func (a *App) selectSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "invalid_response", "제출 완료된 응답만 선정할 수 있습니다")
 		return
 	}
-	var selectionID string
-	err = a.db.QueryRow(r.Context(), `INSERT INTO sourcing_selections(sourcing_id,response_id,selection_type,reason,selected_by) VALUES($1,$2,$3,NULLIF($4,''),$5) ON CONFLICT(sourcing_id,selection_type) DO UPDATE SET response_id=excluded.response_id,reason=excluded.reason,selected_by=excluded.selected_by,selected_at=now() RETURNING id`, o.ID, in.ResponseID, in.SelectionType, in.Reason, p.ID).Scan(&selectionID)
+	// Awarding writes the selection, the request's status and every bidder's
+	// standing. A partial award tells the buyer the award landed while the RFQ
+	// still reads open and the losing bidders still see themselves in the
+	// running, so the three writes go together or not at all.
+	tx, err := a.db.Begin(r.Context())
 	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "선정 결과를 저장하지 못했습니다")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var selectionID string
+	err = tx.QueryRow(r.Context(), `INSERT INTO sourcing_selections(sourcing_id,response_id,selection_type,reason,selected_by) VALUES($1,$2,$3,NULLIF($4,''),$5) ON CONFLICT(sourcing_id,selection_type) DO UPDATE SET response_id=excluded.response_id,reason=excluded.reason,selected_by=excluded.selected_by,selected_at=now() RETURNING id`, o.ID, in.ResponseID, in.SelectionType, in.Reason, p.ID).Scan(&selectionID)
+	if err != nil {
+		logDB(err)
 		writeError(w, 400, "save_failed", "선정 결과를 저장하지 못했습니다")
 		return
 	}
@@ -512,8 +527,23 @@ func (a *App) selectSourcingResponse(w http.ResponseWriter, r *http.Request) {
 	if in.SelectionType == "final" {
 		objectStatus = "selected"
 	}
-	_, _ = a.db.Exec(r.Context(), `UPDATE business_objects SET status=$2,data=data||jsonb_build_object('selectedSupplierId',$3::text,'selectionType',$4),updated_at=now() WHERE id=$1`, o.ID, objectStatus, supplierID, in.SelectionType)
-	_, _ = a.db.Exec(r.Context(), `UPDATE sourcing_participants SET status=CASE WHEN supplier_id=$2 THEN $3 ELSE CASE WHEN $3='selected' THEN 'not_selected' ELSE status END END WHERE sourcing_id=$1`, o.ID, supplierID, objectStatus)
+	_, err = tx.Exec(r.Context(), `UPDATE business_objects SET status=$2,data=data||jsonb_build_object('selectedSupplierId',$3::text,'selectionType',$4),updated_at=now() WHERE id=$1`, o.ID, objectStatus, supplierID, in.SelectionType)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "save_failed", "선정 결과를 저장하지 못했습니다")
+		return
+	}
+	_, err = tx.Exec(r.Context(), `UPDATE sourcing_participants SET status=CASE WHEN supplier_id=$2 THEN $3 ELSE CASE WHEN $3='selected' THEN 'not_selected' ELSE status END END WHERE sourcing_id=$1`, o.ID, supplierID, objectStatus)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "save_failed", "선정 결과를 저장하지 못했습니다")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		logDB(err)
+		writeError(w, 500, "save_failed", "선정 결과를 저장하지 못했습니다")
+		return
+	}
 	a.audit.record(r, "select_"+in.SelectionType, o.ObjectType, o.ID, nil, map[string]any{"selectionId": selectionID, "responseId": in.ResponseID, "supplierId": supplierID, "reason": in.Reason})
 	writeJSON(w, 200, map[string]any{"selectionId": selectionID, "status": objectStatus, "supplierId": supplierID})
 }

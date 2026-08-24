@@ -222,7 +222,11 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		_, _ = a.db.Exec(r.Context(), `UPDATE users SET oidc_subject=COALESCE(oidc_subject,$2),last_login_at=now() WHERE id=$1`, userID, claims.Subject)
+		// Linking the subject is an optimisation: the next sign-in re-matches on
+		// the verified email address.
+		if _, err := a.db.Exec(r.Context(), `UPDATE users SET oidc_subject=COALESCE(oidc_subject,$2),last_login_at=now() WHERE id=$1`, userID, claims.Subject); err != nil {
+			logDB(err)
+		}
 	}
 	sessionToken, _ := randomToken(32)
 	sessionConfig := a.auth.sessionSettings(r.Context())

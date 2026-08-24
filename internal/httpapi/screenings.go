@@ -142,13 +142,33 @@ func (a *App) createScreening(w http.ResponseWriter, r *http.Request) {
 	if in.TemplateID == "" {
 		_ = a.db.QueryRow(r.Context(), `SELECT id FROM screening_templates WHERE active=true ORDER BY created_at LIMIT 1`).Scan(&in.TemplateID)
 	}
-	var id string
-	err := a.db.QueryRow(r.Context(), `INSERT INTO supplier_screenings(supplier_id,template_id) VALUES($1,$2) RETURNING id`, r.PathValue("id"), in.TemplateID).Scan(&id)
+	// The screening row and the supplier moving into screening are one act: a
+	// supplier left behind still looks unscreened in every list.
+	tx, err := a.db.Begin(r.Context())
 	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "심사를 시작하지 못했습니다")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var id string
+	err = tx.QueryRow(r.Context(), `INSERT INTO supplier_screenings(supplier_id,template_id) VALUES($1,$2) RETURNING id`, r.PathValue("id"), in.TemplateID).Scan(&id)
+	if err != nil {
+		logDB(err)
 		writeError(w, 400, "save_failed", "심사를 시작하지 못했습니다")
 		return
 	}
-	_, _ = a.db.Exec(r.Context(), `UPDATE suppliers SET status='screening',updated_at=now() WHERE id=$1`, r.PathValue("id"))
+	_, err = tx.Exec(r.Context(), `UPDATE suppliers SET status='screening',updated_at=now() WHERE id=$1`, r.PathValue("id"))
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "save_failed", "심사를 시작하지 못했습니다")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		logDB(err)
+		writeError(w, 500, "save_failed", "심사를 시작하지 못했습니다")
+		return
+	}
 	a.audit.record(r, "create", "screening", id, nil, in)
 	writeJSON(w, 201, map[string]any{"id": id})
 }
@@ -202,8 +222,19 @@ func (a *App) updateScreening(w http.ResponseWriter, r *http.Request) {
 		status = "completed"
 		completed = time.Now()
 	}
-	_, err := a.db.Exec(r.Context(), `UPDATE supplier_screenings SET responses=$2,domain_results=$3,result=NULLIF($4,''),status=$5,reviewer_id=$6,comments=NULLIF($7,''),submitted_at=COALESCE(submitted_at,now()),completed_at=$8,updated_at=now() WHERE id=$1`, r.PathValue("id"), raw(in.Responses), raw(domainResults), result, status, p.ID, in.Comments, completed)
+	// A screening that concludes REJECT must suspend the supplier in the same
+	// breath. Recording the verdict but leaving the supplier approved keeps a
+	// rejected company tradeable with the rejection on file.
+	tx, err := a.db.Begin(r.Context())
 	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "심사를 저장하지 못했습니다")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	_, err = tx.Exec(r.Context(), `UPDATE supplier_screenings SET responses=$2,domain_results=$3,result=NULLIF($4,''),status=$5,reviewer_id=$6,comments=NULLIF($7,''),submitted_at=COALESCE(submitted_at,now()),completed_at=$8,updated_at=now() WHERE id=$1`, r.PathValue("id"), raw(in.Responses), raw(domainResults), result, status, p.ID, in.Comments, completed)
+	if err != nil {
+		logDB(err)
 		writeError(w, 400, "save_failed", "심사를 저장하지 못했습니다")
 		return
 	}
@@ -215,7 +246,17 @@ func (a *App) updateScreening(w http.ResponseWriter, r *http.Request) {
 		if result == "REJECT" {
 			supplierStatus = "suspended"
 		}
-		_, _ = a.db.Exec(r.Context(), `UPDATE suppliers SET status=$2,updated_at=now() WHERE id=$1`, supplierID, supplierStatus)
+		_, err = tx.Exec(r.Context(), `UPDATE suppliers SET status=$2,updated_at=now() WHERE id=$1`, supplierID, supplierStatus)
+		if err != nil {
+			logDB(err)
+			writeError(w, 500, "save_failed", "심사를 저장하지 못했습니다")
+			return
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		logDB(err)
+		writeError(w, 500, "save_failed", "심사를 저장하지 못했습니다")
+		return
 	}
 	a.audit.record(r, "update", "screening", r.PathValue("id"), nil, map[string]any{"responses": in.Responses, "totalScore": total, "result": result, "missingDocumentTypes": missingDocumentTypes})
 	writeJSON(w, 200, map[string]any{"status": status, "domainResults": domainResults, "totalScore": total, "result": result, "missingRequired": missingRequired, "missingDocumentTypes": missingDocumentTypes})

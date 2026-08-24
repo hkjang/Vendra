@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -337,9 +338,20 @@ func (a *App) submitObject(objectType string) http.HandlerFunc {
 			return
 		}
 		definitionID, steps, err := a.matchingWorkflow(r, objectType, current)
-		if err == pgx.ErrNoRows {
-			_, _ = a.db.Exec(r.Context(), `UPDATE business_objects SET status='approved',updated_at=now() WHERE id=$1`, id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			if _, err := a.db.Exec(r.Context(), `UPDATE business_objects SET status='approved',updated_at=now() WHERE id=$1`, id); err != nil {
+				logDB(err)
+				writeError(w, 500, "save_failed", "처리하지 못했습니다")
+				return
+			}
 			writeJSON(w, 200, map[string]any{"status": "approved", "workflowApplied": false, "reason": "no_matching_workflow"})
+			return
+		}
+		// Any other failure left definitionID empty, which would go on to
+		// violate the foreign key and be reported as a workflow problem.
+		if err != nil {
+			logDB(err)
+			writeError(w, 500, "workflow_failed", "승인 절차를 시작하지 못했습니다")
 			return
 		}
 		var instanceID string
@@ -355,7 +367,18 @@ func (a *App) submitObject(objectType string) http.HandlerFunc {
 			writeError(w, 500, "workflow_failed", "승인 절차를 시작하지 못했습니다")
 			return
 		}
-		_, _ = a.db.Exec(r.Context(), `UPDATE business_objects SET status='pending_approval',updated_at=now() WHERE id=$1`, id)
+		// The instance already exists and the partial unique index will refuse a
+		// second one, so leaving the object in draft would strand it: approvers
+		// see a request the object does not know about, and the author cannot
+		// resubmit.
+		if _, err := a.db.Exec(r.Context(), `UPDATE business_objects SET status='pending_approval',updated_at=now() WHERE id=$1`, id); err != nil {
+			logDB(err)
+			if _, cleanup := a.db.Exec(r.Context(), `DELETE FROM workflow_instances WHERE id=$1 AND status='pending'`, instanceID); cleanup != nil {
+				logDB(cleanup)
+			}
+			writeError(w, 500, "workflow_failed", "승인 절차를 시작하지 못했습니다")
+			return
+		}
 		a.audit.record(r, "submit", objectType, id, nil, map[string]any{"workflowInstanceId": instanceID})
 		writeJSON(w, 200, map[string]any{"status": "pending_approval", "workflowApplied": true, "instanceId": instanceID})
 	}

@@ -220,7 +220,11 @@ func (a *App) createRisk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "save_failed", "리스크를 저장하지 못했습니다")
 		return
 	}
-	_, _ = a.db.Exec(r.Context(), `UPDATE suppliers SET risk_level=$2,updated_at=now() WHERE id=$1 AND CASE $2 WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3 WHEN 'MEDIUM' THEN 2 ELSE 1 END > CASE risk_level WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3 WHEN 'MEDIUM' THEN 2 ELSE 1 END`, r.PathValue("id"), severity)
+	// A cached rollup. The record itself saved, and the next write recomputes
+	// this, so a stale value must not fail a successful create.
+	if _, err := a.db.Exec(r.Context(), `UPDATE suppliers SET risk_level=$2,updated_at=now() WHERE id=$1 AND CASE $2 WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3 WHEN 'MEDIUM' THEN 2 ELSE 1 END > CASE risk_level WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3 WHEN 'MEDIUM' THEN 2 ELSE 1 END`, r.PathValue("id"), severity); err != nil {
+		logDB(err)
+	}
 	a.audit.record(r, "create", "risk", id, nil, in)
 	writeJSON(w, 201, map[string]any{"id": id})
 }
@@ -321,7 +325,11 @@ func (a *App) createEvaluation(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	_, _ = a.db.Exec(r.Context(), `UPDATE suppliers SET score=$2,grade=$3,updated_at=now() WHERE id=$1`, r.PathValue("id"), aggregateScore, aggregateGrade)
+	// A cached rollup. The record itself saved, and the next write recomputes
+	// this, so a stale value must not fail a successful create.
+	if _, err := a.db.Exec(r.Context(), `UPDATE suppliers SET score=$2,grade=$3,updated_at=now() WHERE id=$1`, r.PathValue("id"), aggregateScore, aggregateGrade); err != nil {
+		logDB(err)
+	}
 	a.audit.record(r, "create", "evaluation", id, nil, map[string]any{"scores": scores, "totalScore": total, "grade": grade})
 	writeJSON(w, 201, map[string]any{"id": id, "totalScore": total, "grade": grade, "aggregateScore": aggregateScore, "aggregateGrade": aggregateGrade})
 }
@@ -461,7 +469,11 @@ func (a *App) createSpendTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "save_failed", "구매 원장을 저장하지 못했습니다")
 		return
 	}
-	_, _ = a.db.Exec(r.Context(), `UPDATE suppliers SET annual_spend=(SELECT COALESCE(sum(amount),0) FROM spend_transactions WHERE supplier_id=$1 AND transaction_date>=current_date-365),updated_at=now() WHERE id=$1`, in.SupplierID)
+	// A cached rollup. The record itself saved, and the next write recomputes
+	// this, so a stale value must not fail a successful create.
+	if _, err := a.db.Exec(r.Context(), `UPDATE suppliers SET annual_spend=(SELECT COALESCE(sum(amount),0) FROM spend_transactions WHERE supplier_id=$1 AND transaction_date>=current_date-365),updated_at=now() WHERE id=$1`, in.SupplierID); err != nil {
+		logDB(err)
+	}
 	a.audit.record(r, "create", "spend_transaction", id, nil, in)
 	writeJSON(w, 201, map[string]any{"id": id, "transactionNumber": in.TransactionNumber})
 }
