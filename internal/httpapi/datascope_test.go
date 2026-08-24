@@ -114,27 +114,40 @@ func newScopeWorld(t *testing.T) *scopeWorld {
 	return w
 }
 
+// wipe removes only what this fixture creates. Emptying the tables outright
+// collided with every other fixture's rows, and the two foreign keys between
+// users and suppliers point at each other, so the order below releases one
+// side before removing either.
 func wipe(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	for _, table := range []string{
-		"login_attempts", "document_signatures", "documents", "sourcing_selections",
-		"sourcing_questions", "sourcing_responses", "sourcing_participants",
-		"supplier_screenings", "risks", "evaluations", "supplier_contacts",
-		"spend_transactions", "workflow_actions", "workflow_instances", "business_objects",
-	} {
-		if _, err := pool.Exec(context.Background(), `DELETE FROM `+table); err != nil {
-			t.Fatalf("wipe %s: %v", table, err)
-		}
-	}
 	for _, q := range []string{
-		`DELETE FROM suppliers`,
+		`UPDATE suppliers SET owner_id=NULL WHERE supplier_number LIKE 'SC-%'`,
+		`DELETE FROM workflow_actions WHERE instance_id IN (SELECT i.id FROM workflow_instances i JOIN business_objects o ON o.id=i.object_id WHERE o.number LIKE 'SC-%')`,
+		`DELETE FROM workflow_instances WHERE object_id IN (SELECT id FROM business_objects WHERE number LIKE 'SC-%')`,
+		`DELETE FROM document_signatures WHERE document_id IN (SELECT id FROM documents WHERE supplier_id IN (SELECT id FROM suppliers WHERE supplier_number LIKE 'SC-%'))`,
+		`DELETE FROM documents WHERE supplier_id IN (SELECT id FROM suppliers WHERE supplier_number LIKE 'SC-%')`,
+		`DELETE FROM sourcing_selections WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number LIKE 'SC-%')`,
+		`DELETE FROM sourcing_questions WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number LIKE 'SC-%')`,
+		`DELETE FROM sourcing_responses WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number LIKE 'SC-%')`,
+		`DELETE FROM sourcing_participants WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number LIKE 'SC-%')`,
+		`DELETE FROM business_objects WHERE number LIKE 'SC-%'`,
+		`DELETE FROM supplier_screenings WHERE supplier_id IN (SELECT id FROM suppliers WHERE supplier_number LIKE 'SC-%')`,
+		`DELETE FROM risks WHERE supplier_id IN (SELECT id FROM suppliers WHERE supplier_number LIKE 'SC-%')`,
+		`DELETE FROM evaluations WHERE supplier_id IN (SELECT id FROM suppliers WHERE supplier_number LIKE 'SC-%')`,
+		`DELETE FROM supplier_contacts WHERE supplier_id IN (SELECT id FROM suppliers WHERE supplier_number LIKE 'SC-%')`,
+		`DELETE FROM spend_transactions WHERE supplier_id IN (SELECT id FROM suppliers WHERE supplier_number LIKE 'SC-%')`,
+		`DELETE FROM access_grants WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'scope-%')`,
+		`DELETE FROM audit_logs WHERE actor_id IN (SELECT id FROM users WHERE email LIKE 'scope-%')`,
+		`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'scope-%')`,
 		`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'scope-%')`,
 		`DELETE FROM users WHERE email LIKE 'scope-%'`,
+		`DELETE FROM suppliers WHERE supplier_number LIKE 'SC-%'`,
 		`DELETE FROM roles WHERE code LIKE 'scope_%'`,
-		`DELETE FROM organizations`,
+		`DELETE FROM organizations WHERE name IN ('구매1팀','구매2팀')`,
+		`DELETE FROM login_attempts`,
 	} {
 		if _, err := pool.Exec(context.Background(), q); err != nil {
-			t.Fatalf("wipe: %v", err)
+			t.Fatalf("wipe: %v\n  %s", err, q)
 		}
 	}
 }

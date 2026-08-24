@@ -273,6 +273,11 @@ func (a authService) login(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.db.Exec(r.Context(), `UPDATE users SET last_login_at=now() WHERE id=$1`, userID); err != nil {
 		logDB(err)
 	}
+	// Rejected sign-ins were on the record and accepted ones were not, so the
+	// trail showed who was turned away but never who got in.
+	a.audit.write(r, userID, email, "login", "user", userID, sessionID, nil, map[string]any{
+		"userAgent": r.UserAgent(), "expiresAt": expiresAt,
+	})
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", HttpOnly: true, Secure: sessionConfig.SecureCookie || requestIsHTTPS(r), SameSite: http.SameSiteLaxMode, MaxAge: sessionConfig.TTLHours * 3600})
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
@@ -314,11 +319,20 @@ func (a authService) logout(w http.ResponseWriter, r *http.Request) {
 	// row survives, the token still authenticates anyone who kept a copy, so a
 	// failed delete must not be reported as a completed sign-out.
 	if c, err := r.Cookie(sessionCookie); err == nil {
+		var userID, email string
+		var sessionID string
+		if err := a.db.QueryRow(r.Context(), `SELECT s.id::text,u.id::text,u.email FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1`,
+			security.TokenHash(c.Value)).Scan(&sessionID, &userID, &email); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			logDB(err)
+		}
 		if _, err := a.db.Exec(r.Context(), `DELETE FROM sessions WHERE token_hash=$1`, security.TokenHash(c.Value)); err != nil {
 			logDB(err)
 			w.Header().Set("Retry-After", "5")
 			writeError(w, http.StatusServiceUnavailable, "logout_failed", "로그아웃을 완료하지 못했습니다. 세션이 아직 유효하니 잠시 후 다시 시도하세요")
 			return
+		}
+		if userID != "" {
+			a.audit.write(r, userID, email, "logout", "user", userID, sessionID, nil, nil)
 		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, MaxAge: -1, SameSite: http.SameSiteLaxMode})
