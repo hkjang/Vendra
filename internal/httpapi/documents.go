@@ -54,20 +54,41 @@ func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	p, _ := principalFrom(r.Context())
-	if supplierID := r.FormValue("supplierId"); supplierID != "" {
-		if p.UserType == "supplier" {
-			if p.SupplierID == nil || *p.SupplierID != supplierID {
-				writeError(w, 403, "portal_scope", "다른 공급업체에 문서를 등록할 수 없습니다")
-				return
-			}
-		} else if !a.supplierScopeAllowed(r, supplierID) {
-			writeError(w, 403, "data_scope", "문서 대상이 데이터 접근 범위를 벗어났습니다")
+	// A portal upload belongs to the account's own supplier, whatever the form
+	// says. The portal handler used to inject this into r.MultipartForm, but
+	// r.FormValue reads r.Form, which ParseMultipartForm had already built —
+	// so the value never arrived, every portal upload was stored with no
+	// supplier, and the uploader could not see it in their own list.
+	supplierID := r.FormValue("supplierId")
+	if p.UserType == "supplier" {
+		if p.SupplierID == nil {
+			writeError(w, 403, "portal_scope", "공급업체 계정이 아닙니다")
 			return
 		}
+		if supplierID != "" && supplierID != *p.SupplierID {
+			writeError(w, 403, "portal_scope", "다른 공급업체에 문서를 등록할 수 없습니다")
+			return
+		}
+		supplierID = *p.SupplierID
+	} else if supplierID != "" && !a.supplierScopeAllowed(r, supplierID) {
+		writeError(w, 403, "data_scope", "문서 대상이 데이터 접근 범위를 벗어났습니다")
+		return
 	}
-	if objectID := r.FormValue("objectId"); objectID != "" && p.UserType != "supplier" {
+	// The record a document is filed against has to be one the uploader may
+	// reach. Skipping this for portal accounts let a supplier attach files to
+	// another supplier's contract, where the buyer sees them on that record.
+	if objectID := r.FormValue("objectId"); objectID != "" {
 		o, objectErr := scanObject(a.db.QueryRow(r.Context(), objectSelect+` WHERE o.id=$1 AND o.deleted_at IS NULL`, objectID))
-		if objectErr != nil || (!a.canAccessObject(r.Context(), p, o) && !grantAuthorized(r.Context())) {
+		if objectErr != nil {
+			writeError(w, 403, "data_scope", "문서 대상 업무가 데이터 접근 범위를 벗어났습니다")
+			return
+		}
+		if p.UserType == "supplier" {
+			if o.SupplierID == nil || *o.SupplierID != *p.SupplierID {
+				writeError(w, 403, "portal_scope", "다른 공급업체의 업무에 문서를 등록할 수 없습니다")
+				return
+			}
+		} else if !a.canAccessObject(r.Context(), p, o) && !grantAuthorized(r.Context()) {
 			writeError(w, 403, "data_scope", "문서 대상 업무가 데이터 접근 범위를 벗어났습니다")
 			return
 		}
@@ -118,7 +139,7 @@ func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	// Unit separator, not NUL: PostgreSQL text cannot hold a NUL byte. A key
 	// collision would only make two documents share a lock, which is harmless.
-	versionKey := r.FormValue("supplierId") + "\x1f" + documentType + "\x1f" + cleanName
+	versionKey := supplierID + "\x1f" + documentType + "\x1f" + cleanName
 	tx, err := a.db.Begin(r.Context())
 	if err != nil {
 		_ = os.Remove(path)
@@ -133,7 +154,7 @@ func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id string
-	err = tx.QueryRow(r.Context(), `INSERT INTO documents(supplier_id,object_type,object_id,document_type,name,version,storage_path,content_type,size,checksum,expires_at,uploaded_by) VALUES(NULLIF($1,'')::uuid,NULLIF($2,''),NULLIF($3,'')::uuid,COALESCE(NULLIF($4,''),'other'),$5,COALESCE((SELECT max(version)+1 FROM documents WHERE supplier_id=NULLIF($1,'')::uuid AND document_type=COALESCE(NULLIF($4,''),'other') AND name=$5),1),$6,$7,$8,$9,NULLIF($10,'')::date,$11::uuid) RETURNING id`, r.FormValue("supplierId"), r.FormValue("objectType"), r.FormValue("objectId"), r.FormValue("documentType"), cleanName, path, contentType, size, hex.EncodeToString(hash.Sum(nil)), r.FormValue("expiresAt"), p.ID).Scan(&id)
+	err = tx.QueryRow(r.Context(), `INSERT INTO documents(supplier_id,object_type,object_id,document_type,name,version,storage_path,content_type,size,checksum,expires_at,uploaded_by) VALUES(NULLIF($1,'')::uuid,NULLIF($2,''),NULLIF($3,'')::uuid,COALESCE(NULLIF($4,''),'other'),$5,COALESCE((SELECT max(version)+1 FROM documents WHERE supplier_id=NULLIF($1,'')::uuid AND document_type=COALESCE(NULLIF($4,''),'other') AND name=$5),1),$6,$7,$8,$9,NULLIF($10,'')::date,$11::uuid) RETURNING id`, supplierID, r.FormValue("objectType"), r.FormValue("objectId"), r.FormValue("documentType"), cleanName, path, contentType, size, hex.EncodeToString(hash.Sum(nil)), r.FormValue("expiresAt"), p.ID).Scan(&id)
 	if err == nil {
 		err = tx.Commit(r.Context())
 	}
@@ -143,7 +164,7 @@ func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "save_failed", "문서 정보를 저장하지 못했습니다")
 		return
 	}
-	a.audit.record(r, "upload", "document", id, nil, map[string]any{"name": cleanName, "size": size, "checksum": hex.EncodeToString(hash.Sum(nil)), "supplierId": r.FormValue("supplierId")})
+	a.audit.record(r, "upload", "document", id, nil, map[string]any{"name": cleanName, "size": size, "checksum": hex.EncodeToString(hash.Sum(nil)), "supplierId": supplierID})
 	writeJSON(w, 201, map[string]any{"id": id, "name": cleanName, "size": size, "contentType": contentType, "checksum": hex.EncodeToString(hash.Sum(nil))})
 }
 
@@ -170,7 +191,6 @@ func (a *App) portalUploadDocument(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "file_too_large", "파일은 25MB 이하여야 합니다")
 		return
 	}
-	r.MultipartForm.Value["supplierId"] = []string{*p.SupplierID}
 	a.uploadDocument(w, r)
 }
 
