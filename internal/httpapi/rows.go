@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -80,4 +82,34 @@ func dateParam(w http.ResponseWriter, r *http.Request, name, label string) (stri
 		return "", false
 	}
 	return value, true
+}
+
+// boolSetting reads a boolean control out of the settings table.
+//
+// A control that cannot be read must not quietly take its permissive value.
+// These lookups used to ignore their error and leave the zero value in place,
+// so one failed read approved the very request the control exists to hold: a
+// purchase order was stored as approved with no approval, and a supplier's
+// bank account was replaced without the change ever reaching a reviewer. Both
+// were recorded in the audit trail as if approvals had been switched off.
+//
+// A missing row is different from a failed read: the setting has simply never
+// been configured, and missing is the documented default for that key.
+func (a *App) boolSetting(ctx context.Context, query string, missing bool, args ...any) (bool, error) {
+	var value bool
+	switch err := a.db.QueryRow(ctx, query, args...).Scan(&value); {
+	case err == nil:
+		return value, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return missing, nil
+	default:
+		return false, err
+	}
+}
+
+// writeControlUnavailable refuses a request whose approval requirements could
+// not be established. Proceeding would decide the question the wrong way.
+func writeControlUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	writeError(w, http.StatusServiceUnavailable, "settings_unavailable", "결재 설정을 확인할 수 없어 처리를 중단했습니다. 잠시 후 다시 시도하세요")
 }
