@@ -14,6 +14,12 @@ type httpMetrics struct {
 	inFlight            atomic.Int64
 	loginFailures       atomic.Uint64
 	loginLockouts       atomic.Uint64
+	// The background loop delivers notifications and runs the retention sweep.
+	// Nothing else reports whether it is still alive: a stalled loop leaves the
+	// service answering /health/ready exactly as before.
+	backgroundPasses       atomic.Uint64
+	backgroundFailures     atomic.Uint64
+	backgroundLastPassUnix atomic.Int64
 }
 
 var runtimeHTTPMetrics httpMetrics
@@ -60,7 +66,18 @@ vendra_login_failures_total %d
 # HELP vendra_login_lockouts_total Sign-in attempts refused because the account or address is locked out.
 # TYPE vendra_login_lockouts_total counter
 vendra_login_lockouts_total %d
-`, metricLabel(Version), metricLabel(Commit), requests, runtimeHTTPMetrics.errors.Load(), runtimeHTTPMetrics.inFlight.Load(), duration, requests, runtimeHTTPMetrics.loginFailures.Load(), runtimeHTTPMetrics.loginLockouts.Load())
+# HELP vendra_background_passes_total Background maintenance passes completed.
+# TYPE vendra_background_passes_total counter
+vendra_background_passes_total %d
+# HELP vendra_background_pass_failures_total Background maintenance passes where a step reported an error.
+# TYPE vendra_background_pass_failures_total counter
+vendra_background_pass_failures_total %d
+# HELP vendra_background_last_pass_timestamp_seconds Unix time of the last completed background pass; zero before the first one.
+# TYPE vendra_background_last_pass_timestamp_seconds gauge
+vendra_background_last_pass_timestamp_seconds %d
+`, metricLabel(Version), metricLabel(Commit), requests, runtimeHTTPMetrics.errors.Load(), runtimeHTTPMetrics.inFlight.Load(), duration, requests, runtimeHTTPMetrics.loginFailures.Load(), runtimeHTTPMetrics.loginLockouts.Load(),
+		runtimeHTTPMetrics.backgroundPasses.Load(), runtimeHTTPMetrics.backgroundFailures.Load(),
+		runtimeHTTPMetrics.backgroundLastPassUnix.Load())
 	if a.db != nil {
 		stats := a.db.Stat()
 		_, _ = fmt.Fprintf(w, `# HELP vendra_postgres_connections PostgreSQL pool connections by state.

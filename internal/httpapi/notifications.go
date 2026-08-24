@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"time"
 )
 
@@ -40,15 +41,40 @@ const backgroundPassTimeout = 30 * time.Minute
 func (a *App) runBackgroundOnce(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, backgroundPassTimeout)
 	defer cancel()
-	if err := a.scheduleNotifications(ctx); err != nil {
-		slog.Error("notification scheduling failed", "error", err)
+	failed := false
+	for _, step := range []struct {
+		name string
+		run  func(context.Context) error
+	}{
+		{"notification scheduling", a.scheduleNotifications},
+		{"notification dispatch", a.dispatchNotifications},
+		{"retention sweep", a.purgeExpired},
+	} {
+		if err := runBackgroundStep(step.name, func() error { return step.run(ctx) }); err != nil {
+			failed = true
+			slog.Error(step.name+" failed", "error", err)
+		}
 	}
-	if err := a.dispatchNotifications(ctx); err != nil {
-		slog.Error("notification dispatch failed", "error", err)
+	runtimeHTTPMetrics.backgroundPasses.Add(1)
+	if failed {
+		runtimeHTTPMetrics.backgroundFailures.Add(1)
 	}
-	if err := a.purgeExpired(ctx); err != nil {
-		slog.Error("retention sweep failed", "error", err)
-	}
+	runtimeHTTPMetrics.backgroundLastPassUnix.Store(time.Now().Unix())
+}
+
+// runBackgroundStep keeps one step's panic from ending the loop. A panic in a
+// bare goroutine takes the goroutine with it, so notifications and the
+// retention sweep would stop for good — silently, until the process restarts.
+// The timeout above guards a step that hangs; this guards one that crashes.
+// HTTP handlers already have their own recover; this loop had none.
+func runBackgroundStep(name string, step func() error) (err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			err = fmt.Errorf("%s panicked: %v", name, v)
+			slog.Error("background step panicked", "step", name, "error", v, "stack", string(debug.Stack()))
+		}
+	}()
+	return step()
 }
 
 func (a *App) scheduleNotifications(ctx context.Context) error {
