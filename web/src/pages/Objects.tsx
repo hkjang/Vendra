@@ -1213,10 +1213,20 @@ function SpendPage() {
   });
   const [to, setTo] = useState(todayISO);
   useEffect(() => {
+    // Changing the grouping or the dates starts another request while the last
+    // one is still in flight. Whichever answers last used to win, so the slower
+    // request could leave the previous selection's figures on screen under the
+    // new heading.
+    let current = true;
     const grouping = groupBy === "supplier" ? "" : groupBy;
     api<{ items: SpendRow[] }>(
       `/api/v1/spend?groupBy=${grouping}&from=${from}&to=${to}&limit=300`,
-    ).then((x) => setItems(x.items));
+    ).then((x) => {
+      if (current) setItems(x.items);
+    });
+    return () => {
+      current = false;
+    };
   }, [groupBy, from, to]);
   if (!items) return <Loading />;
   const amount = (row: SpendRow) => row.annualSpend ?? row.amount ?? 0;

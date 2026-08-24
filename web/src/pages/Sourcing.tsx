@@ -337,9 +337,16 @@ function AppointCommittee({
   const [items, setItems] = useState<Candidate[]>();
   const [selected, setSelected] = useState<string[]>([]);
   useEffect(() => {
+    let live = true;
     api<{ items: Candidate[] }>("/api/v1/sourcing-committee-candidates").then(
-      (x) => setItems(x.items.filter((item) => !current.includes(item.id))),
+      (x) => {
+        if (live)
+          setItems(x.items.filter((item) => !current.includes(item.id)));
+      },
     );
+    return () => {
+      live = false;
+    };
   }, [current]);
   const [busy, setBusy] = useState(false);
   async function submit(e: FormEvent) {

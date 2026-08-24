@@ -1791,9 +1791,13 @@ function RelatedList({
 function AsyncSub({ endpoint, empty }: { endpoint: string; empty: string }) {
   const [items, setItems] = useState<Record<string, unknown>[]>();
   useEffect(() => {
-    api<{ items: Record<string, unknown>[] }>(endpoint).then((x) =>
-      setItems(x.items),
-    );
+    let current = true;
+    api<{ items: Record<string, unknown>[] }>(endpoint).then((x) => {
+      if (current) setItems(x.items);
+    });
+    return () => {
+      current = false;
+    };
   }, [endpoint]);
   if (!items) return <Loading />;
   if (!items.length)
