@@ -26,7 +26,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api, date, del, patch, post, put } from "../api";
+import { api, date, del, patch, post, put, todayISO } from "../api";
 import {
   Badge,
   Empty,
@@ -2052,7 +2052,7 @@ function Audit() {
     );
     const link = document.createElement("a");
     link.href = url;
-    link.download = `vendra-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `vendra-audit-${todayISO()}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   }

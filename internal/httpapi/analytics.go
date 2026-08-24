@@ -484,13 +484,22 @@ func (a *App) supplierNetwork(w http.ResponseWriter, r *http.Request) {
 		var grade *string
 		var spend float64
 		var categories []byte
-		if nodeRows.Scan(&id, &name, &risk, &grade, &spend, &categories) == nil {
-			var cats any
-			_ = json.Unmarshal(categories, &cats)
-			nodes = append(nodes, map[string]any{"id": id, "name": name, "riskLevel": risk, "grade": grade, "annualSpend": spend, "categories": cats})
+		if err := nodeRows.Scan(&id, &name, &risk, &grade, &spend, &categories); err != nil {
+			nodeRows.Close()
+			logDB(err)
+			writeError(w, 500, "database_error", "공급망을 조회하지 못했습니다")
+			return
 		}
+		var cats any
+		_ = json.Unmarshal(categories, &cats)
+		nodes = append(nodes, map[string]any{"id": id, "name": name, "riskLevel": risk, "grade": grade, "annualSpend": spend, "categories": cats})
 	}
 	nodeRows.Close()
+	if err := nodeRows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "공급망을 조회하지 못했습니다")
+		return
+	}
 	edgeRows, err := a.db.Query(r.Context(), `SELECT r.id,r.source_supplier_id,r.target_supplier_id,r.relationship_type,r.criticality,r.supplied_categories,r.dependency_percent,r.notes FROM supplier_relationships r JOIN suppliers s ON s.id=r.source_supplier_id JOIN suppliers t ON t.id=r.target_supplier_id WHERE (r.valid_until IS NULL OR r.valid_until>=current_date) AND ((vendra_org_in_scope(s.organization_id,$1,NULLIF($2,'')::uuid) AND vendra_org_in_scope(t.organization_id,$1,NULLIF($2,'')::uuid)) OR ($1='own' AND s.owner_id=$3::uuid AND t.owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "공급망 관계를 조회하지 못했습니다")
@@ -502,13 +511,22 @@ func (a *App) supplierNetwork(w http.ResponseWriter, r *http.Request) {
 		var categories []byte
 		var dependency *float64
 		var notes *string
-		if edgeRows.Scan(&id, &source, &target, &typ, &criticality, &categories, &dependency, &notes) == nil {
-			var cats any
-			_ = json.Unmarshal(categories, &cats)
-			edges = append(edges, map[string]any{"id": id, "source": source, "target": target, "relationshipType": typ, "criticality": criticality, "categories": cats, "dependencyPercent": dependency, "notes": notes})
+		if err := edgeRows.Scan(&id, &source, &target, &typ, &criticality, &categories, &dependency, &notes); err != nil {
+			edgeRows.Close()
+			logDB(err)
+			writeError(w, 500, "database_error", "공급망 관계를 조회하지 못했습니다")
+			return
 		}
+		var cats any
+		_ = json.Unmarshal(categories, &cats)
+		edges = append(edges, map[string]any{"id": id, "source": source, "target": target, "relationshipType": typ, "criticality": criticality, "categories": cats, "dependencyPercent": dependency, "notes": notes})
 	}
 	edgeRows.Close()
+	if err := edgeRows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "공급망 관계를 조회하지 못했습니다")
+		return
+	}
 	writeJSON(w, 200, map[string]any{"nodes": nodes, "edges": edges})
 }
 

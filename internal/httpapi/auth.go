@@ -138,26 +138,31 @@ func (a authService) fromSession(ctx context.Context, token string) (Principal, 
 	_ = json.Unmarshal(perms, &p.Permissions)
 	p.SessionID = sid
 	grantRows, err := a.db.Query(ctx, `SELECT permission,resource_type,resource_id,conditions FROM access_grants WHERE user_id=$1 AND valid_from<=now() AND (valid_until IS NULL OR valid_until>now())`, p.ID)
-	if err == nil {
-		for grantRows.Next() {
-			var permission string
-			var resourceType, resourceID *string
-			var encodedConditions []byte
-			if grantRows.Scan(&permission, &resourceType, &resourceID, &encodedConditions) == nil {
-				conditions := map[string]any{}
-				_ = json.Unmarshal(encodedConditions, &conditions)
-				if resourceType == nil && resourceID == nil && len(conditions) == 0 {
-					p.Permissions = append(p.Permissions, permission)
-					continue
-				}
-				grant := AccessGrant{Permission: permission, ResourceID: resourceID, Conditions: conditions}
-				if resourceType != nil {
-					grant.ResourceType = *resourceType
-				}
-				p.AccessGrants = append(p.AccessGrants, grant)
-			}
+	if err != nil {
+		return Principal{}, err
+	}
+	defer grantRows.Close()
+	for grantRows.Next() {
+		var permission string
+		var resourceType, resourceID *string
+		var encodedConditions []byte
+		if err := grantRows.Scan(&permission, &resourceType, &resourceID, &encodedConditions); err != nil {
+			return Principal{}, err
 		}
-		grantRows.Close()
+		conditions := map[string]any{}
+		_ = json.Unmarshal(encodedConditions, &conditions)
+		if resourceType == nil && resourceID == nil && len(conditions) == 0 {
+			p.Permissions = append(p.Permissions, permission)
+			continue
+		}
+		grant := AccessGrant{Permission: permission, ResourceID: resourceID, Conditions: conditions}
+		if resourceType != nil {
+			grant.ResourceType = *resourceType
+		}
+		p.AccessGrants = append(p.AccessGrants, grant)
+	}
+	if err := grantRows.Err(); err != nil {
+		return Principal{}, err
 	}
 	_, _ = a.db.Exec(ctx, `UPDATE sessions SET last_seen_at=now() WHERE id=$1 AND last_seen_at < now()-interval '5 minutes'`, sid)
 	return p, nil
