@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.6.39 — 2026-08-25
+
+### Fixed
+
+- **MCP 도구 `get_expiring_contracts` 가 한 번도 동작한 적이 없던 문제.** `current_date+$1` 은 PostgreSQL이 타입을 결정할 수 없습니다 — 날짜에 타입 없는 매개변수를 더하는 연산이 모호합니다
+
+  ```
+  ERROR: operator is not unique: date + unknown (SQLSTATE 42725)
+  ```
+
+  오류는 서버 로그에만 남고 호출자는 "도구를 실행하지 못했습니다"라는 일반 메시지를 받습니다. 그 처리 자체는 옳지만(내부 오류를 AI 에이전트에게 되풀이시키지 않음), 그래서 아무도 눈치채지 못했습니다. 계약 5건을 넣고 호출해 확인했습니다 — 이전 0건, 이후 정상 반환
+
+- **MCP 응답 크기 상한.** 같은 도구에 `LIMIT` 이 없었고, 조회 창을 정하는 `days` 인자에도 상한이 없었습니다. `{"days":3650000}` 이면 계약 테이블 전체가 한 응답에 실립니다 — 그 응답은 모델의 프롬프트가 됩니다
+
+  계약 250건으로 확인했습니다.
+
+  | 호출 | 이전 | 이후 |
+  |---|---|---|
+  | `get_expiring_contracts {}` | (동작 안 함) | 100건 |
+  | `get_expiring_contracts {"days":3650000}` | (동작 안 함) | 100건 |
+  | `search_contracts {}` | 100건 | 100건 |
+
+  숫자 인자를 읽는 `intNumber` 가 이제 상한을 받습니다
+
+### Verified
+
+- MCP 도구 표면의 나머지는 견고합니다 — 결함 없음
+  - **쓰기 도구 없음** — 11개 도구 전부 조회 전용
+  - **데이터 범위**: 8개는 SQL의 `vendra_org_in_scope`, 3개(`get_supplier`·`get_supplier_risk`·`get_supplier_score`)는 Go의 `canAccessSupplier`/`supplierScopeAllowed` 로 거릅니다
+  - **권한**: 도구별 필요 권한 표로 중앙에서 검사합니다. `supplier.read` 만 가진 역할로 확인한 결과, REST가 403으로 막는 계약·지출을 MCP도 동일하게 거부합니다
+  - **금액 마스킹**: `mcpObjects` 가 REST의 `redactObject` 와 같은 기준(`<유형>.amount.read`)을 적용합니다
+  - **공급업체 포털 계정**은 MCP 자체를 쓸 수 없습니다
+
 ## v0.6.38 — 2026-08-25
 
 ### Added

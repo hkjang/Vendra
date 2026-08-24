@@ -507,8 +507,13 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 	case "get_supplier_issues":
 		return a.mcpObjects(r, "issue", map[string]any{"supplierId": stringValue(args, "supplierId")})
 	case "get_expiring_contracts":
-		days := intNumber(args["days"], 180)
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'supplierId',o.supplier_id,'supplierName',s.name,'endDate',o.end_date,'amount',CASE WHEN $5 THEN o.amount END,'status',o.status) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='contract' AND o.deleted_at IS NULL AND o.end_date BETWEEN current_date AND current_date+$1 AND (vendra_org_in_scope(o.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND o.owner_id=$4::uuid)) ORDER BY o.end_date`, days, p.DataScope, organizationID, p.ID, hasPermission(p, "contract.amount.read"))
+		// PostgreSQL cannot resolve "date + $1" on its own — date plus an
+		// untyped parameter is ambiguous — so the cast below is what makes this
+		// tool run at all. The window is bounded because a caller asking for ten
+		// thousand years would otherwise pull the whole contract table into one
+		// answer for a model to read.
+		days := intNumber(args["days"], 180, 3650)
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'supplierId',o.supplier_id,'supplierName',s.name,'endDate',o.end_date,'amount',CASE WHEN $5 THEN o.amount END,'status',o.status) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='contract' AND o.deleted_at IS NULL AND o.end_date BETWEEN current_date AND current_date+($1::int) AND (vendra_org_in_scope(o.organization_id,$2,NULLIF($3,'')::uuid) OR ($2='own' AND o.owner_id=$4::uuid)) ORDER BY o.end_date LIMIT 100`, days, p.DataScope, organizationID, p.ID, hasPermission(p, "contract.amount.read"))
 	case "analyze_spend":
 		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'annualSpend',annual_spend,'share',round(100*annual_spend/NULLIF(sum(annual_spend) OVER(),0),2),'riskLevel',risk_level,'score',score) FROM suppliers WHERE deleted_at IS NULL AND (vendra_org_in_scope(organization_id,$1,NULLIF($2,'')::uuid) OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 100`, p.DataScope, organizationID, p.ID)
 	case "recommend_suppliers":
@@ -561,9 +566,17 @@ func stringSlice(v any) []string {
 	}
 	return out
 }
-func intNumber(v any, def int) int {
-	if f, ok := v.(float64); ok && f > 0 {
-		return int(f)
+
+// intNumber reads a caller-supplied number, keeping it inside a range. Every
+// MCP answer becomes part of a model's prompt, so an unbounded argument is an
+// unbounded response.
+func intNumber(v any, def, max int) int {
+	f, ok := v.(float64)
+	if !ok || f <= 0 {
+		return def
 	}
-	return def
+	if n := int(f); n <= max {
+		return n
+	}
+	return max
 }
