@@ -75,6 +75,13 @@ var errNoCredentials = errors.New("no credentials")
 
 func (a authService) middleware(required bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if crossOriginWrite(r) {
+			slog.Warn("refused a cross-origin write carrying the session cookie",
+				"origin", r.Header.Get("Origin"), "sec_fetch_site", r.Header.Get("Sec-Fetch-Site"),
+				"method", r.Method, "path", r.URL.Path, "request_id", requestID(r.Context()))
+			writeError(w, http.StatusForbidden, "cross_origin", "다른 사이트에서 보낸 요청은 처리하지 않습니다")
+			return
+		}
 		p, err := a.authenticate(r)
 		switch {
 		case err == nil:

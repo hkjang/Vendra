@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -143,4 +144,51 @@ func clientIPValue(r *http.Request) any {
 		return nil
 	}
 	return addr.Unmap()
+}
+
+// crossOriginWrite reports a state-changing request that a browser sent from
+// another origin while carrying this site's session cookie.
+//
+// SameSite=Lax stops a genuinely cross-site POST, but "site" is the registrable
+// domain, not the origin. On an intranet where Vendra sits beside other tools
+// on one domain, a page on a sibling host is same-site: the cookie rides along,
+// and so does anything that host is tricked into sending. A browser always
+// attaches Origin to a state-changing request and cannot be made to omit it, so
+// comparing it closes that gap. Callers that authenticate with an API key carry
+// no ambient credential and are left alone, as are requests with neither header
+// — those are not browsers.
+func crossOriginWrite(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	if _, err := r.Cookie(sessionCookie); err != nil {
+		return false
+	}
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return false
+	case "same-site", "cross-site":
+		return true
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" || origin == "null" {
+		return false
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" {
+		return true
+	}
+	// Behind a proxy that rewrites Host, the browser's origin names the public
+	// address while r.Host names the internal one. Accepting the forwarded name
+	// costs nothing here: a page that adds a header to a cross-origin request
+	// turns it into a preflighted one, and this service answers no preflight,
+	// so the browser never sends it. A caller that can set headers freely is
+	// not a browser and carries no cookie of anyone else's.
+	for _, host := range []string{r.Host, r.Header.Get("X-Forwarded-Host")} {
+		if host != "" && strings.EqualFold(parsed.Host, host) {
+			return false
+		}
+	}
+	return true
 }
