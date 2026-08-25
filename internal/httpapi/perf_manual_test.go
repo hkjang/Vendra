@@ -53,7 +53,10 @@ func TestMeasureEndpointLatency(t *testing.T) {
 		"/api/v1/risks",
 		"/api/v1/spend",
 		"/api/v1/spend?groupBy=category",
+		// A term that matches nearly everything and one that matches a single
+		// record cost quite different things; measure both.
 		"/api/v1/search?q=" + url.QueryEscape("성능"),
+		"/api/v1/search?q=" + url.QueryEscape("업무 12345"),
 		"/api/v1/approvals",
 		"/api/v1/admin/audit",
 		"/api/v1/admin/users",
