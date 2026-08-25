@@ -25,6 +25,18 @@ import {
 import { statusTone } from "../status";
 import { BusinessObject, DashboardData } from "../types";
 
+// riskShare turns a count into the arc that represents its share of the whole.
+// A ring only means anything if its arcs are proportional.
+function riskShare(part: number, whole: number) {
+  if (!whole || whole <= 0) return 0;
+  return Math.round((Math.min(part, whole) / whole) * 360);
+}
+
+function percent(part: number, whole: number) {
+  if (!whole || whole <= 0) return "0%";
+  return `${Math.round((Math.min(part, whole) / whole) * 100)}%`;
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData>();
   const [activity, setActivity] = useState<BusinessObject[]>([]);
@@ -120,17 +132,26 @@ export default function Dashboard() {
             </Link>
           </div>
           <div className="risk-chart">
+            {/* The ring divides the supplier base, so its arcs are the shares
+                they claim to be. It used to fix two of its three arcs in CSS
+                and cap the third at 65 degrees, which drew the same picture for
+                nine high-risk suppliers and nine hundred. Contracts nearing
+                expiry sit below rather than inside it: they count a different
+                population and were never a slice of this whole. */}
             <div
               className="donut"
               style={
                 {
-                  "--critical": `${Math.min(65, k.highRiskSuppliers * 8)}deg`,
+                  "--critical": `${riskShare(k.highRiskSuppliers, k.totalSuppliers)}deg`,
+                  "--watch": `${riskShare(k.highRiskSuppliers + k.mediumRiskSuppliers, k.totalSuppliers)}deg`,
                 } as React.CSSProperties
               }
             >
               <div>
-                <strong>{k.highRiskSuppliers}</strong>
-                <span>주의 필요</span>
+                <strong>
+                  {percent(k.highRiskSuppliers, k.totalSuppliers)}
+                </strong>
+                <span>고위험 비중</span>
               </div>
             </div>
             <div className="risk-legend">
@@ -141,13 +162,24 @@ export default function Dashboard() {
               </div>
               <div>
                 <i className="medium" />
-                <span>계약 만료 임박</span>
-                <b>{k.expiringContracts}</b>
+                <span>Medium</span>
+                <b>{k.mediumRiskSuppliers}</b>
               </div>
               <div>
                 <i className="low" />
-                <span>정상 거래 업체</span>
-                <b>{k.activeSuppliers}</b>
+                <span>Low</span>
+                <b>
+                  {Math.max(
+                    0,
+                    k.totalSuppliers -
+                      k.highRiskSuppliers -
+                      k.mediumRiskSuppliers,
+                  )}
+                </b>
+              </div>
+              <div className="risk-legend-aside">
+                <span>180일 내 계약 만료</span>
+                <b>{k.expiringContracts}</b>
               </div>
             </div>
           </div>

@@ -166,7 +166,7 @@ export default function Suppliers() {
           }
         />
       ) : view === "table" ? (
-        <SupplierTable items={items} />
+        <SupplierTable items={items} truncated={truncated} />
       ) : (
         <SupplierCards items={items} />
       )}{" "}
@@ -183,7 +183,13 @@ export default function Suppliers() {
   );
 }
 
-function SupplierTable({ items }: { items: Supplier[] }) {
+function SupplierTable({
+  items,
+  truncated,
+}: {
+  items: Supplier[];
+  truncated: boolean;
+}) {
   return (
     <div className="data-card">
       <table>
@@ -249,7 +255,15 @@ function SupplierTable({ items }: { items: Supplier[] }) {
         </tbody>
       </table>
       <div className="table-footer">
-        <span>총 {items.length.toLocaleString()}개 공급업체</span>
+        {/* Saying "총 100개" when the list was cut short states a total that is
+            really the page size. The notice at the top of the page already says
+            the result was trimmed; the foot of a seven-thousand-pixel list is
+            exactly where someone arrives having forgotten it. */}
+        <span>
+          {truncated
+            ? `${items.length.toLocaleString()}개 표시 중 · 더 있습니다`
+            : `총 ${items.length.toLocaleString()}개 공급업체`}
+        </span>
         <div>페이지당 100개</div>
       </div>
     </div>

@@ -15,9 +15,9 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
-	var total, active, newCount, highRisk, expiring, openIssues, activeRFQ, activeRFP, overdueDeliveries, pendingApprovals, pendingScreenings int
+	var total, active, newCount, highRisk, mediumRisk, expiring, openIssues, activeRFQ, activeRFP, overdueDeliveries, pendingApprovals, pendingScreenings int
 	var spend, avgScore, contractValue, deliveryCompliance, defectRate float64
-	err := a.db.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE status='active'),count(*) FILTER(WHERE created_at>=date_trunc('month',now())),count(*) FILTER(WHERE risk_level IN('HIGH','CRITICAL')),COALESCE(sum(annual_spend),0),COALESCE(avg(score),0) FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&total, &active, &newCount, &highRisk, &spend, &avgScore)
+	err := a.db.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER(WHERE status='active'),count(*) FILTER(WHERE created_at>=date_trunc('month',now())),count(*) FILTER(WHERE risk_level IN('HIGH','CRITICAL')),count(*) FILTER(WHERE risk_level='MEDIUM'),COALESCE(sum(annual_spend),0),COALESCE(avg(score),0) FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&total, &active, &newCount, &highRisk, &mediumRisk, &spend, &avgScore)
 	if err != nil {
 		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
 		return
@@ -70,7 +70,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"kpis": map[string]any{"totalSuppliers": total, "activeSuppliers": active, "newSuppliers": newCount, "highRiskSuppliers": highRisk, "annualSpend": spend, "averageScore": avgScore, "expiringContracts": expiring, "openIssues": openIssues, "activeContractValue": contractValue, "deliveryCompliance": deliveryCompliance, "defectRate": defectRate, "activeRFQ": activeRFQ, "activeRFP": activeRFP, "overdueDeliveries": overdueDeliveries, "pendingApprovals": pendingApprovals, "pendingScreenings": pendingScreenings}, "topSuppliers": top})
+	writeJSON(w, 200, map[string]any{"kpis": map[string]any{"totalSuppliers": total, "activeSuppliers": active, "newSuppliers": newCount, "highRiskSuppliers": highRisk, "mediumRiskSuppliers": mediumRisk, "annualSpend": spend, "averageScore": avgScore, "expiringContracts": expiring, "openIssues": openIssues, "activeContractValue": contractValue, "deliveryCompliance": deliveryCompliance, "defectRate": defectRate, "activeRFQ": activeRFQ, "activeRFP": activeRFP, "overdueDeliveries": overdueDeliveries, "pendingApprovals": pendingApprovals, "pendingScreenings": pendingScreenings}, "topSuppliers": top})
 }
 
 func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {

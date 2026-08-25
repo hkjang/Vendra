@@ -922,6 +922,30 @@ kbd {
 .card {
   padding: 21px;
 }
+/* The risk cards head their panels with a name and a note about the scale.
+   The class carried no rules, so the two ran together as one string —
+   "Risk 사분면영향도 × 발생가능성". The note now sits on its own line, the way
+   .card-head puts an eyebrow above its heading. */
+.card-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.card-title > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.card-title b {
+  font-size: 15px;
+  font-weight: 700;
+}
+.card-title small {
+  font-size: 12px;
+  color: #8992a1;
+}
+
 .card-head {
   display: flex;
   align-items: flex-start;
@@ -1450,19 +1474,38 @@ kbd {
   padding: 8px 0 21px;
 }
 .donut {
+  /* Both stops are supplied by the caller so every arc is the share it claims.
+     The middle one used to be pinned at 125deg in here, which made the amber
+     and green arcs constants no matter what the legend beside them said. */
   --critical: 40deg;
+  --watch: 120deg;
   width: 150px;
   height: 150px;
   border-radius: 50%;
   background: conic-gradient(
     #e55863 var(--critical),
-    #f1ab53 var(--critical) 125deg,
-    #46b795 125deg
+    #f1ab53 var(--critical) var(--watch),
+    #46b795 var(--watch)
   );
   position: relative;
   display: grid;
   place-items: center;
 }
+/* Contracts nearing expiry count a different population from the ring's
+   supplier split, so they sit apart from the legend rather than in it. */
+.risk-legend-aside {
+  /* The legend rows are three columns wide (swatch, label, value). This row has
+     no swatch, so it needs its own template or the label is squeezed into the
+     10px colour column and wraps one character per line. */
+  grid-template-columns: 1fr auto !important;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid #eceef2;
+}
+.risk-legend-aside span {
+  color: #8992a1;
+}
+
 .donut:after {
   content: "";
   position: absolute;
