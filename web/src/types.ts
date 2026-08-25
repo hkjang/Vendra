@@ -53,6 +53,7 @@ export type DashboardData = {
     activeSuppliers: number;
     newSuppliers: number;
     highRiskSuppliers: number;
+    mediumRiskSuppliers: number;
     annualSpend: number;
     averageScore: number;
     expiringContracts: number;
