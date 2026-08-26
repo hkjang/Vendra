@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -118,13 +119,45 @@ func (a *App) addSourcingParticipants(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"invited": count})
 }
 
+// tenderDetailForBidder is what an invited supplier is shown of a tender's
+// detail blob, as SQL that builds a new object rather than passing the stored
+// one through.
+//
+// It is an allowlist on purpose. The buyer's own form writes budget and
+// unitPrice into that same blob, and sending it whole handed every invited
+// bidder the buyer's ceiling and target price — the one thing a sealed tender
+// exists to keep back. The portal never rendered them, so it took reading the
+// response to see it, which is one fetch away in the browser the supplier is
+// already using.
+//
+// A denylist would leak whatever field somebody adds to the buyer's form next.
+// Everything here is something a bidder needs in order to quote.
+func tenderDetailForBidder(column string) string {
+	fields := []string{
+		"description",      // the requirements themselves
+		"purchasePurpose",  // why it is being bought
+		"item",             // what is being bought
+		"quantity", "unit", // how much
+		"desiredDate",      // when it is wanted
+		"deliveryLocation", // where it goes
+		"paymentTerms",     // the terms being offered
+		"sla", "warranty",  // what the winner has to meet
+		"category",
+	}
+	parts := make([]string, 0, len(fields)*2)
+	for _, f := range fields {
+		parts = append(parts, "'"+f+"',"+column+"->'"+f+"'")
+	}
+	return "jsonb_strip_nulls(jsonb_build_object(" + strings.Join(parts, ",") + "))"
+}
+
 func (a *App) portalSourcing(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
 	if p.UserType != "supplier" || p.SupplierID == nil {
 		writeError(w, 403, "portal_scope", "공급업체 계정이 아닙니다")
 		return
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',o.id,'objectType',o.object_type,'number',o.number,'title',o.title,'status',CASE WHEN o.due_date<current_date THEN 'closed' ELSE p.status END,'dueDate',o.due_date,'data',o.data,'response',CASE WHEN sr.id IS NULL THEN NULL ELSE jsonb_build_object('id',sr.id,'status',sr.status,'currency',sr.currency,'totalAmount',sr.total_amount,'deliveryDays',sr.delivery_days,'warranty',sr.warranty,'validityDate',sr.validity_date,'commercialTerms',sr.commercial_terms,'technicalResponse',sr.technical_response,'lineItems',sr.line_items,'submittedAt',sr.submitted_at) END) FROM sourcing_participants p JOIN business_objects o ON o.id=p.sourcing_id LEFT JOIN sourcing_responses sr ON sr.sourcing_id=o.id AND sr.supplier_id=p.supplier_id WHERE p.supplier_id=$1 AND o.deleted_at IS NULL ORDER BY o.due_date NULLS LAST,o.updated_at DESC`, *p.SupplierID)
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',o.id,'objectType',o.object_type,'number',o.number,'title',o.title,'status',CASE WHEN o.due_date<current_date THEN 'closed' ELSE p.status END,'dueDate',o.due_date,'data',`+tenderDetailForBidder("o.data")+`,'response',CASE WHEN sr.id IS NULL THEN NULL ELSE jsonb_build_object('id',sr.id,'status',sr.status,'currency',sr.currency,'totalAmount',sr.total_amount,'deliveryDays',sr.delivery_days,'warranty',sr.warranty,'validityDate',sr.validity_date,'commercialTerms',sr.commercial_terms,'technicalResponse',sr.technical_response,'lineItems',sr.line_items,'submittedAt',sr.submitted_at) END) FROM sourcing_participants p JOIN business_objects o ON o.id=p.sourcing_id LEFT JOIN sourcing_responses sr ON sr.sourcing_id=o.id AND sr.supplier_id=p.supplier_id WHERE p.supplier_id=$1 AND o.deleted_at IS NULL ORDER BY o.due_date NULLS LAST,o.updated_at DESC`, *p.SupplierID)
 	if err != nil {
 		writeError(w, 500, "database_error", "견적·입찰 요청을 조회하지 못했습니다")
 		return
