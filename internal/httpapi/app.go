@@ -64,7 +64,7 @@ func (a *App) Handler() http.Handler {
 	root.HandleFunc("GET /api/auth/oidc/callback", a.oidcCallback)
 
 	api := http.NewServeMux()
-	a.registerAPI(api)
+	a.registerAPI(&guardedMux{mux: api})
 	root.Handle("/api/v1/", a.auth.middleware(true, api))
 	root.Handle("/mcp", a.auth.middleware(true, http.HandlerFunc(a.mcp)))
 	root.Handle("/mcp/", a.auth.middleware(true, http.HandlerFunc(a.mcp)))
@@ -72,7 +72,81 @@ func (a *App) Handler() http.Handler {
 	return requestMiddleware(recoverMiddleware(root))
 }
 
-func (a *App) registerAPI(m *http.ServeMux) {
+// guardedMux registers API routes and turns away a malformed record id before
+// the handler ever runs.
+//
+// A path id reaches SQL as `$1::uuid`. PostgreSQL answers a malformed one with
+// an error, which the handler can only report as a 500 — so a stale bookmark
+// or a mistyped URL read as a broken server and wrote a "database error" line
+// to the log. Fifty routes carry an {id}; catching it at registration covers
+// all of them without touching a single handler.
+//
+// Only wildcards whose name ends in "id" are checked. Every resource behind
+// one of those is keyed by uuid; the other wildcards ({key}, {entityType})
+// name settings and lookup tables that are keyed by text.
+type guardedMux struct{ mux *http.ServeMux }
+
+func (g *guardedMux) HandleFunc(pattern string, h http.HandlerFunc) {
+	names := idWildcards(pattern)
+	if len(names) == 0 {
+		g.mux.HandleFunc(pattern, h)
+		return
+	}
+	g.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		for _, name := range names {
+			if !validUUID(r.PathValue(name)) {
+				writeError(w, http.StatusNotFound, "not_found", "요청한 항목을 찾을 수 없습니다")
+				return
+			}
+		}
+		h(w, r)
+	})
+}
+
+// idWildcards returns the {…id} wildcard names in a route pattern.
+func idWildcards(pattern string) []string {
+	var names []string
+	for rest := pattern; ; {
+		open := strings.IndexByte(rest, '{')
+		if open < 0 {
+			return names
+		}
+		rest = rest[open+1:]
+		close := strings.IndexByte(rest, '}')
+		if close < 0 {
+			return names
+		}
+		name := strings.TrimSuffix(rest[:close], "...")
+		if strings.HasSuffix(strings.ToLower(name), "id") {
+			names = append(names, name)
+		}
+		rest = rest[close+1:]
+	}
+}
+
+// validUUID reports whether s is a canonical 8-4-4-4-12 hex UUID. Every id the
+// application hands out comes from gen_random_uuid() in that form, so the
+// looser spellings PostgreSQL would also take are not worth accepting.
+func validUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < 36; i++ {
+		c := s[i]
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+			continue
+		}
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *App) registerAPI(m *guardedMux) {
 	m.HandleFunc("GET /api/v1/me", a.me)
 	m.HandleFunc("PATCH /api/v1/me", a.updateMe)
 	m.HandleFunc("POST /api/v1/me/password", a.changeMyPassword)

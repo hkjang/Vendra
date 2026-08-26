@@ -86,6 +86,19 @@ func topicParticle(word string) string {
 	return "은"
 }
 
+// uuidParam reads an optional record-id filter. A malformed id is the caller's
+// mistake in the same way a malformed date is: without this it reaches
+// `$1::uuid` and PostgreSQL rejects it, which the handler could only pass on
+// as a 500.
+func uuidParam(w http.ResponseWriter, r *http.Request, name, label string) (string, bool) {
+	value := strings.TrimSpace(r.URL.Query().Get(name))
+	if value == "" || validUUID(value) {
+		return value, true
+	}
+	writeError(w, http.StatusBadRequest, "validation_error", label+topicParticle(label)+" 올바른 형식이 아닙니다")
+	return "", false
+}
+
 // dateParam reads an optional YYYY-MM-DD filter. A malformed date is the
 // caller's mistake, so it is answered as one rather than reaching PostgreSQL
 // and failing there as a server error.

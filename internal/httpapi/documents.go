@@ -196,7 +196,10 @@ func (a *App) portalUploadDocument(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) listDocuments(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
-	supplierID := r.URL.Query().Get("supplierId")
+	supplierID, ok := uuidParam(w, r, "supplierId", "공급업체 ID")
+	if !ok {
+		return
+	}
 	organizationID := ""
 	principalSupplierID := ""
 	if p.OrganizationID != nil {
