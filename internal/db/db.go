@@ -22,6 +22,18 @@ func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 	cfg.MaxConns = 20
+	// Every "today" in the application has to mean the same day. Go reads TZ
+	// for time.Now(); PostgreSQL does not, so a session left on the server's
+	// default made current_date the UTC date while the rest of the application
+	// called it local — nine hours apart in Seoul, and every dashboard count
+	// keyed on current_date was a day out for part of each day. Pin the
+	// session to the zone Go is running in. A timezone spelled out in the DSN
+	// is the operator being explicit, so it wins.
+	if _, set := cfg.ConnConfig.RuntimeParams["timezone"]; !set {
+		if name := localTimezoneName(); name != "" {
+			cfg.ConnConfig.RuntimeParams["timezone"] = name
+		}
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -35,6 +47,17 @@ func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 	return pool, nil
+}
+
+// localTimezoneName returns the IANA name of the zone Go is running in, or ""
+// when it has none to give. With TZ unset Go reports "Local", which PostgreSQL
+// would reject, so that case is left to the server's own default.
+func localTimezoneName() string {
+	name := time.Local.String()
+	if name == "" || name == "Local" {
+		return ""
+	}
+	return name
 }
 
 // migrationLockID is an arbitrary but stable key for the PostgreSQL advisory
