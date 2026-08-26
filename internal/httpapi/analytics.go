@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -311,12 +312,39 @@ func (a *App) createEvaluation(w http.ResponseWriter, r *http.Request) {
 	scores, _ := in["scores"].(map[string]any)
 	var criteriaList []map[string]any
 	_ = json.Unmarshal(criteria, &criteriaList)
+	// The score is derived from the criteria, never asserted by the caller, so
+	// a submission that scores nothing derives zero — and zero is below every
+	// grade rule, so it was stored as a genuine D. Three malformed requests
+	// each planted one, and because the supplier's grade is the average across
+	// evaluations, a supplier who actually scored 86.1 (an A) sat on the
+	// register at 21.53 (a D). Every one of them was answered 201.
+	//
+	// A criterion scored zero is a real assessment; a criterion with no score
+	// is a submission that could not have been graded, and grading it is a
+	// fabrication.
 	total := 0.0
+	missing := []string{}
 	for _, c := range criteriaList {
 		code, _ := c["code"].(string)
 		weight, _ := c["weight"].(float64)
-		score, _ := scores[code].(float64)
+		label, _ := c["name"].(string)
+		if label == "" {
+			label = code
+		}
+		score, scored := scores[code].(float64)
+		if !scored {
+			missing = append(missing, label)
+			continue
+		}
+		if score < 0 || score > 100 {
+			writeError(w, 400, "validation_error", fmt.Sprintf("%s 점수는 0에서 100 사이여야 합니다", label))
+			return
+		}
 		total += score * weight / 100
+	}
+	if len(missing) > 0 {
+		writeError(w, 400, "validation_error", "점수가 없는 평가 항목이 있습니다: "+strings.Join(missing, ", "))
+		return
 	}
 	grade := "D"
 	var gradeRules []map[string]any
