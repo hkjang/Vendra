@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -643,6 +644,28 @@ func (a *App) createSupplierRelationship(w http.ResponseWriter, r *http.Request)
 	}
 	if in.Criticality == "" {
 		in.Criticality = "normal"
+	}
+	// A supplier does not supply itself. The edge drew as a loop on the graph
+	// and counted toward whatever dependency the reader was working out.
+	if in.SourceSupplierID == in.TargetSupplierID {
+		writeError(w, 400, "validation_error", "같은 공급업체를 원천과 대상으로 지정할 수 없습니다")
+		return
+	}
+	// A share of supply is a share. The column is numeric(7,2), so it took
+	// -30 and 1000 without complaint and the graph handed both back; only
+	// 100000 failed, and then as "저장하지 못했습니다".
+	if in.DependencyPercent != nil && (*in.DependencyPercent < 0 || *in.DependencyPercent > 100) {
+		writeError(w, 400, "validation_error", "의존도는 0에서 100 사이여야 합니다")
+		return
+	}
+	for _, field := range []struct{ label, value string }{
+		{"관계 유형", in.RelationshipType},
+		{"중요도", in.Criticality},
+	} {
+		if utf8.RuneCountInString(field.value) > maxIdentifierLen {
+			writeError(w, 400, "validation_error", fmt.Sprintf("%s%s %d자를 넘을 수 없습니다", field.label, topicParticle(field.label), maxIdentifierLen))
+			return
+		}
 	}
 	// Both ends must be in scope. The network graph filters every edge by the
 	// organisation of both suppliers, so an unchecked write let a caller draw a

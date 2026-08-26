@@ -1089,6 +1089,98 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestSupplierRelationshipRefusesWhatIsNotOne covers the write side of the
+// supply graph. Both ends are already checked for scope; the shape of the
+// edge was not.
+//
+// A supplier does not supply itself, a share of supply is a share, and a
+// relationship type is a label. The column is numeric(7,2), so it took -30 and
+// 1000 without complaint and the graph handed both straight back; only 100000
+// failed, and then as "저장하지 못했습니다".
+func TestSupplierRelationshipRefusesWhatIsNotOne(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	_ = app
+
+	t.Cleanup(func() {
+		// Registered first so a failure part way through still tidies up.
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM supplier_relationships WHERE source_supplier_id IN (SELECT id FROM suppliers WHERE supplier_number LIKE 'SUP-EDGE-%')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number LIKE 'SUP-EDGE-%'`)
+	})
+	supplier := func(number, name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES($1,$2,$1,'active')
+			ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`, number, name).Scan(&id); err != nil {
+			t.Fatalf("seed supplier %s: %v", number, err)
+		}
+		return id
+	}
+	from, to := supplier("SUP-EDGE-A", "엣지 검증 A"), supplier("SUP-EDGE-B", "엣지 검증 B")
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.3:5000"))
+	relate := func(body string) int {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/supplier-network/relationships", strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w.Code
+	}
+	edge := func(source, target, kind string, percent any) string {
+		body := map[string]any{"sourceSupplierId": source, "targetSupplierId": target, "relationshipType": kind}
+		if percent != nil {
+			body["dependencyPercent"] = percent
+		}
+		raw, _ := json.Marshal(body)
+		return string(raw)
+	}
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"a supplier supplying itself", edge(from, from, "tier1", 50)},
+		{"a negative share of supply", edge(from, to, "negative", -30)},
+		{"a share above the whole", edge(from, to, "over", 150)},
+		{"a share far above the whole", edge(from, to, "way-over", 1000)},
+		{"a relationship type that is not a label", edge(from, to, strings.Repeat("t", maxIdentifierLen+1), nil)},
+	} {
+		if code := relate(tc.body); code != http.StatusBadRequest {
+			t.Errorf("%s returned %d, want 400", tc.name, code)
+		}
+	}
+
+	// The ends of the range are real answers, and so is an ordinary edge.
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"no dependency recorded", edge(from, to, "unknown", nil)},
+		{"none of the supply", edge(from, to, "zero", 0)},
+		{"all of the supply", edge(from, to, "full", 100)},
+		{"an ordinary edge", edge(from, to, "tier1", 40)},
+	} {
+		if code := relate(tc.body); code != http.StatusCreated {
+			t.Errorf("%s returned %d, want 201", tc.name, code)
+		}
+	}
+
+	var stored int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM supplier_relationships
+		WHERE source_supplier_id=$1 AND (source_supplier_id=target_supplier_id OR dependency_percent < 0 OR dependency_percent > 100)`, from).Scan(&stored); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if stored != 0 {
+		t.Errorf("%d edges that are not supply relationships were written anyway", stored)
+	}
+}
+
 // TestCompletingAScreeningMovesTheSupplier covers the chain that decides
 // whether a company is tradeable. The thresholds and the template rules have
 // unit tests; what a completed screening then does to the supplier did not.
