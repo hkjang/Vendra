@@ -264,8 +264,9 @@ func deliverNotification(ctx context.Context, adapter notificationAdapter, title
 }
 
 func (a *App) listNotifications(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r, 100)
 	p, _ := principalFrom(r.Context())
-	rows, err := a.db.Query(r.Context(), `SELECT id,kind,title,body,severity,object_type,object_id,read_at,created_at FROM notifications WHERE user_id=$1 ORDER BY read_at NULLS FIRST,created_at DESC LIMIT $2`, p.ID, parseLimit(r, 100))
+	rows, err := a.db.Query(r.Context(), `SELECT id,kind,title,body,severity,object_type,object_id,read_at,created_at FROM notifications WHERE user_id=$1 ORDER BY read_at NULLS FIRST,created_at DESC LIMIT $2`, p.ID, limit+1)
 	if err != nil {
 		writeError(w, 500, "database_error", "알림을 조회하지 못했습니다")
 		return
@@ -288,7 +289,8 @@ func (a *App) listNotifications(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "알림을 조회하지 못했습니다")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	items, truncated := truncate(items, limit)
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
 func (a *App) readNotification(w http.ResponseWriter, r *http.Request) {

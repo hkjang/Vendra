@@ -421,12 +421,13 @@ func (a *App) createEvaluation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) listAllRisks(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r, 300)
 	p, _ := principalFrom(r.Context())
 	organizationID := ""
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',r.id,'supplierId',r.supplier_id,'supplierName',s.name,'riskType',r.risk_type,'probability',r.probability,'impact',r.impact,'score',r.score,'severity',r.severity,'status',r.status,'description',r.description,'mitigation',r.mitigation,'reviewDate',r.review_date) FROM risks r JOIN suppliers s ON s.id=r.supplier_id WHERE s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) ORDER BY CASE r.severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,r.score DESC LIMIT $1`, parseLimit(r, 300), p.DataScope, organizationID, p.ID)
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',r.id,'supplierId',r.supplier_id,'supplierName',s.name,'riskType',r.risk_type,'probability',r.probability,'impact',r.impact,'score',r.score,'severity',r.severity,'status',r.status,'description',r.description,'mitigation',r.mitigation,'reviewDate',r.review_date) FROM risks r JOIN suppliers s ON s.id=r.supplier_id WHERE s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) ORDER BY CASE r.severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,r.score DESC LIMIT $1`, limit+1, p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "리스크를 조회하지 못했습니다")
 		return
@@ -438,16 +439,18 @@ func (a *App) listAllRisks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "리스크를 조회하지 못했습니다")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	items, truncated := truncate(items, limit)
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
 func (a *App) listAllEvaluations(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r, 300)
 	p, _ := principalFrom(r.Context())
 	organizationID := ""
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',e.id,'supplierId',e.supplier_id,'supplierName',s.name,'evaluationType',e.evaluation_type,'status',e.status,'periodStart',e.period_start,'periodEnd',e.period_end,'totalScore',e.total_score,'grade',e.grade,'scores',e.scores,'createdAt',e.created_at) FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id WHERE s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) ORDER BY e.created_at DESC LIMIT $1`, parseLimit(r, 300), p.DataScope, organizationID, p.ID)
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',e.id,'supplierId',e.supplier_id,'supplierName',s.name,'evaluationType',e.evaluation_type,'status',e.status,'periodStart',e.period_start,'periodEnd',e.period_end,'totalScore',e.total_score,'grade',e.grade,'scores',e.scores,'createdAt',e.created_at) FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id WHERE s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) ORDER BY e.created_at DESC LIMIT $1`, limit+1, p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "평가를 조회하지 못했습니다")
 		return
@@ -459,10 +462,12 @@ func (a *App) listAllEvaluations(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "평가를 조회하지 못했습니다")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	items, truncated := truncate(items, limit)
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
 func (a *App) spendAnalysis(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r, 300)
 	p, _ := principalFrom(r.Context())
 	organizationID := ""
 	if p.OrganizationID != nil {
@@ -518,7 +523,7 @@ func (a *App) spendAnalysis(w http.ResponseWriter, r *http.Request) {
 	 'riskLevel',risk_level,'score',score,'categories',categories,
 	 'transactionCount',transactions,'contractedAmount',contracted,'nonContractedAmount',non_contracted) FROM ranked`
 	}
-	rows, err := a.db.Query(r.Context(), query, from, to, parseLimit(r, 300), p.DataScope, organizationID, p.ID)
+	rows, err := a.db.Query(r.Context(), query, from, to, limit+1, p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "구매 분석을 조회하지 못했습니다")
 		return
@@ -530,7 +535,8 @@ func (a *App) spendAnalysis(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "구매 분석을 조회하지 못했습니다")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	items, truncated := truncate(items, limit)
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
 func (a *App) createSpendTransaction(w http.ResponseWriter, r *http.Request) {
