@@ -260,6 +260,47 @@ func (a *App) canAccessObject(ctx context.Context, p Principal, o businessObject
 	return allowed
 }
 
+// supplierVisibleData is the part of a business object's detail blob that
+// belongs to the supplier the object names.
+//
+// The portal returned the blob whole, and the buyer's own form writes their
+// position into it: a purchase order carried budget — the ceiling, above what
+// the supplier was actually awarded — alongside anything typed into the free
+// notes. The supplier read it through their own work list.
+//
+// An allowlist, for the same reason as the tender one: a denylist would leak
+// whatever field somebody adds to the buyer's form next.
+//
+// rootCause and capa are deliberately not here. An improvement request is
+// shared with the supplier — the portal has a tab for it — so they could
+// belong; but nothing in the form marked 원인분석 (RCA) tells the person
+// filling it in that the supplier will read it, and one seeded with an
+// internal judgement said the supplier was being lined up for replacement.
+// Ambiguity in what to send resolves toward not sending. If they are meant to
+// be shared, adding them back is one line and the form should say so.
+func supplierVisibleData(data map[string]any) map[string]any {
+	if data == nil {
+		return nil
+	}
+	shared := []string{
+		"description",
+		"category", "purchasePurpose",
+		"item", "quantity", "unit", "unitPrice",
+		"deliveryLocation", "desiredDate", "deliveredAt",
+		"paymentTerms", "contractType", "autoRenewal",
+		"sla", "warranty",
+		"issueType", "severity",
+		"invoiceNumber", "taxInvoiceNumber",
+	}
+	out := map[string]any{}
+	for _, key := range shared {
+		if v, ok := data[key]; ok {
+			out[key] = v
+		}
+	}
+	return out
+}
+
 func redactObject(p Principal, o businessObject) businessObject {
 	if !hasPermission(p, o.ObjectType+".amount.read") {
 		o.Amount = nil
