@@ -1089,6 +1089,94 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestAIBudgetCountsDispatchesNotSuccesses covers a cap that was not one.
+//
+// The hourly budget counted audit entries, and those are written after a reply
+// comes back — so a call that reached the provider and failed cost the
+// operator money and counted for nothing. Eight went out under a cap of three,
+// the provider took all eight, and the budget stayed at zero. That is exactly
+// the case a person retries hardest.
+func TestAIBudgetCountsDispatchesNotSuccesses(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var reached int
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Reached, processed, billed — and answered with an error.
+		reached++
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream overloaded"}}`))
+	}))
+	t.Cleanup(failing.Close)
+
+	var originalAI []byte
+	_ = pool.QueryRow(ctx, `SELECT value FROM settings WHERE key='ai'`).Scan(&originalAI)
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs, and leaving these settings would
+		// point a later test at a closed server.
+		if originalAI != nil {
+			_, _ = pool.Exec(ctx, `UPDATE settings SET value=$1 WHERE key='ai'`, originalAI)
+		} else {
+			_, _ = pool.Exec(ctx, `DELETE FROM settings WHERE key='ai'`)
+		}
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE action='ai_call'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number='AI-BUDGET'`)
+	})
+	const limit = 3
+	if _, err := pool.Exec(ctx, `INSERT INTO settings(key,value,category) VALUES('ai',$1::jsonb,'integration')
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		`{"enabled":true,"baseUrl":"`+failing.URL+`/v1","model":"stand-in","timeoutSeconds":10,"maxCallsPerHour":3}`); err != nil {
+		t.Fatalf("point the AI setting at the stand-in: %v", err)
+	}
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM audit_logs WHERE actor_id=$1 AND action='ai_call'`, adminID); err != nil {
+		t.Fatalf("clear the budget window: %v", err)
+	}
+	var contractID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,amount,created_by)
+		VALUES('contract','AI-BUDGET','예산 검증 계약','draft',1000,$1)
+		ON CONFLICT(object_type,number) DO UPDATE SET amount=excluded.amount RETURNING id`, adminID).Scan(&contractID); err != nil {
+		t.Fatalf("seed contract: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.255:5000"))
+	codes := []int{}
+	for i := 0; i < limit+5; i++ {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/ai/contracts/"+contractID+"/analyze", nil)
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		codes = append(codes, w.Code)
+	}
+
+	if reached != limit {
+		t.Errorf("%d calls reached the provider under a cap of %d: %v", reached, limit, codes)
+	}
+	var counted int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE actor_id=$1 AND action='ai_call' AND occurred_at > now()-interval '1 hour'`, adminID).Scan(&counted); err != nil {
+		t.Fatalf("count the budget: %v", err)
+	}
+	if counted != limit {
+		t.Errorf("the budget counted %d of %d dispatches", counted, reached)
+	}
+	for i, code := range codes {
+		want := http.StatusBadGateway
+		if i >= limit {
+			want = http.StatusTooManyRequests
+		}
+		if code != want {
+			t.Errorf("call %d answered %d, want %d: %v", i+1, code, want, codes)
+		}
+	}
+}
+
 // TestContractAnalysisFencesTheDataItWasGiven pins the prompt's shape.
 //
 // A supplier can attach a document to their own contract through the portal
