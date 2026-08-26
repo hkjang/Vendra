@@ -573,14 +573,19 @@ function PortalSourcing({
               <dd>{String(item.data?.description || "세부 요구조건 참조")}</dd>
             </dl>
             <footer>
-              {!item.response && item.status !== "closed" && (
-                <button
-                  className="button ghost danger-text"
-                  onClick={() => setDeclining(item)}
-                >
-                  참여 거절
-                </button>
-              )}
+              {/* Saving a draft used to hide this, which left a supplier who
+                  had started a quote and then found they could not supply with
+                  no way to say so. A submitted bid is a commitment; anything
+                  short of that can still be declined. */}
+              {item.response?.status !== "submitted" &&
+                item.status !== "closed" && (
+                  <button
+                    className="button ghost danger-text"
+                    onClick={() => setDeclining(item)}
+                  >
+                    참여 거절
+                  </button>
+                )}
               <button
                 className="button"
                 disabled={item.status === "closed"}

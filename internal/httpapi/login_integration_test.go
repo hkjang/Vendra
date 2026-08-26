@@ -1088,6 +1088,110 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestDecliningStaysOpenUntilABidIsSubmitted covers a dead end in the portal.
+// Declining was restricted to participants still marked 'invited', so opening
+// the quote form and saving a draft closed the only way to say no: a supplier
+// who then found they could not supply had to either bid anyway or go quiet,
+// and the buyer was left with a participant sitting at 'draft' with no reason
+// attached — the ambiguity the action exists to remove.
+func TestDecliningStaysOpenUntilABidIsSubmitted(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-DECLINE','거절 검증 업체','SUP-DECLINE','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,due_date,created_by) VALUES('rfq','RFQ-DECLINE','거절 검증 견적','open',current_date+10,$1) RETURNING id`, adminID).Scan(&rfqID); err != nil {
+		t.Fatalf("seed rfq: %v", err)
+	}
+	const email = "decline-test@vendra.test"
+	const password = "DeclinePassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,supplier_id) VALUES($1,'거절 담당자',$2,'supplier','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,supplier_id=excluded.supplier_id,user_type='supplier',status='active' RETURNING id`, email, hash, supplierID).Scan(&userID); err != nil {
+		t.Fatalf("seed portal user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user' ON CONFLICT DO NOTHING`, userID); err != nil {
+		t.Fatalf("assign the portal role: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_participants WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-DECLINE'`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	session := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.210:5000"))
+	decline := func(from string) (int, string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `INSERT INTO sourcing_participants(sourcing_id,supplier_id,status) VALUES($1,$2,$3)
+			ON CONFLICT(sourcing_id,supplier_id) DO UPDATE SET status=excluded.status,declined_at=NULL,decline_reason=NULL`, rfqID, supplierID, from); err != nil {
+			t.Fatalf("set participant to %s: %v", from, err)
+		}
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/portal/sourcing/"+rfqID+"/decline", strings.NewReader(`{"reason":"설비 가동률 부족"}`))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		var after string
+		if err := pool.QueryRow(ctx, `SELECT status FROM sourcing_participants WHERE sourcing_id=$1 AND supplier_id=$2`, rfqID, supplierID).Scan(&after); err != nil {
+			t.Fatalf("read the participant back: %v", err)
+		}
+		return w.Code, after
+	}
+
+	for _, tc := range []struct {
+		from   string
+		status int
+		after  string
+	}{
+		{"invited", http.StatusOK, "declined"},
+		// Starting a quote must not close the door.
+		{"draft", http.StatusOK, "declined"},
+		// A submitted bid is a commitment, and withdrawing it is not this.
+		{"submitted", http.StatusConflict, "submitted"},
+		{"declined", http.StatusConflict, "declined"},
+	} {
+		code, after := decline(tc.from)
+		if code != tc.status {
+			t.Errorf("declining from %q returned %d, want %d", tc.from, code, tc.status)
+		}
+		if after != tc.after {
+			t.Errorf("declining from %q left the participant at %q, want %q", tc.from, after, tc.after)
+		}
+	}
+
+	// The reason reaches the buyer, which is the point of declining at all.
+	if _, err := pool.Exec(ctx, `UPDATE sourcing_participants SET status='draft',declined_at=NULL,decline_reason=NULL WHERE sourcing_id=$1`, rfqID); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if code, _ := decline("draft"); code != http.StatusOK {
+		t.Fatalf("declining from draft returned %d", code)
+	}
+	var reason string
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(decline_reason,'') FROM sourcing_participants WHERE sourcing_id=$1`, rfqID).Scan(&reason); err != nil {
+		t.Fatalf("read the reason: %v", err)
+	}
+	if reason == "" {
+		t.Error("the decline was recorded without the reason the supplier gave")
+	}
+}
+
 // TestEvaluationRefusesWhatItCannotGrade covers a way to mark a supplier down
 // by accident. The score is derived from the template's criteria, never
 // asserted by the caller, so a submission carrying no scores derived zero —
