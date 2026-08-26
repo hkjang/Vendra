@@ -137,6 +137,62 @@ func jsonBoolValue(jsonExpr, textExpr string, fallback bool) string {
 	return "(CASE WHEN " + reads("true", "true", "t", "yes", "y", "on", "1") + " THEN true ELSE false END)"
 }
 
+// dateField names a request-body field holding a calendar date, with the label
+// to use when telling the caller it is malformed.
+type dateField struct{ key, label string }
+
+// validDateFields checks optional YYYY-MM-DD values taken from a request body.
+//
+// Left to PostgreSQL, "2026-13-45" comes back as a failed cast, which the
+// handler can only report as "could not save the data" — with no clue which of
+// three date fields on the form was wrong — while writing a "database error"
+// line to the log for what is plainly the caller's typo. Same reasoning as
+// dateParam, applied on the way in.
+func validDateFields(w http.ResponseWriter, in map[string]any, fields ...dateField) bool {
+	for _, f := range fields {
+		if !validDate(w, stringValue(in, f.key), f.label) {
+			return false
+		}
+	}
+	return true
+}
+
+func validDate(w http.ResponseWriter, value, label string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	if _, err := time.Parse("2006-01-02", value); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", label+topicParticle(label)+" YYYY-MM-DD 형식이어야 합니다")
+		return false
+	}
+	return true
+}
+
+// validInstant is validDate for a field carrying a point in time. The spellings
+// listed are the ones an API client actually sends; anything else was going to
+// be stored ambiguously or rejected by the cast anyway.
+func validInstant(w http.ResponseWriter, value, label string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05-07",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	} {
+		if _, err := time.Parse(layout, value); err == nil {
+			return true
+		}
+	}
+	writeError(w, http.StatusBadRequest, "validation_error", label+topicParticle(label)+" YYYY-MM-DD 또는 RFC3339 형식이어야 합니다")
+	return false
+}
+
 // uuidParam reads an optional record-id filter. A malformed id is the caller's
 // mistake in the same way a malformed date is: without this it reaches
 // `$1::uuid` and PostgreSQL rejects it, which the handler could only pass on

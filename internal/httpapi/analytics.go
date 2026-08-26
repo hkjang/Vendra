@@ -224,6 +224,9 @@ func (a *App) createRisk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id string
+	if !validDateFields(w, in, dateField{"reviewDate", "검토일"}) {
+		return
+	}
 	err = a.db.QueryRow(r.Context(), `INSERT INTO risks(supplier_id,risk_type,probability,impact,severity,status,description,mitigation,owner_id,review_date) VALUES($1,$2,COALESCE($3,0),COALESCE($4,0),$5,COALESCE(NULLIF($6,''),'open'),NULLIF($7,''),NULLIF($8,''),NULLIF($9,'')::uuid,NULLIF($10,'')::date) RETURNING id`, r.PathValue("id"), typ, numberValue(in, "probability"), numberValue(in, "impact"), severity, stringValue(in, "status"), stringValue(in, "description"), stringValue(in, "mitigation"), stringValue(in, "ownerId"), stringValue(in, "reviewDate")).Scan(&id)
 	if err != nil {
 		writeError(w, 400, "save_failed", "리스크를 저장하지 못했습니다")
@@ -315,6 +318,9 @@ func (a *App) createEvaluation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var id string
+	if !validDateFields(w, in, dateField{"periodStart", "평가 시작일"}, dateField{"periodEnd", "평가 종료일"}) {
+		return
+	}
 	err = a.db.QueryRow(r.Context(), `INSERT INTO evaluations(supplier_id,template_id,evaluation_type,status,period_start,period_end,scores,total_score,grade,evaluator_id,comments) VALUES($1,$2,COALESCE(NULLIF($3,''),'periodic'),COALESCE(NULLIF($4,''),'completed'),NULLIF($5,'')::date,NULLIF($6,'')::date,$7,$8,$9,$10,NULLIF($11,'')) RETURNING id`, r.PathValue("id"), templateID, stringValue(in, "evaluationType"), stringValue(in, "status"), stringValue(in, "periodStart"), stringValue(in, "periodEnd"), raw(scores), total, grade, p.ID, stringValue(in, "comments")).Scan(&id)
 	if err != nil {
 		writeError(w, 400, "save_failed", "평가를 저장하지 못했습니다")

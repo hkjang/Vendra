@@ -1088,6 +1088,54 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestMalformedDateNamesTheFieldItCameFrom covers the wiring, not just the
+// validator: a bad date used to reach PostgreSQL, fail its cast, and come back
+// as "데이터를 저장하지 못했습니다" — which of the three date fields on the
+// form was wrong was left to the person to guess.
+func TestMalformedDateNamesTheFieldItCameFrom(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	_ = app
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.180:5000"))
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and this would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number LIKE 'DATEFIELD-%'`)
+	})
+
+	post := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/contracts", strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	for _, tc := range []struct{ body, wants string }{
+		{`{"title":"날짜","number":"DATEFIELD-1","startDate":"2026-13-45"}`, "시작일"},
+		{`{"title":"날짜","number":"DATEFIELD-2","dueDate":"2026-02-31"}`, "마감일"},
+		{`{"title":"날짜","number":"DATEFIELD-3","endDate":"쓰레기"}`, "종료일"},
+	} {
+		w := post(tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s returned %d, want 400: %s", tc.body, w.Code, w.Body.String())
+			continue
+		}
+		if !strings.Contains(w.Body.String(), tc.wants) {
+			t.Errorf("the rejection does not name %s: %s", tc.wants, w.Body.String())
+		}
+	}
+
+	// A usable date still goes through.
+	if w := post(`{"title":"날짜","number":"DATEFIELD-OK","startDate":"2026-01-15","endDate":"2026-12-31"}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed contract returned %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestBooleanSettingsSurviveGarbage covers a hard stop on the core workflow.
 // workflow.approval_enabled is read as (value #>> '{}')::boolean, and the
 // settings endpoint takes any JSON — so an administrator storing {} there made

@@ -408,6 +408,9 @@ func (a *App) createAccessGrant(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var id string
+	if !validInstant(w, in.ValidFrom, "시작 시각") || !validInstant(w, in.ValidUntil, "종료 시각") {
+		return
+	}
 	err := a.db.QueryRow(r.Context(), `INSERT INTO access_grants(user_id,permission,resource_type,resource_id,conditions,valid_from,valid_until,delegated_by) VALUES($1,$2,NULLIF($3,''),NULLIF($4,'')::uuid,$5,COALESCE(NULLIF($6,'')::timestamptz,now()),NULLIF($7,'')::timestamptz,$8) RETURNING id`, in.UserID, in.Permission, in.ResourceType, in.ResourceID, raw(conditions), in.ValidFrom, in.ValidUntil, p.ID).Scan(&id)
 	if err != nil {
 		writeError(w, 400, "save_failed", "임시 권한을 저장하지 못했습니다")

@@ -120,6 +120,9 @@ func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !validDate(w, r.FormValue("expiresAt"), "만료일") {
+		return
+	}
 	root, err := a.storagePath(r)
 	if err != nil {
 		writeError(w, 503, "storage_unavailable", "파일 저장소가 설정되지 않았습니다")
