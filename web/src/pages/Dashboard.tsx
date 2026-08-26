@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   CircleDollarSign,
   FileText,
+  ShieldCheck,
   Sparkles,
   TrendingUp,
   Users,
@@ -27,6 +28,15 @@ import { BusinessObject, DashboardData } from "../types";
 
 // riskShare turns a count into the arc that represents its share of the whole.
 // A ring only means anything if its arcs are proportional.
+// riskBriefing names what is actually waiting, so the line changes when the
+// numbers do.
+function riskBriefing(highRisk: number, expiring: number) {
+  const parts = [];
+  if (highRisk > 0) parts.push(`고위험 공급업체 ${highRisk}곳`);
+  if (expiring > 0) parts.push(`180일 내 만료 계약 ${expiring}건`);
+  return `${parts.join("과 ")}을 우선 검토하세요.`;
+}
+
 function riskShare(part: number, whole: number) {
   if (!whole || whole <= 0) return 0;
   return Math.round((Math.min(part, whole) / whole) * 360);
@@ -131,69 +141,91 @@ export default function Dashboard() {
               <ArrowRight />
             </Link>
           </div>
-          <div className="risk-chart">
-            {/* The ring divides the supplier base, so its arcs are the shares
-                they claim to be. It used to fix two of its three arcs in CSS
-                and cap the third at 65 degrees, which drew the same picture for
-                nine high-risk suppliers and nine hundred. Contracts nearing
-                expiry sit below rather than inside it: they count a different
-                population and were never a slice of this whole. */}
-            <div
-              className="donut"
-              style={
-                {
-                  "--critical": `${riskShare(k.highRiskSuppliers, k.totalSuppliers)}deg`,
-                  "--watch": `${riskShare(k.highRiskSuppliers + k.mediumRiskSuppliers, k.totalSuppliers)}deg`,
-                } as React.CSSProperties
-              }
-            >
-              <div>
-                <strong>
-                  {percent(k.highRiskSuppliers, k.totalSuppliers)}
-                </strong>
-                <span>고위험 비중</span>
+          {k.totalSuppliers > 0 ? (
+            <>
+              <div className="risk-chart">
+                {/* The ring divides the supplier base, so its arcs are the shares
+                  they claim to be. It used to fix two of its three arcs in CSS
+                  and cap the third at 65 degrees, which drew the same picture for
+                  nine high-risk suppliers and nine hundred. Contracts nearing
+                  expiry sit below rather than inside it: they count a different
+                  population and were never a slice of this whole. */}
+                <div
+                  className="donut"
+                  style={
+                    {
+                      "--critical": `${riskShare(k.highRiskSuppliers, k.totalSuppliers)}deg`,
+                      "--watch": `${riskShare(k.highRiskSuppliers + k.mediumRiskSuppliers, k.totalSuppliers)}deg`,
+                    } as React.CSSProperties
+                  }
+                >
+                  <div>
+                    <strong>
+                      {percent(k.highRiskSuppliers, k.totalSuppliers)}
+                    </strong>
+                    <span>고위험 비중</span>
+                  </div>
+                </div>
+                <div className="risk-legend">
+                  <div>
+                    <i className="critical" />
+                    <span>High · Critical</span>
+                    <b>{k.highRiskSuppliers}</b>
+                  </div>
+                  <div>
+                    <i className="medium" />
+                    <span>Medium</span>
+                    <b>{k.mediumRiskSuppliers}</b>
+                  </div>
+                  <div>
+                    <i className="low" />
+                    <span>Low</span>
+                    <b>
+                      {Math.max(
+                        0,
+                        k.totalSuppliers -
+                          k.highRiskSuppliers -
+                          k.mediumRiskSuppliers,
+                      )}
+                    </b>
+                  </div>
+                  <div className="risk-legend-aside">
+                    <span>180일 내 계약 만료</span>
+                    <b>{k.expiringContracts}</b>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div className="risk-legend">
-              <div>
-                <i className="critical" />
-                <span>High · Critical</span>
-                <b>{k.highRiskSuppliers}</b>
-              </div>
-              <div>
-                <i className="medium" />
-                <span>Medium</span>
-                <b>{k.mediumRiskSuppliers}</b>
-              </div>
-              <div>
-                <i className="low" />
-                <span>Low</span>
-                <b>
-                  {Math.max(
-                    0,
-                    k.totalSuppliers -
-                      k.highRiskSuppliers -
-                      k.mediumRiskSuppliers,
-                  )}
-                </b>
-              </div>
-              <div className="risk-legend-aside">
-                <span>180일 내 계약 만료</span>
-                <b>{k.expiringContracts}</b>
-              </div>
-            </div>
-          </div>
-          <div className="attention">
-            <AlertTriangle />
-            <div>
-              <b>오늘의 리스크 브리핑</b>
-              <p>고위험 공급업체와 180일 내 만료 계약을 우선 검토하세요.</p>
-            </div>
-            <Link to="/ai">
-              <Sparkles />
-              AI 분석
-            </Link>
-          </div>
+              {/* Telling someone to review high-risk suppliers and expiring
+                  contracts when there are none of either is advice with nothing
+                  to act on, and it read the same whether there was one or a
+                  hundred. */}
+              {k.highRiskSuppliers + k.expiringContracts > 0 && (
+                <div className="attention">
+                  <AlertTriangle />
+                  <div>
+                    <b>오늘의 리스크 브리핑</b>
+                    <p>
+                      {riskBriefing(k.highRiskSuppliers, k.expiringContracts)}
+                    </p>
+                  </div>
+                  <Link to="/ai">
+                    <Sparkles />
+                    AI 분석
+                  </Link>
+                </div>
+              )}
+            </>
+          ) : (
+            /* With nothing registered there is no population to divide. A ring
+               reading "0% 고위험" is an absence dressed up as reassurance, and
+               advice to review high-risk suppliers has nothing to point at. The
+               sibling panels already say this plainly. */
+            <Empty
+              icon={<ShieldCheck />}
+              title="평가할 공급업체가 없습니다"
+              description="공급업체를 등록하면 리스크 구성을 이곳에 표시합니다."
+            />
+          )}
         </div>
         <div className="card supplier-ranking">
           <div className="card-head">

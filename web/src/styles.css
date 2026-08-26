@@ -641,6 +641,22 @@ kbd {
   flex-direction: column;
   gap: 25px;
 }
+/* The message that appears when the boot screen has been up too long. */
+.boot-stalled {
+  margin-top: 22px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 380px;
+}
+.boot-stalled p {
+  color: #9aa3b5;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .boot-line {
   width: 150px;
   height: 2px;

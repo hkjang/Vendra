@@ -30,6 +30,23 @@ export function Loading({ label='불러오는 중', stalledAfterMs=12000 }: { la
   </div>
 }
 
+/* The boot screen showed a logo and a bar and nothing else. A normal start is
+   under a second and a database that is down resolves into its own screen after
+   about four, so anything still here at eight seconds is genuinely stuck and the
+   person deserves to be told rather than left watching an animation. */
+export function BootSplash({ stalledAfterMs=8000 }: { stalledAfterMs?:number } = {}) {
+  const [stalled, setStalled] = useState(false)
+  useEffect(()=>{ const timer=setTimeout(()=>setStalled(true), stalledAfterMs); return ()=>clearTimeout(timer) }, [stalledAfterMs])
+  return <div className="boot">
+    <Logo />
+    <div className="boot-line" />
+    {stalled && <div className="boot-stalled" role="status">
+      <p>시작하는 데 예상보다 오래 걸립니다. 연결이 끊겼거나 서비스가 재시작 중일 수 있습니다.</p>
+      <button type="button" className="button secondary" onClick={()=>window.location.reload()}><RefreshCw/>다시 시도</button>
+    </div>}
+  </div>
+}
+
 export function Badge({ children, tone='neutral' }: { children:ReactNode; tone?:'neutral'|'success'|'warning'|'danger'|'info'|'purple' }) { return <span className={`badge ${tone}`}>{children}</span> }
 
 const FOCUSABLE='a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
