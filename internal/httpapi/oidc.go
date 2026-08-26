@@ -28,8 +28,37 @@ type oidcSettings struct {
 	// RequireVerifiedEmail is a pointer so an absent key means "on". It gates
 	// the two paths that trust the provider's email claim: attaching an identity
 	// to an account that already exists, and creating a new one.
-	RequireVerifiedEmail *bool  `json:"requireVerifiedEmail"`
-	ClientSecret         string `json:"-"`
+	RequireVerifiedEmail *bool `json:"requireVerifiedEmail"`
+	// PublicURL is the address browsers reach this service at, and the
+	// redirect_uri is built from it. See callbackURI for why deriving it from
+	// the request instead is fragile.
+	PublicURL    string `json:"publicUrl"`
+	ClientSecret string `json:"-"`
+}
+
+// callbackURI is the redirect_uri for both legs of the flow.
+//
+// The same string has to appear in the authorization request and in the token
+// exchange, or the provider answers redirect_uri_mismatch. Deriving it from the
+// request derives it twice, from two different requests: a deployment reachable
+// under more than one name — a proxy and the origin behind it, with a port and
+// without — can start the flow under one and come back under the other, and the
+// exchange fails with nothing in the message pointing at why. The Host and
+// X-Forwarded-Proto headers it reads are the caller's to set as well; what
+// stops that mattering is the provider's own allowlist, which is somebody
+// else's configuration to get right.
+//
+// Configured, it is one fixed string, and the same one the provider has
+// registered. Left empty it falls back to the request, so a deployment that
+// works today keeps working.
+func (s oidcSettings) callbackURI(r *http.Request) string {
+	if base := strings.TrimRight(strings.TrimSpace(s.PublicURL), "/"); base != "" {
+		if parsed, err := url.Parse(base); err == nil && parsed.Host != "" &&
+			(parsed.Scheme == "http" || parsed.Scheme == "https") {
+			return parsed.Scheme + "://" + parsed.Host + parsed.Path + "/api/auth/oidc/callback"
+		}
+	}
+	return requestOrigin(r) + "/api/auth/oidc/callback"
 }
 
 func (s oidcSettings) requiresVerifiedEmail() bool {
@@ -103,7 +132,7 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "vendra_oidc_flow", Value: encrypted, Path: "/api/auth/oidc/callback", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 600})
-	redirectURI := requestOrigin(r) + "/api/auth/oidc/callback"
+	redirectURI := s.callbackURI(r)
 	cfg := oauth2.Config{ClientID: s.ClientID, ClientSecret: s.ClientSecret, Endpoint: provider.Endpoint(), RedirectURL: redirectURI, Scopes: s.Scopes}
 	challenge := sha256.Sum256([]byte(verifier))
 	url := cfg.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.SetAuthURLParam("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:])), oauth2.SetAuthURLParam("code_challenge_method", "S256"))
@@ -140,7 +169,7 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 502, "oidc_unavailable", "OIDC 공급자에 연결할 수 없습니다")
 		return
 	}
-	cfg := oauth2.Config{ClientID: s.ClientID, ClientSecret: s.ClientSecret, Endpoint: provider.Endpoint(), RedirectURL: requestOrigin(r) + "/api/auth/oidc/callback", Scopes: s.Scopes}
+	cfg := oauth2.Config{ClientID: s.ClientID, ClientSecret: s.ClientSecret, Endpoint: provider.Endpoint(), RedirectURL: s.callbackURI(r), Scopes: s.Scopes}
 	token, err := cfg.Exchange(r.Context(), r.URL.Query().Get("code"), oauth2.SetAuthURLParam("code_verifier", flow.Verifier))
 	if err != nil {
 		writeError(w, 401, "oidc_exchange_failed", "OIDC 인증 코드를 교환하지 못했습니다")
