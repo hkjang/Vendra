@@ -4371,3 +4371,108 @@ func TestLifecycleSaveIsAllOrNothing(t *testing.T) {
 		t.Errorf("the ordinary save left the colour at %s", color)
 	}
 }
+
+// TestSupplyGraphEdgesStayInsideTheNodesItReturns covers the supply network. The
+// nodes are the whole universe of the response — scope-filtered, soft-delete
+// filtered and capped at 500 — but the edges were selected on their own terms,
+// so one could name an end the caller never received. The canvas drops such an
+// edge silently while the inspector's "직접 연결" still counts it, so the number
+// disagreed with the lines drawn.
+func TestSupplyGraphEdgesStayInsideTheNodesItReturns(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM supplier_relationships WHERE source_supplier_id IN (SELECT id FROM suppliers WHERE supplier_number LIKE 'SUP-GRAPHEDGE%')
+			OR target_supplier_id IN (SELECT id FROM suppliers WHERE supplier_number LIKE 'SUP-GRAPHEDGE%')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number LIKE 'SUP-GRAPHEDGE%'`)
+	})
+	supplier := func(number, name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES($1,$2,$1,'active')
+			ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name,deleted_at=NULL RETURNING id`, number, name).Scan(&id); err != nil {
+			t.Fatalf("seed %s: %v", number, err)
+		}
+		return id
+	}
+	sourceID := supplier("SUP-GRAPHEDGE-A", "그래프 원천")
+	targetID := supplier("SUP-GRAPHEDGE-B", "그래프 대상")
+	if _, err := pool.Exec(ctx, `INSERT INTO supplier_relationships(source_supplier_id,target_supplier_id,relationship_type,criticality,dependency_percent)
+		VALUES($1,$2,'tier1','critical',60)`, sourceID, targetID); err != nil {
+		t.Fatalf("seed the relationship: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.11:5000"))
+	graph := func() (map[string]bool, []map[string]any) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/supplier-network", nil)
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("the network returned %d: %s", w.Code, w.Body.String())
+		}
+		var out struct {
+			Nodes []map[string]any `json:"nodes"`
+			Edges []map[string]any `json:"edges"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode the network: %v", err)
+		}
+		ids := map[string]bool{}
+		for _, node := range out.Nodes {
+			id, _ := node["id"].(string)
+			ids[id] = true
+		}
+		return ids, out.Edges
+	}
+	touching := func(edges []map[string]any, id string) int {
+		count := 0
+		for _, edge := range edges {
+			if source, _ := edge["source"].(string); source == id {
+				count++
+				continue
+			}
+			if target, _ := edge["target"].(string); target == id {
+				count++
+			}
+		}
+		return count
+	}
+
+	// While both ends exist the edge is part of the graph — the control that
+	// proves the fixture reaches the handler at all.
+	ids, edges := graph()
+	if !ids[sourceID] || !ids[targetID] {
+		t.Fatalf("the seeded suppliers are not in the graph")
+	}
+	if touching(edges, sourceID) != 1 {
+		t.Fatalf("the seeded relationship is not in the graph")
+	}
+
+	// One end is soft-deleted. It leaves the supplier list and the node set, so
+	// its relationship must leave with it.
+	if _, err := pool.Exec(ctx, `UPDATE suppliers SET deleted_at=now() WHERE id=$1`, targetID); err != nil {
+		t.Fatalf("soft-delete the target: %v", err)
+	}
+	ids, edges = graph()
+	if ids[targetID] {
+		t.Fatalf("a soft-deleted supplier is still a node")
+	}
+	for _, edge := range edges {
+		source, _ := edge["source"].(string)
+		target, _ := edge["target"].(string)
+		if !ids[source] || !ids[target] {
+			t.Errorf("an edge names %s → %s but the response carries neither node", source, target)
+		}
+	}
+	// And the inspector's count now matches what the canvas can draw.
+	if count := touching(edges, sourceID); count != 0 {
+		t.Errorf("the inspector would report %d direct connections where no line can be drawn", count)
+	}
+}

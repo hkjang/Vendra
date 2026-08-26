@@ -591,8 +591,18 @@ func numberValue(m map[string]any, key string) any {
 		return nil
 	}
 }
+
+// objectNumberPrefix must name every type in objectRoutes; a type missing from
+// it is numbered OBJ- and reads as something the application does not know
+// about. TestEveryObjectTypeHasItsOwnNumberPrefix keeps the two in step.
+var objectNumberPrefix = map[string]string{
+	"contract": "CTR", "purchase_request": "PR", "rfq": "RFQ", "rfp": "RFP",
+	"purchase_order": "PO", "delivery": "DLV", "inspection": "INS", "quality": "QLT",
+	"issue": "ISS", "document_record": "DOC", "invoice": "INV", "payment": "PAY",
+}
+
 func objectNumber(t string) string {
-	prefix := map[string]string{"contract": "CTR", "purchase_request": "PR", "rfq": "RFQ", "rfp": "RFP", "purchase_order": "PO", "delivery": "DLV", "inspection": "INS", "quality": "QLT", "issue": "ISS", "document_record": "DOC", "invoice": "INV"}[t]
+	prefix := objectNumberPrefix[t]
 	if prefix == "" {
 		prefix = "OBJ"
 	}
