@@ -349,8 +349,8 @@ func rpcError(w http.ResponseWriter, id any, code int, message string) {
 
 var mcpTools = []map[string]any{
 	{"name": "search_suppliers", "description": "이름, 사업자번호 또는 공급업체 번호로 공급업체를 검색합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}, "required": []string{"query"}}},
-	{"name": "get_supplier", "description": "Supplier 360 핵심 정보를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}}, "required": []string{"id"}}},
-	{"name": "compare_suppliers", "description": "여러 공급업체의 비용, 평가, 위험, 계약 및 이슈를 비교합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 2}}, "required": []string{"ids"}}},
+	{"name": "get_supplier", "description": "Supplier 360 핵심 정보를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
+	{"name": "compare_suppliers", "description": "여러 공급업체의 비용, 평가, 위험, 계약 및 이슈를 비교합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 2}}, "required": []string{"supplierIds"}}},
 	{"name": "get_supplier_risk", "description": "공급업체 리스크를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
 	{"name": "get_supplier_score", "description": "공급업체 평가 점수와 이력을 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
 	{"name": "search_contracts", "description": "계약을 검색합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "supplierId": map[string]any{"type": "string"}}}},
@@ -468,7 +468,11 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		}
 		return items, nil
 	case "get_supplier":
-		s, err := scanSupplier(a.db.QueryRow(ctx, supplierSelect+` WHERE id=$1 AND deleted_at IS NULL`, stringValue(args, "id")))
+		supplierID := supplierArg(args, "supplierId", "id")
+		if supplierID == "" {
+			return nil, mcpToolError("get_supplier requires supplierId")
+		}
+		s, err := scanSupplier(a.db.QueryRow(ctx, supplierSelect+` WHERE id=$1 AND deleted_at IS NULL`, supplierID))
 		if err != nil {
 			// A bad id reaches here as a cast error; either way the caller only
 			// needs to know the supplier is not available to them.
@@ -479,7 +483,10 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		}
 		return redactSupplier(p, s), nil
 	case "compare_suppliers":
-		ids := stringSlice(args["ids"])
+		ids := supplierListArg(args, "supplierIds", "ids")
+		if len(ids) == 0 {
+			return nil, mcpToolError("compare_suppliers requires supplierIds")
+		}
 		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE id=ANY($1::uuid[]) AND deleted_at IS NULL AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name`, ids, p.DataScope, organizationID, p.ID, showSpend)
 		if err != nil {
 			return nil, err
@@ -556,6 +563,36 @@ func (a *App) mcpObjects(r *http.Request, typ string, args map[string]any) ([]an
 	showAmount := hasPermission(p, typ+".amount.read")
 	return a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'status',o.status,'supplierId',o.supplier_id,'supplierName',s.name,'amount',CASE WHEN $7 THEN o.amount END,'dueDate',o.due_date,'endDate',o.end_date,'riskLevel',o.risk_level,'data',o.data) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.supplier_id=$2::uuid) AND ($3='' OR o.title ILIKE '%'||$3||'%' OR o.number ILIKE '%'||$3||'%') AND (`+orgInScope("o.organization_id", "$4", "$5")+` OR ($4='own' AND o.owner_id=$6::uuid)) ORDER BY o.updated_at DESC LIMIT 100`, typ, stringValue(args, "supplierId"), stringValue(args, "query"), p.DataScope, organizationID, p.ID, showAmount)
 }
+
+// supplierArg reads a supplier id from a tool call under any of the names it
+// might arrive as.
+//
+// Nine of the eleven tools spell it "supplierId"; get_supplier spelled it "id"
+// and compare_suppliers "ids". The caller here is a language model reading
+// eleven descriptions at once, and it guesses. Guessing wrong on get_supplier
+// answered "supplier not found" — which the model relays to the person who
+// asked as "that supplier does not exist", rather than as its own mistake. The
+// schema now advertises the consistent name and the old one is still accepted,
+// so a client that hardcoded it keeps working.
+func supplierArg(args map[string]any, names ...string) string {
+	for _, name := range names {
+		if v := stringValue(args, name); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// supplierListArg is supplierArg for the tool that takes several.
+func supplierListArg(args map[string]any, names ...string) []string {
+	for _, name := range names {
+		if v := stringSlice(args[name]); len(v) > 0 {
+			return v
+		}
+	}
+	return nil
+}
+
 func stringSlice(v any) []string {
 	xs, _ := v.([]any)
 	out := []string{}
