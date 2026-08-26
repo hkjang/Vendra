@@ -1089,6 +1089,116 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestCompletingAScreeningMovesTheSupplier covers the chain that decides
+// whether a company is tradeable. The thresholds and the template rules have
+// unit tests; what a completed screening then does to the supplier did not.
+//
+// The interesting case is the middle one: full marks with the required
+// documents absent must not approve anybody.
+func TestCompletingAScreeningMovesTheSupplier(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// Registered first so a failure part way through still tidies up.
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM supplier_screenings WHERE supplier_id IN (SELECT id FROM suppliers WHERE supplier_number='SUP-SCREENCHAIN')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM documents WHERE document_type LIKE 'chain-%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM screening_templates WHERE name='심사연쇄 템플릿'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-SCREENCHAIN'`)
+	})
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-SCREENCHAIN','심사연쇄 업체','SUP-SCREENCHAIN','candidate')
+		ON CONFLICT(supplier_number) DO UPDATE SET status='candidate' RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	var templateID string
+	if err := pool.QueryRow(ctx, `INSERT INTO screening_templates(name,items,result_rules,required_document_types,active)
+		VALUES('심사연쇄 템플릿',
+			'[{"code":"credit","name":"신용","weight":50,"required":true},{"code":"safety","name":"안전","weight":50,"required":true}]'::jsonb,
+			'{"passMin":80,"conditionalMin":70,"reviewMin":60,"requiredFailureResult":"REVIEW_REQUIRED"}'::jsonb,
+			'["chain-registration"]'::jsonb, true) RETURNING id`).Scan(&templateID); err != nil {
+		t.Fatalf("seed template: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.2:5000"))
+	post := func(path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	screen := func(responses string) (string, string) {
+		t.Helper()
+		open := post("/api/v1/suppliers/"+supplierID+"/screenings", `{"templateId":"`+templateID+`"}`)
+		if open.Code != http.StatusCreated {
+			t.Fatalf("opening a screening returned %d: %s", open.Code, open.Body.String())
+		}
+		var created struct{ ID string }
+		if err := json.Unmarshal(open.Body.Bytes(), &created); err != nil || created.ID == "" {
+			t.Fatalf("could not read the new screening: %v (%s)", err, open.Body.String())
+		}
+		r := httptest.NewRequest(http.MethodPatch, "/api/v1/screenings/"+created.ID, strings.NewReader(`{"complete":true,"responses":`+responses+`}`))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("completing a screening returned %d: %s", w.Code, w.Body.String())
+		}
+		var out struct{ Result string }
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		var status string
+		if err := pool.QueryRow(ctx, `SELECT status FROM suppliers WHERE id=$1`, supplierID).Scan(&status); err != nil {
+			t.Fatalf("read the supplier back: %v", err)
+		}
+		return out.Result, status
+	}
+
+	if result, status := screen(`{}`); result != "REVIEW_REQUIRED" || status != "screening" {
+		t.Errorf("an unanswered screening gave %q / %q, want REVIEW_REQUIRED / screening", result, status)
+	}
+	// Full marks, but the required document is not on file. A perfect score
+	// must not approve a company that has not produced its paperwork.
+	if result, status := screen(`{"credit":100,"safety":100}`); result != "REVIEW_REQUIRED" || status != "screening" {
+		t.Errorf("full marks without the required document gave %q / %q, want REVIEW_REQUIRED / screening", result, status)
+	}
+
+	if _, err := pool.Exec(ctx, `INSERT INTO documents(name,supplier_id,document_type,status,storage_path,size,checksum,uploaded_by,expires_at)
+		VALUES('등록증.pdf',$1,'chain-registration','active','/var/lib/vendra/documents/chain',10,'beef',$2,current_date+365)`, supplierID, adminID); err != nil {
+		t.Fatalf("seed the required document: %v", err)
+	}
+	// The control: with the paperwork in place it does approve, so the two
+	// refusals above mean something.
+	if result, status := screen(`{"credit":100,"safety":100}`); result != "PASS" || status != "approved" {
+		t.Errorf("a complete screening gave %q / %q, want PASS / approved", result, status)
+	}
+	// And a rejection suspends rather than leaving a rejected company
+	// tradeable.
+	if result, status := screen(`{"credit":10,"safety":10}`); result != "REJECT" || status != "suspended" {
+		t.Errorf("a failed screening gave %q / %q, want REJECT / suspended", result, status)
+	}
+
+	// An expired document is not a document.
+	if _, err := pool.Exec(ctx, `UPDATE documents SET expires_at=current_date-1 WHERE document_type='chain-registration'`); err != nil {
+		t.Fatalf("expire the document: %v", err)
+	}
+	if result, _ := screen(`{"credit":100,"safety":100}`); result != "REVIEW_REQUIRED" {
+		t.Errorf("full marks against an expired required document gave %q, want REVIEW_REQUIRED", result)
+	}
+}
+
 // TestPortfolioAnalysisFencesTheDataItWasGiven is the sibling of the contract
 // one, for the endpoint that says which suppliers are risky.
 //
