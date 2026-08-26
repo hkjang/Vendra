@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -323,13 +324,26 @@ func (a *App) evaluateSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request", err.Error())
 		return
 	}
+	// The average lands in technical_score, which recalculateSourcing weighs into
+	// final_score — the order the committee reads the comparison in. A score off
+	// the 0~100 scale the form offers moves a bid past every honest one.
+	if len(in.Scores) == 0 {
+		writeError(w, 400, "validation_error", "평가 점수를 하나 이상 입력해야 합니다")
+		return
+	}
 	total := 0.0
-	for _, score := range in.Scores {
+	for item, score := range in.Scores {
+		if utf8.RuneCountInString(item) > maxIdentifierLen {
+			writeError(w, 400, "validation_error", "평가 항목 이름이 너무 깁니다")
+			return
+		}
+		if score < 0 || score > 100 {
+			writeError(w, 400, "validation_error", "평가 점수는 0에서 100 사이여야 합니다")
+			return
+		}
 		total += score
 	}
-	if len(in.Scores) > 0 {
-		total /= float64(len(in.Scores))
-	}
+	total /= float64(len(in.Scores))
 	var sourcingID string
 	err := a.db.QueryRow(r.Context(), `INSERT INTO sourcing_evaluations(response_id,evaluator_id,scores,total_score,comment) VALUES($1,$2,$3,$4,NULLIF($5,'')) ON CONFLICT(response_id,evaluator_id) DO UPDATE SET scores=excluded.scores,total_score=excluded.total_score,comment=excluded.comment,updated_at=now() RETURNING (SELECT sourcing_id FROM sourcing_responses WHERE id=$1)`, r.PathValue("id"), p.ID, raw(in.Scores), total, in.Comment).Scan(&sourcingID)
 	if err != nil {
