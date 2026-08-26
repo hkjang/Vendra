@@ -1088,6 +1088,154 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestEverySurfaceCarryingARecordRespectsTheScope is a guard against the class
+// rather than any one instance of it.
+//
+// Vendra has no central authorization layer over reads: scope lives in each
+// handler's own query, so a record reachable through two surfaces is only
+// protected on the surface somebody remembered to protect. Four leaks have
+// been found that way — the sourcing routes, the portal's tender list, the
+// portal's work list, and the audit trail — each a boundary present in one
+// place and missing in another carrying the same data. This walks every
+// surface that can return one contract and its supplier.
+//
+// Every case carries its own control. A narrow reader seeing nothing proves
+// nothing unless the company-scoped reader sees something, so each surface is
+// asserted both ways and says so when the fixture stops discriminating.
+func TestEverySurfaceCarryingARecordRespectsTheScope(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// Registered first so a failure part way through still tidies up.
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM workflow_instances WHERE object_id IN (SELECT id FROM business_objects WHERE number LIKE 'SURFACE-%')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE object_id IN (SELECT id::text FROM business_objects WHERE number LIKE 'SURFACE-%')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM documents WHERE name='표면검증기밀문서.txt'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number LIKE 'SURFACE-%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email='surface-scope@vendra.test'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='surface_scope_reader'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-SURFACE-B'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM organizations WHERE name LIKE '표면스코프%'`)
+	})
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	org := func(name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO organizations(name,path) VALUES($1,'/') RETURNING id`, name).Scan(&id); err != nil {
+			if err := pool.QueryRow(ctx, `SELECT id FROM organizations WHERE name=$1`, name).Scan(&id); err != nil {
+				t.Fatalf("seed organisation %s: %v", name, err)
+			}
+		}
+		return id
+	}
+	mine, theirs := org("표면스코프 A본부"), org("표면스코프 B본부")
+
+	const secretTitle = "표면검증 기밀 계약"
+	const secretAmount = "888000000"
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status,organization_id)
+		VALUES('SUP-SURFACE-B','표면검증 기밀업체','SUP-SURFACE-B','active',$1)
+		ON CONFLICT(supplier_number) DO UPDATE SET organization_id=excluded.organization_id RETURNING id`, theirs).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	var contractID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,amount,organization_id,supplier_id,created_by)
+		VALUES('contract','SURFACE-CT-B',$1,'pending_approval',888000000,$2,$3,$4)
+		ON CONFLICT(object_type,number) DO UPDATE SET title=excluded.title RETURNING id`, secretTitle, theirs, supplierID, adminID).Scan(&contractID); err != nil {
+		t.Fatalf("seed contract: %v", err)
+	}
+	// Each surface needs something to carry: a trail, an open approval, a
+	// document. The trail names the supplier as well, because the supplier
+	// activity view matches on new_value->>'supplierId' and would otherwise
+	// have nothing to show either reader.
+	if _, err := pool.Exec(ctx, `INSERT INTO audit_logs(actor_email,action,object_type,object_id,previous_value,new_value,request_id)
+		VALUES($1,'update','contract',$2,jsonb_build_object('amount',777000000::bigint),jsonb_build_object('amount',888000000::bigint,'title',$3::text,'supplierId',$4::text),'surface-scope-1')`,
+		testAdminEmail, contractID, secretTitle, supplierID); err != nil {
+		t.Fatalf("seed audit entry: %v", err)
+	}
+	var definitionID string
+	if err := pool.QueryRow(ctx, `INSERT INTO workflow_definitions(name,object_type,enabled,conditions,steps,created_by)
+		VALUES('표면스코프 결재','contract',true,'{}','[{"name":"승인","role":"","order":0}]',$1) RETURNING id`, adminID).Scan(&definitionID); err != nil {
+		t.Fatalf("seed workflow definition: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workflow_instances(definition_id,object_type,object_id,requested_by,context)
+		VALUES($1,'contract',$2,$3,'{"steps":[{"name":"승인","role":"","order":0}]}')`, definitionID, contractID, adminID); err != nil {
+		t.Fatalf("seed approval: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM workflow_definitions WHERE id=$1`, definitionID) })
+	if _, err := pool.Exec(ctx, `INSERT INTO documents(name,supplier_id,document_type,status,storage_path,size,checksum,uploaded_by)
+		VALUES('표면검증기밀문서.txt',$1,'contract','active','/var/lib/vendra/documents/surface-scope',10,'deadbeef',$2)`, supplierID, adminID); err != nil {
+		t.Fatalf("seed document: %v", err)
+	}
+
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('surface_scope_reader','표면스코프검증',
+		'["contract.read","supplier.read","audit.read","workflow.read","document.read","spend.read","dashboard.read","evaluation.read","risk.read"]','department',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions,data_scope='department' RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	const email = "surface-scope@vendra.test"
+	const password = "SurfaceScopePassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,organization_id) VALUES($1,'표면 검증자',$2,'internal','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,organization_id=excluded.organization_id,status='active' RETURNING id`, email, hash, mine).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, roleID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	narrow := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.250:5000"))
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	wide := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.251:5000"))
+
+	for _, surface := range []struct{ name, path, marker string }{
+		{"the contract list", "/api/v1/contracts?limit=500", secretAmount},
+		{"global search", "/api/v1/search?q=SURFACE-CT-B", contractID},
+		{"the audit trail", "/api/v1/admin/audit?limit=500", secretAmount},
+		{"the approvals list", "/api/v1/approvals?limit=200", contractID},
+		{"the supplier's objects", "/api/v1/suppliers/" + supplierID + "/objects", contractID},
+		{"the supplier's activity", "/api/v1/suppliers/" + supplierID + "/activity", secretAmount},
+		{"the document list", "/api/v1/documents?limit=500", "표면검증기밀문서"},
+		{"the supplier's documents", "/api/v1/documents?supplierId=" + supplierID, "표면검증기밀문서"},
+	} {
+		out := doRequest(t, handler, http.MethodGet, surface.path, wide)
+		if out.Code != http.StatusOK || !strings.Contains(out.Body.String(), surface.marker) {
+			t.Errorf("%s does not show %q even to a company-scoped reader (%d); this case proves nothing", surface.name, surface.marker, out.Code)
+			continue
+		}
+		in := doRequest(t, handler, http.MethodGet, surface.path, narrow)
+		if in.Code == http.StatusOK && strings.Contains(in.Body.String(), surface.marker) {
+			t.Errorf("%s handed another division's record to a department-scoped reader: %s", surface.name, in.Body.String())
+		}
+	}
+
+	// A record in their own division still reaches them, or the boundary would
+	// be indistinguishable from the endpoint being broken.
+	var ownID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,amount,organization_id,created_by)
+		VALUES('contract','SURFACE-CT-A','우리 본부 계약','active',111000000,$1,$2)
+		ON CONFLICT(object_type,number) DO UPDATE SET title=excluded.title RETURNING id`, mine, adminID).Scan(&ownID); err != nil {
+		t.Fatalf("seed own contract: %v", err)
+	}
+	own := doRequest(t, handler, http.MethodGet, "/api/v1/contracts?limit=500", narrow)
+	if !strings.Contains(own.Body.String(), ownID) {
+		t.Errorf("the reader cannot see their own division's contract either: %s", own.Body.String())
+	}
+}
+
 // TestAuditTrailDoesNotCrossTheDataScope covers a way around every other
 // boundary. An audit entry carries the record whole, before and after, and the
 // list applied no scope at all: a reader whose contract list correctly
