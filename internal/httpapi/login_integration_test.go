@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -1085,6 +1086,114 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	after := doRequest(t, handler, http.MethodGet, "/api/v1/sourcing/"+rfqID+"/comparison", admin)
 	if !strings.Contains(after.Body.String(), "77777777") {
 		t.Errorf("a submitted bid is still hidden: %s", after.Body.String())
+	}
+}
+
+// TestAIAnalysisRedactsBeforeItLeaves covers a field-level boundary that one
+// handler forgot. Every view of a contract goes through redactObject, which
+// nils the amount for a reader without contract.amount.read. The contract
+// analysis marshalled the record as scanned, so a reader who saw no amount on
+// the detail page had it sent to the configured model — which the system
+// prompt then asks to extract "amount" and return.
+//
+// The check is on what leaves the deployment, so the test stands in as the
+// model and reads the request body.
+func TestAIAnalysisRedactsBeforeItLeaves(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var seen []string
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seen = append(seen, string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"summary\":\"ok\"}"}}],"usage":{"total_tokens":1}}`))
+	}))
+	t.Cleanup(model.Close)
+
+	var originalAI []byte
+	_ = pool.QueryRow(ctx, `SELECT value FROM settings WHERE key='ai'`).Scan(&originalAI)
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs, and leaving this one's AI
+		// settings behind would point a later test at a closed server.
+		if originalAI != nil {
+			_, _ = pool.Exec(ctx, `UPDATE settings SET value=$1 WHERE key='ai'`, originalAI)
+		} else {
+			_, _ = pool.Exec(ctx, `DELETE FROM settings WHERE key='ai'`)
+		}
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number='AI-REDACT'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email='ai-redact@vendra.test'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='ai_redact_reader'`)
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO settings(key,value,category) VALUES('ai',$1::jsonb,'integration')
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		`{"enabled":true,"baseUrl":"`+model.URL+`/v1","model":"stand-in","timeoutSeconds":20,"maxCallsPerHour":0}`); err != nil {
+		t.Fatalf("point the AI setting at the stand-in: %v", err)
+	}
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	const amount = "444555666"
+	var contractID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,amount,created_by)
+		VALUES('contract','AI-REDACT','금액 비공개 계약','draft',444555666,$1)
+		ON CONFLICT(object_type,number) DO UPDATE SET amount=excluded.amount RETURNING id`, adminID).Scan(&contractID); err != nil {
+		t.Fatalf("seed contract: %v", err)
+	}
+
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('ai_redact_reader','AI 금액무권한','["contract.read","ai.use"]','company',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions,data_scope='company' RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	const email = "ai-redact@vendra.test"
+	const password = "AiRedactPassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status) VALUES($1,'AI 검증자',$2,'internal','active')
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,status='active' RETURNING id`, email, hash).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, roleID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+
+	analyse := func(session string) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/ai/contracts/"+contractID+"/analyze", nil)
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("the analysis returned %d: %s", w.Code, w.Body.String())
+		}
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	analyse(sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.252:5000")))
+	if len(seen) != 1 {
+		t.Fatalf("the stand-in model was called %d times, want 1", len(seen))
+	}
+	if strings.Contains(seen[0], amount) {
+		t.Errorf("the amount was sent to the model for a reader who cannot see it: %s", seen[0])
+	}
+
+	// The control: a reader who may see the amount still gets it analysed, or
+	// this would pass just as well against a handler that sends nothing.
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	analyse(sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.253:5000")))
+	if len(seen) != 2 {
+		t.Fatalf("the stand-in model was called %d times, want 2", len(seen))
+	}
+	if !strings.Contains(seen[1], amount) {
+		t.Errorf("the amount was withheld from a reader who may see it: %s", seen[1])
 	}
 }
 
