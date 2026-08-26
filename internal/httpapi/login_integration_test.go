@@ -4104,3 +4104,103 @@ func TestApprovalStatusCannotBeClaimedWithoutTheWorkflow(t *testing.T) {
 		t.Errorf("%d objects moved on while their approval still reads pending", mismatched)
 	}
 }
+
+// TestWorkInboxDoesNotLoseWorkToTypesTheReaderCannotRead covers the work control
+// tower's deadline query. It read three hundred objects of every type and then
+// dropped the unreadable ones in Go, so work the reader owned fell out of the
+// window behind objects they were never allowed to see. Global search already
+// restricts by type inside the query; this is the same fix.
+func TestWorkInboxDoesNotLoseWorkToTypesTheReaderCannotRead(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number LIKE 'INBOXSCOPE-%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email='inbox-issues@vendra.test')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email='inbox-issues@vendra.test'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='inboxscope_issue'`)
+	})
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('inboxscope_issue','이슈만 읽는 역할','["issue.read"]'::jsonb,'company',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed the role: %v", err)
+	}
+	hash, err := app.hashPassword(ctx, "InboxScope!2026")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var readerID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status) VALUES('inbox-issues@vendra.test','이슈 담당',$1,'internal','active')
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,status='active' RETURNING id`, hash).Scan(&readerID); err != nil {
+		t.Fatalf("seed the reader: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, readerID, roleID); err != nil {
+		t.Fatalf("assign the role: %v", err)
+	}
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read the admin: %v", err)
+	}
+
+	// The deadline query takes the 300 nearest deadlines. Enough contracts fall
+	// due tomorrow to fill that window on their own; the issues are further out,
+	// so ordering by deadline puts them past it.
+	if _, err := pool.Exec(ctx, `INSERT INTO business_objects(object_type,number,title,status,due_date,end_date,created_by)
+		SELECT 'contract','INBOXSCOPE-CT-'||g,'재고 계약 '||g,'active',current_date+1,current_date+1,$1 FROM generate_series(1,320) g`, adminID); err != nil {
+		t.Fatalf("seed the contracts: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO business_objects(object_type,number,title,status,due_date,created_by)
+		SELECT 'issue','INBOXSCOPE-IS-'||g,'조치 대기 이슈 '||g,'open',current_date+10,$1 FROM generate_series(1,5) g`, adminID); err != nil {
+		t.Fatalf("seed the issues: %v", err)
+	}
+
+	inbox := func(email, password, addr string) []map[string]any {
+		t.Helper()
+		_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+		token := sessionCookieFrom(t, postLogin(t, handler, email, password, addr))
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/me/work-inbox", nil)
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("the inbox returned %d: %s", w.Code, w.Body.String())
+		}
+		var out struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode the inbox: %v", err)
+		}
+		return out.Items
+	}
+
+	items := inbox("inbox-issues@vendra.test", "InboxScope!2026", "198.51.100.7:5000")
+	seeded := 0
+	for _, item := range items {
+		if objectType, _ := item["objectType"].(string); objectType != "" && objectType != "issue" && objectType != "risk" && objectType != "document" {
+			t.Errorf("an issue reader was handed a %s", objectType)
+		}
+		if number, _ := item["number"].(string); strings.HasPrefix(number, "INBOXSCOPE-IS-") {
+			seeded++
+		}
+	}
+	if seeded != 5 {
+		t.Errorf("%d of the reader's 5 issues reached the inbox; the contracts filled the window", seeded)
+	}
+
+	// A reader who may read everything still gets the contracts, so the filter
+	// narrows by permission and not by accident.
+	admin := inbox(testAdminEmail, testAdminPassword, "198.51.100.8:5000")
+	contracts := 0
+	for _, item := range admin {
+		if number, _ := item["number"].(string); strings.HasPrefix(number, "INBOXSCOPE-CT-") {
+			contracts++
+		}
+	}
+	if contracts == 0 {
+		t.Errorf("the admin inbox lost the contracts entirely")
+	}
+}
