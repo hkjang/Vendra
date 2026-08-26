@@ -563,12 +563,17 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		if !a.supplierScopeAllowed(r, stringValue(args, "supplierId")) {
 			return nil, mcpToolError("data scope denied")
 		}
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'riskType',risk_type,'probability',probability,'impact',impact,'score',score,'severity',severity,'status',status,'description',description,'mitigation',mitigation) FROM risks WHERE supplier_id=$1 ORDER BY score DESC`, stringValue(args, "supplierId"))
+		// Bounded like every other tool. A tool result is dropped whole into a
+		// model's context, and this one was the only risk path with nothing
+		// holding it: 502 risks on one supplier serialised to 445 KB, where the
+		// capped tools stay under 40 KB against twenty thousand suppliers. The
+		// order already puts the highest-scoring risks first.
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'riskType',risk_type,'probability',probability,'impact',impact,'score',score,'severity',severity,'status',status,'description',description,'mitigation',mitigation) FROM risks WHERE supplier_id=$1 ORDER BY score DESC LIMIT 100`, stringValue(args, "supplierId"))
 	case "get_supplier_score":
 		if !a.supplierScopeAllowed(r, stringValue(args, "supplierId")) {
 			return nil, mcpToolError("data scope denied")
 		}
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'type',evaluation_type,'status',status,'score',total_score,'grade',grade,'scores',scores,'createdAt',created_at) FROM evaluations WHERE supplier_id=$1 ORDER BY created_at DESC`, stringValue(args, "supplierId"))
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'type',evaluation_type,'status',status,'score',total_score,'grade',grade,'scores',scores,'createdAt',created_at) FROM evaluations WHERE supplier_id=$1 ORDER BY created_at DESC LIMIT 100`, stringValue(args, "supplierId"))
 	case "search_contracts":
 		return a.mcpObjects(r, "contract", args)
 	case "search_purchase_orders":

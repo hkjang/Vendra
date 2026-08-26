@@ -128,3 +128,55 @@ func TestIntNumberStaysInRange(t *testing.T) {
 		})
 	}
 }
+
+// TestMCPToolResultsAreBounded covers the two tool queries that had no LIMIT.
+// A tool result is dropped whole into a model's context, so an unbounded one is
+// not a slow query, it is a call the caller cannot afford: 502 risks on a single
+// supplier serialised to 445 KB, where the capped tools stayed under 40 KB
+// against twenty thousand suppliers.
+func TestMCPToolResultsAreBounded(t *testing.T) {
+	w := newScopeWorld(t)
+	pool := w.pool
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM risks WHERE risk_type='MCPBOUND'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM evaluations WHERE evaluation_type='MCPBOUND'`)
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO risks(supplier_id,risk_type,severity,probability,impact,status,description)
+		SELECT $1,'MCPBOUND','HIGH',(g%10),(g%10),'open','경계 검증 리스크 '||g FROM generate_series(1,150) g`, w.mySupplier); err != nil {
+		t.Fatalf("seed the risks: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO evaluations(supplier_id,evaluation_type,status,total_score,grade,scores)
+		SELECT $1,'MCPBOUND','completed',(g%100),'B','{}'::jsonb FROM generate_series(1,150) g`, w.mySupplier); err != nil {
+		t.Fatalf("seed the evaluations: %v", err)
+	}
+
+	for _, tc := range []struct{ tool, args string }{
+		{"get_supplier_risk", fmt.Sprintf(`{"supplierId":%q}`, w.mySupplier)},
+		{"get_supplier_score", fmt.Sprintf(`{"supplierId":%q}`, w.mySupplier)},
+	} {
+		rows := toolRows(t, callMCPTool(t, w, w.deptToken, tc.tool, tc.args))
+		if len(rows) > 100 {
+			t.Errorf("%s returned %d rows; a tool result has to fit in a context window", tc.tool, len(rows))
+		}
+		if len(rows) == 0 {
+			t.Errorf("%s returned nothing, so the bound is not what is being measured", tc.tool)
+		}
+	}
+
+	// The bound keeps the rows that matter: risks come back worst first, so the
+	// tail that is dropped is the least severe.
+	rows := toolRows(t, callMCPTool(t, w, w.deptToken, "get_supplier_risk", fmt.Sprintf(`{"supplierId":%q}`, w.mySupplier)))
+	previous := 1e9
+	for i, row := range rows {
+		item, _ := row.(map[string]any)
+		score, _ := item["score"].(float64)
+		if score > previous {
+			t.Fatalf("row %d scored %v after %v: the bound is cutting an unordered list", i, score, previous)
+		}
+		previous = score
+	}
+}
