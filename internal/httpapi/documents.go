@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type storageSettings struct {
@@ -41,10 +43,35 @@ func (a *App) storagePath(r *http.Request) (string, error) {
 // while it stayed visible in the list.
 const documentLive = `status IN ('active','approved')`
 
+// parseUpload reads the multipart body, answering a failure for what it
+// actually is.
+//
+// Every parse error used to be reported as "the file is too large", which is
+// the wrong diagnosis for most of them: a body that ended mid-stream, or a
+// part header the parser refused — a NUL in the filename does it — both told
+// the uploader their one-kilobyte file exceeded 25 MB. Only the size limit
+// reports the size limit.
+func parseUpload(w http.ResponseWriter, r *http.Request) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, uploadLimitBytes+(1<<20))
+	if err := r.ParseMultipartForm(uploadLimitBytes); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, 400, "file_too_large", fmt.Sprintf("파일은 %dMB 이하여야 합니다", uploadLimitBytes>>20))
+			return false
+		}
+		writeError(w, 400, "invalid_upload", "업로드 내용을 읽지 못했습니다. 전송이 중단되었거나 파일 이름에 사용할 수 없는 문자가 있을 수 있습니다")
+		return false
+	}
+	return true
+}
+
+// uploadLimitBytes is the largest file the store accepts. The body reader is
+// given a megabyte more so the multipart framing around a file at the limit
+// still fits.
+const uploadLimitBytes = 25 << 20
+
 func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 26<<20)
-	if err := r.ParseMultipartForm(25 << 20); err != nil {
-		writeError(w, 400, "file_too_large", "파일은 25MB 이하여야 합니다")
+	if !parseUpload(w, r) {
 		return
 	}
 	file, header, err := r.FormFile("file")
@@ -107,6 +134,14 @@ func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	if cleanName == "." || cleanName == "" {
 		cleanName = "document"
 	}
+	// The name follows the document into every list, export and audit line, and
+	// the column is text, so a 5,000-character one was accepted and made its
+	// table row taller than the screen. Renaming the file is the fix, and the
+	// uploader is the only one who can do it.
+	if utf8.RuneCountInString(cleanName) > maxIdentifierLen {
+		writeError(w, 400, "validation_error", fmt.Sprintf("파일 이름은 %d자를 넘을 수 없습니다", maxIdentifierLen))
+		return
+	}
 	if err := os.MkdirAll(root, 0750); err != nil {
 		writeError(w, 500, "storage_error", "파일 저장소를 준비하지 못했습니다")
 		return
@@ -125,8 +160,19 @@ func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "storage_error", "파일을 저장하지 못했습니다")
 		return
 	}
+	// An empty file is a failed upload, not a document. Stored, it becomes a
+	// record of a contract or a certificate that anyone opening it finds
+	// nothing in — and the version numbering treats it as the current one.
+	if size == 0 {
+		_ = os.Remove(path)
+		writeError(w, 400, "empty_file", "빈 파일은 등록할 수 없습니다. 파일이 온전한지 확인해 주세요")
+		return
+	}
+	// The browser states this and the server echoes it back on download, so an
+	// implausible one is worth ignoring rather than storing. A media type runs
+	// to a few dozen characters; anything past the identifier limit is not one.
 	contentType := header.Header.Get("Content-Type")
-	if contentType == "" {
+	if contentType == "" || utf8.RuneCountInString(contentType) > maxIdentifierLen {
 		contentType = mime.TypeByExtension(filepath.Ext(cleanName))
 	}
 	// The version is max(version)+1 over the document's own history, which two
@@ -136,6 +182,10 @@ func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	documentType := r.FormValue("documentType")
 	if documentType == "" {
 		documentType = "other"
+	}
+	if utf8.RuneCountInString(documentType) > maxIdentifierLen {
+		writeError(w, 400, "validation_error", fmt.Sprintf("문서 구분은 %d자를 넘을 수 없습니다", maxIdentifierLen))
+		return
 	}
 	// Unit separator, not NUL: PostgreSQL text cannot hold a NUL byte. A key
 	// collision would only make two documents share a lock, which is harmless.
@@ -186,9 +236,7 @@ func (a *App) portalUploadDocument(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "portal_scope", "공급업체 계정이 아닙니다")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 26<<20)
-	if err := r.ParseMultipartForm(25 << 20); err != nil {
-		writeError(w, 400, "file_too_large", "파일은 25MB 이하여야 합니다")
+	if !parseUpload(w, r) {
 		return
 	}
 	a.uploadDocument(w, r)
