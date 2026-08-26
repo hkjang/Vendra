@@ -32,6 +32,10 @@ COPY --from=web --chown=vendra:vendra /src/web/dist /app/web/dist
 RUN mkdir -p /var/lib/vendra/documents && chown -R vendra:vendra /var/lib/vendra
 USER vendra
 EXPOSE 8080
+# "Today" is a business fact, not a server-clock accident: current_date in a
+# query and the deadline checks in Go both follow this. The image ships the
+# zone its users work in; override with `-e TZ=...` elsewhere.
+ENV TZ=Asia/Seoul
 VOLUME ["/var/lib/vendra/documents"]
 HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 CMD wget -q -O - http://127.0.0.1:8080/health/ready >/dev/null || exit 1
 ENTRYPOINT ["/app/vendra"]

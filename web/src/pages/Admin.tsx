@@ -26,7 +26,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api, date, del, patch, post, put, todayISO } from "../api";
+import { api, date, del, logTime, patch, post, put, todayISO } from "../api";
 import {
   Badge,
   Empty,
@@ -2326,13 +2326,3 @@ function ServerLogs() {
   );
 }
 
-function logTime(value: string) {
-  return new Intl.DateTimeFormat("ko-KR", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(new Date(value));
-}

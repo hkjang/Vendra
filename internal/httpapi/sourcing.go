@@ -41,13 +41,28 @@ func (a *App) listSourcingParticipants(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 
+// deadlinePassed reports whether a due date — a calendar date, not an instant
+// — is already behind the business day now under way.
+//
+// The two have to be compared as dates. A `date` column comes back from
+// PostgreSQL as midnight UTC, while midnight where the business is is a
+// different instant, ahead of it or behind it depending on the offset, so
+// comparing them as instants is wrong in one direction or the other. The
+// submission check used to read `due.Before(time.Now().Truncate(24*time.Hour))`,
+// and Truncate rounds to a multiple of the duration since the zero instant —
+// for 24 hours, always midnight UTC. An RFQ closing on the 25th went on taking
+// bids until 09:00 on the 26th in Seoul.
+func deadlinePassed(due string, now time.Time) bool {
+	return due != "" && due < now.Format("2006-01-02")
+}
+
 func (a *App) addSourcingParticipants(w http.ResponseWriter, r *http.Request) {
 	o, err := a.sourcingObject(r, r.PathValue("id"))
 	if err != nil {
 		writeError(w, 404, "not_found", "RFQ/RFP를 찾을 수 없습니다")
 		return
 	}
-	if o.DueDate != nil && *o.DueDate < time.Now().Format("2006-01-02") {
+	if o.DueDate != nil && deadlinePassed(*o.DueDate, time.Now()) {
 		writeError(w, 409, "sourcing_closed", "제출 마감일이 지났습니다")
 		return
 	}
@@ -123,7 +138,7 @@ func (a *App) portalSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "not_invited", "참여 요청을 찾을 수 없습니다")
 		return
 	}
-	if dueDate != nil && dueDate.Before(time.Now().Truncate(24*time.Hour)) {
+	if dueDate != nil && deadlinePassed(dueDate.Format("2006-01-02"), time.Now()) {
 		writeError(w, 409, "submission_closed", "제출 마감일이 지났습니다")
 		return
 	}

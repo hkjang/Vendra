@@ -118,6 +118,27 @@ export function date(value?: string | null) {
   }).format(parsed);
 }
 
+/**
+ * Date, time and seconds, for logs where two rows can share a minute.
+ *
+ * Intl.DateTimeFormat throws RangeError on an unparseable value rather than
+ * returning something harmless, so a single malformed timestamp would take the
+ * whole panel down through the error boundary. Going through parseTimestamp
+ * turns that into an em dash.
+ */
+export function logTime(value?: string | null) {
+  const parsed = parseTimestamp(value);
+  if (!parsed) return "—";
+  return new Intl.DateTimeFormat("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(parsed);
+}
+
 /** Date plus time, for values where the hour distinguishes one row from another. */
 export function dateTime(value?: string | null) {
   const parsed = parseTimestamp(value);
