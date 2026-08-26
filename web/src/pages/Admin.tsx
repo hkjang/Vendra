@@ -225,6 +225,7 @@ function OIDC({
         enabled: d.get("enabled") === "on",
         issuer: d.get("issuer"),
         clientId: d.get("clientId"),
+        publicUrl: d.get("publicUrl"),
         scopes: String(d.get("scopes")).split(" ").filter(Boolean),
         autoCreate: d.get("autoCreate") === "on",
         requireVerifiedEmail: d.get("requireVerifiedEmail") === "on",
@@ -284,6 +285,16 @@ function OIDC({
               name="clientId"
               defaultValue={String(current.clientId || "")}
               placeholder="vendra"
+            />
+          </Field>
+          <Field
+            label="서비스 공개 주소"
+            hint="여기서 redirect_uri를 만듭니다. 공급자에 등록한 주소와 같아야 하며, 비워두면 요청의 호스트를 씁니다."
+          >
+            <input
+              name="publicUrl"
+              defaultValue={String(current.publicUrl || "")}
+              placeholder="https://vendra.example.co.kr"
             />
           </Field>
           <Field
