@@ -15,6 +15,8 @@ import (
 
 type scopeWorld struct {
 	handler http.Handler
+	// pool lets a test seed rows the shared fixture does not carry.
+	pool *pgxpool.Pool
 	// Records belonging to the caller's own department.
 	mySupplier, myContract, myPO, myRFQ, myDocument, myRisk, myEvaluation string
 	// The same set one department over.
@@ -48,7 +50,7 @@ func newScopeWorld(t *testing.T) *scopeWorld {
 	mine := one(`INSERT INTO organizations(name,path) VALUES('구매1팀','/') RETURNING id`)
 	theirs := one(`INSERT INTO organizations(name,path) VALUES('구매2팀','/') RETURNING id`)
 
-	w := &scopeWorld{handler: h}
+	w := &scopeWorld{handler: h, pool: pool}
 	hash, _ := bcrypt.GenerateFromPassword([]byte("ScopeProbe!2026"), bcrypt.MinCost)
 	role := func(code, scope string) string {
 		return one(`INSERT INTO roles(code,name,permissions,data_scope,system)
