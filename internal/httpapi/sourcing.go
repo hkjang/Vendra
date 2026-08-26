@@ -15,7 +15,20 @@ func (a *App) sourcingObject(r *http.Request, id string) (businessObject, error)
 		return o, err
 	}
 	p, _ := principalFrom(r.Context())
-	if p.UserType != "supplier" && !a.canAccessObject(r.Context(), p, o) {
+	// A supplier account has no business on the buyer's side of a tender. Every
+	// route behind this helper is an internal view — the participant list, the
+	// evaluation committee, the sealed comparison — and a supplier's own view
+	// of a tender they were invited to is the portal handlers, which scope by
+	// participation.
+	//
+	// This used to read `p.UserType != "supplier" && !a.canAccessObject(...)`,
+	// which skipped the scope check for exactly the accounts that sit outside
+	// the organisation. It held only because supplier_user carries the "own"
+	// data scope; widening that role in the admin screen, or granting rfq.read
+	// to a supplier account, was enough to hand a bidder the sealed comparison
+	// for a tender it was never invited to — competitors' names, totals and
+	// unit prices. Verified against a live instance before the change.
+	if p.UserType == "supplier" || !a.canAccessObject(r.Context(), p, o) {
 		return o, fmt.Errorf("data scope denied")
 	}
 	return o, nil

@@ -1087,6 +1087,95 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestSourcingRoutesRefuseSupplierAccounts covers the buyer's side of a tender.
+// The scope check on those routes read `p.UserType != "supplier" && !canAccess`,
+// which skipped it entirely for exactly the accounts that sit outside the
+// organisation. It held only because supplier_user carries the "own" data
+// scope; a supplier account holding rfq.read read the sealed comparison for a
+// tender it was never invited to.
+func TestSourcingRoutesRefuseSupplierAccounts(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	var bidder, rival string
+	for _, s := range []struct {
+		number, name string
+		into         *string
+	}{
+		{"SUP-SEAL-BID", "입찰 참여 업체", &bidder},
+		{"SUP-SEAL-RIVAL", "경쟁 업체", &rival},
+	} {
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES($1,$2,$1,'active')
+			ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`, s.number, s.name).Scan(s.into); err != nil {
+			t.Fatalf("seed supplier %s: %v", s.number, err)
+		}
+	}
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,created_by) VALUES('rfq','RFQ-SEAL-1','밀봉 입찰 검증','open',$1) RETURNING id`, adminID).Scan(&rfqID); err != nil {
+		t.Fatalf("seed rfq: %v", err)
+	}
+	const sealedAmount = "98765432"
+	if _, err := pool.Exec(ctx, `INSERT INTO sourcing_responses(sourcing_id,supplier_id,status,total_amount,line_items) VALUES($1,$2,'submitted',$3,'[{"item":"기밀 품목","unitPrice":9999}]')`, rfqID, bidder, sealedAmount); err != nil {
+		t.Fatalf("seed response: %v", err)
+	}
+
+	// The rival is a supplier account that also holds rfq.read — the shape an
+	// administrator produces by widening the portal role in the admin screen.
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('seal_supplier_reader','밀봉검증 공급사','["portal.*","rfq.read"]','company',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions,data_scope='company' RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	const email = "seal-rival@vendra.test"
+	const password = "SealedBidPassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var rivalUser string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,supplier_id) VALUES($1,'경쟁 담당자',$2,'supplier','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,supplier_id=excluded.supplier_id,user_type='supplier',status='active' RETURNING id`, email, hash, rival).Scan(&rivalUser); err != nil {
+		t.Fatalf("seed rival user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, rivalUser, roleID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs, and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_responses WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='seal_supplier_reader'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number IN ('SUP-SEAL-BID','SUP-SEAL-RIVAL')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	rivalSession := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.160:5000"))
+	for _, leg := range []string{"comparison", "participants", "committee", "questions"} {
+		w := doRequest(t, handler, http.MethodGet, "/api/v1/sourcing/"+rfqID+"/"+leg, rivalSession)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s returned %d to a supplier account, want 404: %s", leg, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), sealedAmount) || strings.Contains(w.Body.String(), "기밀 품목") {
+			t.Errorf("%s handed a sealed bid to a supplier account: %s", leg, w.Body.String())
+		}
+	}
+
+	// The buyer still sees it.
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.161:5000"))
+	w := doRequest(t, handler, http.MethodGet, "/api/v1/sourcing/"+rfqID+"/comparison", admin)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), sealedAmount) {
+		t.Errorf("the buyer lost sight of the comparison: %d %s", w.Code, w.Body.String())
+	}
+}
+
 // TestObjectCreationRespectsOrganisationScope covers the write side of data
 // scope: reads were always filtered, but a create took whatever organisation the
 // client named, letting a user file records into one they cannot see.
