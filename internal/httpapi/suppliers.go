@@ -248,7 +248,16 @@ func (a *App) getSupplier(w http.ResponseWriter, r *http.Request) {
 	}
 	var activeContracts, openIssues int
 	var delivery, quality float64
-	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE object_type='contract' AND status IN('active','approved')),count(*) FILTER(WHERE object_type='issue' AND status NOT IN('closed','resolved')),COALESCE(100.0*count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed') AND (due_date IS NULL OR CASE WHEN COALESCE(data->>'deliveredAt','') ~ '^\d{4}-\d{2}-\d{2}' THEN left(data->>'deliveredAt',10)::date ELSE updated_at::date END<=due_date))/NULLIF(count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed')),0),0),COALESCE(avg(score) FILTER(WHERE object_type IN('quality','inspection')),0) FROM business_objects WHERE supplier_id=$1 AND deleted_at IS NULL`, id).Scan(&activeContracts, &openIssues, &delivery, &quality); err != nil {
+	// deliveredAt lives in the free-form data blob, which any client can PATCH.
+	// It used to be read as left(...,10)::date behind a regex loose enough to
+	// admit "2026-13-45" — and that cast errors, so a single bad value made
+	// this whole query fail. One PATCH the API answered with 200 left the
+	// dashboard returning 500 to everyone in scope, permanently. The silent
+	// flag on jsonb_path_query_first turns an unparseable value into NULL
+	// instead, and COALESCE falls back the way a missing value already did.
+	// Casting through timestamptz also means the date is the business day
+	// rather than the UTC one, which is what compliance is measured against.
+	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FILTER(WHERE object_type='contract' AND status IN('active','approved')),count(*) FILTER(WHERE object_type='issue' AND status NOT IN('closed','resolved')),COALESCE(100.0*count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed') AND (due_date IS NULL OR COALESCE((jsonb_path_query_first(jsonb_build_object('d',replace(data->>'deliveredAt','Z','+00:00')),'$.d.datetime()','{}',true) #>> '{}')::timestamptz::date, updated_at::date)<=due_date))/NULLIF(count(*) FILTER(WHERE object_type='delivery' AND status IN('completed','accepted','closed')),0),0),COALESCE(avg(score) FILTER(WHERE object_type IN('quality','inspection')),0) FROM business_objects WHERE supplier_id=$1 AND deleted_at IS NULL`, id).Scan(&activeContracts, &openIssues, &delivery, &quality); err != nil {
 		logDB(err)
 		writeError(w, 500, "database_error", "공급업체 요약을 조회하지 못했습니다")
 		return

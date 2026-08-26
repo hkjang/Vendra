@@ -1087,6 +1087,66 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestMalformedDeliveredAtDoesNotBreakReports covers a denial of service that
+// any client could trigger with one PATCH. deliveredAt lives in the free-form
+// data blob, and the dashboard read it as left(...,10)::date behind a regex
+// loose enough to admit "2026-13-45". That cast errors, so the whole query
+// failed: a single record left the dashboard returning 500 to everyone in
+// scope, permanently, and the API had answered the PATCH that planted it with
+// a 200.
+func TestMalformedDeliveredAtDoesNotBreakReports(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-BADDATE','납품일 검증 업체','SUP-BADDATE','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	// Every one of these passes the old regex; none of them is a date.
+	for i, delivered := range []string{
+		"2026-13-45T10:00:00Z",
+		"2026-02-31T10:00:00Z",
+		"9999-99-99",
+	} {
+		if _, err := pool.Exec(ctx, `INSERT INTO business_objects(object_type,number,title,status,supplier_id,due_date,created_by,data)
+			VALUES('delivery',$1,'납품일 검증','completed',$2,current_date,$3,jsonb_build_object('deliveredAt',$4::text))`,
+			fmt.Sprintf("DLV-BADDATE-%d", i), supplierID, adminID, delivered); err != nil {
+			t.Fatalf("seed delivery %q: %v", delivered, err)
+		}
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number LIKE 'DLV-BADDATE-%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-BADDATE'`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.170:5000"))
+	for _, path := range []string{"/api/v1/dashboard", "/api/v1/suppliers/" + supplierID} {
+		w := doRequest(t, handler, http.MethodGet, path, admin)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s returned %d with an unparseable deliveredAt stored: %s", path, w.Code, w.Body.String())
+		}
+	}
+
+	// A well-formed value still reaches the calculation — the fallback must not swallow
+	// everything.
+	if _, err := pool.Exec(ctx, `UPDATE business_objects SET data=jsonb_build_object('deliveredAt','2026-08-26T08:00:00+09:00') WHERE number='DLV-BADDATE-0'`); err != nil {
+		t.Fatalf("rewrite delivery: %v", err)
+	}
+	w := doRequest(t, handler, http.MethodGet, "/api/v1/dashboard", admin)
+	if w.Code != http.StatusOK {
+		t.Errorf("dashboard returned %d with a well-formed deliveredAt: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestSourcingRoutesRefuseSupplierAccounts covers the buyer's side of a tender.
 // The scope check on those routes read `p.UserType != "supplier" && !canAccess`,
 // which skipped it entirely for exactly the accounts that sit outside the
