@@ -97,9 +97,11 @@ Git tag `vX.Y.Z`를 push하면 GitHub Actions가 다음 규칙을 강제합니�
 로컬에서도 같은 결과를 만들 수 있습니다.
 
 ```bash
-sh scripts/offline-release.sh 0.6.21
-docker load < dist/vendra-v0.6.21.tar.gz
+sh scripts/offline-release.sh 0.7.26
+docker load < dist/vendra-v0.7.26.tar.gz
 ```
+
+아카이브는 `vendra:vX.Y.Z`와 `vendra:latest` 두 태그를 함께 담습니다. `compose.yaml`은 버전을 적지 않고 `vendra:latest`를 쓰므로, 아카이브를 load한 뒤 파일을 고치지 않고 그대로 `docker compose up -d` 하면 됩니다. 특정 버전으로 고정하려면 `VENDRA_IMAGE=vendra:v0.7.20`처럼 지정합니다.
 
 이미지는 UI 정적 파일, timezone/CA 인증서와 Go 서버를 포함합니다. 실행 중 CDN이나 외부 패키지 저장소를 사용하지 않습니다. Keycloak, AI, webhook 등 선택 연동은 관리자 설정에서 비활성 상태가 기본입니다.
 

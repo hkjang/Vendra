@@ -1,6 +1,8 @@
 services:
   vendra:
-    image: vendra:v0.6.21
+    # Whatever the last loaded archive installed. Set VENDRA_IMAGE to pin a
+    # specific one, e.g. VENDRA_IMAGE=vendra:v0.7.26.
+    image: ${VENDRA_IMAGE:-vendra:latest}
     restart: unless-stopped
     ports:
       - "8080:8080"
