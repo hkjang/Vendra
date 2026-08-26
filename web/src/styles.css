@@ -3631,11 +3631,27 @@ kbd {
   .admin-layout > section {
     min-width: 0;
   }
-  /* Administration tables are wider than a phone. Let the card scroll them
-     sideways instead of dragging the whole page along, which pushed the
-     navigation and header off screen. */
-  .admin-card {
+  /* Tables are wider than a phone. Let the card scroll them sideways instead
+     of dragging the whole page along, which pushed the navigation and header
+     off screen. Squeezing them instead broke identifiers across lines —
+     "SUP-0001 · 101-81-00007" became five — and stretched a hundred rows to
+     sixteen thousand pixels. */
+  .admin-card,
+  .data-card {
     overflow-x: auto;
+  }
+  .data-card table {
+    /* Let the columns take the width they need; the card scrolls to reach
+       them. Without this the table is held to the viewport and every cell
+       wraps. */
+    width: max-content;
+    min-width: 100%;
+  }
+  .data-card td small,
+  .data-card td b {
+    /* An identifier is one token. It may sit on its own line, but it must not
+       be cut in the middle of itself. */
+    white-space: nowrap;
   }
   .settings-layout > aside button,
   .admin-layout > aside button {
