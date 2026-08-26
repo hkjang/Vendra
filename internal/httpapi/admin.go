@@ -215,7 +215,8 @@ func (a *App) updateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) listRoles(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(r.Context(), `SELECT id,code,name,permissions,data_scope,system,created_at FROM roles ORDER BY system DESC,name LIMIT $1`, parseLimit(r, 500))
+	limit := parseLimit(r, 500)
+	rows, err := a.db.Query(r.Context(), `SELECT id,code,name,permissions,data_scope,system,created_at FROM roles ORDER BY system DESC,name LIMIT $1`, limit+1)
 	if err != nil {
 		writeError(w, 500, "database_error", "역할을 조회하지 못했습니다")
 		return
@@ -241,7 +242,8 @@ func (a *App) listRoles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "역할을 조회하지 못했습니다")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	items, truncated := truncate(items, limit)
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
 func (a *App) createRole(w http.ResponseWriter, r *http.Request) {
@@ -288,7 +290,8 @@ func (a *App) updateRole(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) listOrganizations(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(r.Context(), `SELECT id,name,parent_id,path,created_at FROM organizations ORDER BY path,name LIMIT $1`, parseLimit(r, 500))
+	limit := parseLimit(r, 500)
+	rows, err := a.db.Query(r.Context(), `SELECT id,name,parent_id,path,created_at FROM organizations ORDER BY path,name LIMIT $1`, limit+1)
 	if err != nil {
 		writeError(w, 500, "database_error", "조직을 조회하지 못했습니다")
 		return
@@ -311,7 +314,8 @@ func (a *App) listOrganizations(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "조직을 조회하지 못했습니다")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	items, truncated := truncate(items, limit)
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
 func (a *App) createOrganization(w http.ResponseWriter, r *http.Request) {
@@ -347,11 +351,12 @@ func (a *App) createOrganization(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) listAccessGrants(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r, 500)
 	userID, ok := uuidParam(w, r, "userId", "사용자 ID")
 	if !ok {
 		return
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT g.id,g.user_id,u.email,g.permission,g.resource_type,g.resource_id,g.conditions,g.valid_from,g.valid_until,g.delegated_by,g.created_at FROM access_grants g JOIN users u ON u.id=g.user_id WHERE ($1='' OR g.user_id=$1::uuid) ORDER BY g.created_at DESC LIMIT $2`, userID, parseLimit(r, 500))
+	rows, err := a.db.Query(r.Context(), `SELECT g.id,g.user_id,u.email,g.permission,g.resource_type,g.resource_id,g.conditions,g.valid_from,g.valid_until,g.delegated_by,g.created_at FROM access_grants g JOIN users u ON u.id=g.user_id WHERE ($1='' OR g.user_id=$1::uuid) ORDER BY g.created_at DESC LIMIT $2`, userID, limit+1)
 	if err != nil {
 		writeError(w, 500, "database_error", "임시 권한을 조회하지 못했습니다")
 		return
@@ -377,7 +382,8 @@ func (a *App) listAccessGrants(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "임시 권한을 조회하지 못했습니다")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	items, truncated := truncate(items, limit)
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
 func (a *App) createAccessGrant(w http.ResponseWriter, r *http.Request) {
@@ -514,6 +520,7 @@ func (a *App) putLifecycle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) listAudit(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r, 200)
 	objectType := r.URL.Query().Get("objectType")
 	p, _ := principalFrom(r.Context())
 	organizationID := ""
@@ -536,7 +543,7 @@ func (a *App) listAudit(w http.ResponseWriter, r *http.Request) {
 	   AND (` + orgInScope("o.organization_id", "$3", "$4") + ` OR ($3='own' AND o.owner_id=$5::uuid)))
 	 OR EXISTS(SELECT 1 FROM suppliers s WHERE s.id::text=a.object_id
 	   AND (` + orgInScope("s.organization_id", "$3", "$4") + ` OR ($3='own' AND s.owner_id=$5::uuid))))`
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',a.id,'occurredAt',a.occurred_at,'actor',a.actor_email,'actorEmail',a.actor_email,'action',a.action,'objectType',a.object_type,'objectId',a.object_id,'previousValue',a.previous_value,'newValue',a.new_value,'ip',a.ip,'sessionId',a.session_id,'requestId',a.request_id) FROM audit_logs a WHERE ($1='' OR a.object_type=$1) AND `+scoped+` ORDER BY a.occurred_at DESC LIMIT $2`, objectType, parseLimit(r, 200), p.DataScope, organizationID, p.ID)
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',a.id,'occurredAt',a.occurred_at,'actor',a.actor_email,'actorEmail',a.actor_email,'action',a.action,'objectType',a.object_type,'objectId',a.object_id,'previousValue',a.previous_value,'newValue',a.new_value,'ip',a.ip,'sessionId',a.session_id,'requestId',a.request_id) FROM audit_logs a WHERE ($1='' OR a.object_type=$1) AND `+scoped+` ORDER BY a.occurred_at DESC LIMIT $2`, objectType, limit+1, p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "감사로그를 조회하지 못했습니다")
 		return
@@ -560,7 +567,8 @@ func (a *App) listAudit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "감사로그를 조회하지 못했습니다")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	items, truncated := truncate(items, limit)
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
 func (a *App) listServerLogs(w http.ResponseWriter, r *http.Request) {

@@ -4476,3 +4476,89 @@ func TestSupplyGraphEdgesStayInsideTheNodesItReturns(t *testing.T) {
 		t.Errorf("the inspector would report %d direct connections where no line can be drawn", count)
 	}
 }
+
+// TestBoundedListsSayTheyAreBounded covers the truncation signal. Every list is
+// capped, and the ones that carried only {"items": …} let a caller believe the
+// cap was the whole record. The audit trail is the sharpest case: the admin page
+// builds its CSV export out of exactly what it was handed, so a trail of 402
+// entries left the building as a 300-row file with nothing marking the cut.
+func TestBoundedListsSayTheyAreBounded(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE request_id LIKE 'BOUNDCHK-%'`)
+	})
+	for i := 0; i < 3; i++ {
+		if _, err := pool.Exec(ctx, `INSERT INTO audit_logs(actor_email,action,object_type,object_id,ip,request_id)
+			VALUES($1,'create','supplier',NULL,'198.51.100.12',$2)`, testAdminEmail, fmt.Sprintf("BOUNDCHK-%d", i)); err != nil {
+			t.Fatalf("seed the trail: %v", err)
+		}
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.12:5000"))
+	get := func(path string) map[string]any {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s returned %d: %s", path, w.Code, w.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+		return out
+	}
+
+	// The trail holds at least three entries, so asking for two must come back
+	// cut — and must say so.
+	cut := get("/api/v1/admin/audit?limit=2")
+	items, _ := cut["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("the trail returned %d entries for limit=2", len(items))
+	}
+	if truncated, _ := cut["truncated"].(bool); !truncated {
+		t.Errorf("the trail was cut at 2 and reported truncated=%v", cut["truncated"])
+	}
+	if limit, _ := cut["limit"].(float64); limit != 2 {
+		t.Errorf("the trail reported limit=%v, want 2", cut["limit"])
+	}
+	// Asking for more than there is must not claim a cut.
+	whole := get("/api/v1/admin/audit?limit=500")
+	if truncated, _ := whole["truncated"].(bool); truncated {
+		t.Errorf("the trail claimed it was cut at 500 while holding %d entries", len(whole["items"].([]any)))
+	}
+
+	// Every bounded list carries the signal, so a caller never has to guess
+	// whether a list is the whole record.
+	for _, path := range []string{
+		"/api/v1/admin/audit",
+		"/api/v1/admin/users",
+		"/api/v1/admin/roles",
+		"/api/v1/admin/organizations",
+		"/api/v1/admin/access-grants",
+		"/api/v1/risks",
+		"/api/v1/evaluations",
+		"/api/v1/workflows",
+		"/api/v1/spend",
+		"/api/v1/me/notifications",
+		"/api/v1/suppliers",
+		"/api/v1/contracts",
+		"/api/v1/documents",
+	} {
+		body := get(path)
+		if _, ok := body["truncated"].(bool); !ok {
+			t.Errorf("%s does not say whether it was cut", path)
+		}
+		if _, ok := body["limit"].(float64); !ok {
+			t.Errorf("%s does not report the bound it applied", path)
+		}
+	}
+}

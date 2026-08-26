@@ -2017,10 +2017,14 @@ function Lifecycle() {
 
 function Audit() {
   const [items, setItems] = useState<Record<string, unknown>[]>();
+  const [truncated, setTruncated] = useState(false);
   useEffect(() => {
-    api<{ items: Record<string, unknown>[] }>(
-      "/api/v1/admin/audit?limit=300",
-    ).then((x) => setItems(x.items));
+    api<{ items: Record<string, unknown>[]; truncated?: boolean }>(
+      "/api/v1/admin/audit?limit=500",
+    ).then((x) => {
+      setItems(x.items);
+      setTruncated(Boolean(x.truncated));
+    });
   }, []);
   if (!items) return <Loading />;
   function exportCSV() {
@@ -2086,6 +2090,13 @@ function Audit() {
           내보내기
         </button>
       </header>
+      {truncated && (
+        <p className="form-error warning list-truncated" role="status">
+          <AlertCircle />
+          최근 {items.length}건만 표시했습니다. 내보내기 파일에도 이 범위까지만
+          담깁니다.
+        </p>
+      )}
       {items.length ? (
         <table>
           <thead>
