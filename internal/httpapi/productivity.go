@@ -109,6 +109,10 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 		rows.Close()
 	}
 
+	// Restrict by object type inside the query, the same way global search does.
+	// Filtering after the LIMIT dropped work the user was allowed to see: three
+	// hundred contracts falling due ahead of them pushed every issue out of the
+	// window, and an issue owner's inbox came back without the issues in it.
 	rows, err := a.db.Query(r.Context(), `SELECT o.id,o.object_type,o.number,o.title,COALESCE(s.name,''),
 	 to_char(CASE WHEN o.object_type='contract' THEN o.end_date ELSE o.due_date END,'YYYY-MM-DD'),
 	 to_char(o.created_at,'YYYY-MM-DD"T"HH24:MI:SSOF')
@@ -116,7 +120,8 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 	 WHERE o.deleted_at IS NULL AND o.status NOT IN('completed','closed','resolved','ended','terminated','rejected')
 	 AND CASE WHEN o.object_type='contract' THEN o.end_date ELSE o.due_date END BETWEEN current_date-365 AND current_date+180
 	 AND (`+orgInScope("o.organization_id", "$1", "$2")+` OR ($1='own' AND o.owner_id=$3::uuid))
-	 ORDER BY CASE WHEN o.object_type='contract' THEN o.end_date ELSE o.due_date END LIMIT 300`, p.DataScope, organizationID, p.ID)
+	 AND o.object_type=ANY($4)
+	 ORDER BY CASE WHEN o.object_type='contract' THEN o.end_date ELSE o.due_date END LIMIT 300`, p.DataScope, organizationID, p.ID, readableObjectTypes(p))
 	if err != nil {
 		writeError(w, 500, "database_error", "기한 업무를 조회하지 못했습니다")
 		return
@@ -127,9 +132,6 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 			logDB(err)
 			writeError(w, 500, "database_error", "기한 업무를 조회하지 못했습니다")
 			return
-		}
-		if !hasPermission(p, objectType+".read") {
-			continue
 		}
 		kind, category, description := "due_task", "task", "처리 기한이 다가오는 업무입니다."
 		if objectType == "contract" {
