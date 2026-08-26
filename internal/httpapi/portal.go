@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -181,12 +182,17 @@ func (a *App) portalEvaluations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 
+// maxInvitationDays bounds how long a registration link stays usable.
+const maxInvitationDays = 30
+
 func (a *App) createInvitation(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
 	var in struct {
-		Email         string `json:"email"`
-		SupplierID    string `json:"supplierId"`
-		ExpiresInDays int    `json:"expiresInDays"`
+		Email      string `json:"email"`
+		SupplierID string `json:"supplierId"`
+		// A pointer so an omitted field takes the default rather than reading
+		// as an explicit zero.
+		ExpiresInDays *int `json:"expiresInDays"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
@@ -196,8 +202,18 @@ func (a *App) createInvitation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "이메일은 필수입니다")
 		return
 	}
-	if in.ExpiresInDays <= 0 {
-		in.ExpiresInDays = 7
+	// The link is a bearer credential: whoever holds it registers a portal
+	// account bound to this supplier. The form offers at most 14 days, and
+	// nothing bounded the API — 100000 wrote an invitation valid until the year
+	// 2300, sitting in an internal mailbox long after the person who was sent it
+	// left.
+	expiresInDays := 7
+	if in.ExpiresInDays != nil {
+		expiresInDays = *in.ExpiresInDays
+		if expiresInDays < 1 || expiresInDays > maxInvitationDays {
+			writeError(w, 400, "validation_error", fmt.Sprintf("초대 유효기간은 1일 이상 %d일 이하여야 합니다", maxInvitationDays))
+			return
+		}
 	}
 	// The invitation binds the future portal account to this supplier, so an
 	// unchecked id grants someone access to a supplier the inviter cannot see.
@@ -211,13 +227,13 @@ func (a *App) createInvitation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id string
-	err = a.db.QueryRow(r.Context(), `INSERT INTO invitations(email,supplier_id,token_hash,expires_at,invited_by) VALUES(lower($1),NULLIF($2,'')::uuid,$3,now()+make_interval(days=>$4),$5) RETURNING id`, in.Email, in.SupplierID, security.TokenHash(token), in.ExpiresInDays, p.ID).Scan(&id)
+	err = a.db.QueryRow(r.Context(), `INSERT INTO invitations(email,supplier_id,token_hash,expires_at,invited_by) VALUES(lower($1),NULLIF($2,'')::uuid,$3,now()+make_interval(days=>$4),$5) RETURNING id`, in.Email, in.SupplierID, security.TokenHash(token), expiresInDays, p.ID).Scan(&id)
 	if err != nil {
 		writeError(w, 400, "save_failed", "초대를 저장하지 못했습니다")
 		return
 	}
 	a.audit.record(r, "create", "invitation", id, nil, map[string]any{"email": in.Email, "supplierId": in.SupplierID})
-	writeJSON(w, 201, map[string]any{"id": id, "invitationUrl": "/register?token=" + token, "expiresAt": time.Now().Add(time.Duration(in.ExpiresInDays) * 24 * time.Hour), "notice": "오프라인 환경에서는 이 링크를 사내 메일 또는 메신저로 전달하세요"})
+	writeJSON(w, 201, map[string]any{"id": id, "invitationUrl": "/register?token=" + token, "expiresAt": time.Now().Add(time.Duration(expiresInDays) * 24 * time.Hour), "notice": "오프라인 환경에서는 이 링크를 사내 메일 또는 메신저로 전달하세요"})
 }
 
 func (a *App) registerSupplierUser(w http.ResponseWriter, r *http.Request) {

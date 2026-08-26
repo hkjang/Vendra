@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hkjang/Vendra/internal/security"
 )
@@ -473,6 +474,24 @@ func (a *App) putLifecycle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	typ := r.PathValue("entityType")
+	// The editor saves the whole set at once. Skipping an unusable row while
+	// committing the rest reported success for a save that only partly happened:
+	// clearing a state's display name left it with its old one, and nothing said
+	// so. Check every row before opening the transaction.
+	for _, item := range in.Items {
+		if strings.TrimSpace(item.Code) == "" {
+			writeError(w, 400, "validation_error", "상태 코드는 필수입니다")
+			return
+		}
+		if strings.TrimSpace(item.Name) == "" {
+			writeError(w, 400, "validation_error", "상태 표시명은 필수입니다: "+item.Code)
+			return
+		}
+		if utf8.RuneCountInString(item.Code) > maxIdentifierLen || utf8.RuneCountInString(item.Name) > maxIdentifierLen {
+			writeError(w, 400, "validation_error", "상태 코드와 표시명이 너무 깁니다")
+			return
+		}
+	}
 	tx, err := a.db.Begin(r.Context())
 	if err != nil {
 		writeError(w, 500, "database_error", "저장하지 못했습니다")
@@ -480,9 +499,6 @@ func (a *App) putLifecycle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	for _, item := range in.Items {
-		if item.Code == "" || item.Name == "" {
-			continue
-		}
 		_, err = tx.Exec(r.Context(), `INSERT INTO lifecycle_states(entity_type,code,name,color,sort_order,terminal,enabled) VALUES($1,$2,$3,COALESCE(NULLIF($4,''),'#64748b'),$5,$6,$7) ON CONFLICT(entity_type,code) DO UPDATE SET name=excluded.name,color=excluded.color,sort_order=excluded.sort_order,terminal=excluded.terminal,enabled=excluded.enabled`, typ, item.Code, item.Name, item.Color, item.SortOrder, item.Terminal, item.Enabled)
 		if err != nil {
 			writeError(w, 400, "save_failed", "상태를 저장하지 못했습니다")

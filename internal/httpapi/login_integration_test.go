@@ -4204,3 +4204,170 @@ func TestWorkInboxDoesNotLoseWorkToTypesTheReaderCannotRead(t *testing.T) {
 		t.Errorf("the admin inbox lost the contracts entirely")
 	}
 }
+
+// TestInvitationExpiryStaysWithinTheWindowTheFormOffers covers the registration
+// link. It is a bearer credential — whoever holds it opens a portal account
+// bound to that supplier — and the form offers at most 14 days, but the handler
+// took the number as given.
+func TestInvitationExpiryStaysWithinTheWindowTheFormOffers(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM invitations WHERE email LIKE 'invite-window-%@vendra.test'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-INVWINDOW'`)
+	})
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-INVWINDOW','초대 기간 검증','SUP-INVWINDOW','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed the supplier: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.9:5000"))
+	invite := func(label string, body map[string]any) int {
+		t.Helper()
+		body["email"] = "invite-window-" + label + "@vendra.test"
+		body["supplierId"] = supplierID
+		raw, _ := json.Marshal(body)
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/invitations", strings.NewReader(string(raw)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w.Code
+	}
+
+	for _, tc := range []struct {
+		name string
+		days any
+	}{
+		{"a link that outlives everyone", 100000},
+		{"one day past the bound", maxInvitationDays + 1},
+		{"a link that is already expired", -5},
+		{"an explicit zero", 0},
+	} {
+		if code := invite(tc.name, map[string]any{"expiresInDays": tc.days}); code != http.StatusBadRequest {
+			t.Errorf("%s returned %d, want 400", tc.name, code)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		days any
+	}{
+		{"the shortest link", 1},
+		{"the form's own maximum", 14},
+		{"the bound itself", maxInvitationDays},
+	} {
+		if code := invite(tc.name, map[string]any{"expiresInDays": tc.days}); code != http.StatusCreated {
+			t.Errorf("%s returned %d, want 201", tc.name, code)
+		}
+	}
+	// An omitted field is not an explicit zero: it still takes the default.
+	if code := invite("default", map[string]any{}); code != http.StatusCreated {
+		t.Errorf("omitting the period returned %d, want 201", code)
+	}
+
+	var outlived int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM invitations WHERE email LIKE 'invite-window-%@vendra.test'
+		AND (expires_at <= now() OR expires_at > now()+make_interval(days=>$1))`, maxInvitationDays).Scan(&outlived); err != nil {
+		t.Fatalf("count the invitations: %v", err)
+	}
+	if outlived != 0 {
+		t.Errorf("%d invitations were written outside the window", outlived)
+	}
+}
+
+// TestLifecycleSaveIsAllOrNothing covers the state editor, which saves the whole
+// set in one PUT. An unusable row used to be skipped while the rest committed,
+// and the response still said ok — so clearing a display name looked like it
+// saved and quietly did not.
+func TestLifecycleSaveIsAllOrNothing(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM lifecycle_states WHERE entity_type='lifecyclecheck'`)
+	})
+	for _, seed := range []struct {
+		code, name, color string
+		order             int
+	}{{"first", "첫 단계", "#111111", 0}, {"second", "둘째 단계", "#222222", 1}} {
+		if _, err := pool.Exec(ctx, `INSERT INTO lifecycle_states(entity_type,code,name,color,sort_order,terminal,enabled) VALUES('lifecyclecheck',$1,$2,$3,$4,false,true)
+			ON CONFLICT(entity_type,code) DO UPDATE SET name=excluded.name,color=excluded.color`, seed.code, seed.name, seed.color, seed.order); err != nil {
+			t.Fatalf("seed %s: %v", seed.code, err)
+		}
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.10:5000"))
+	save := func(items []map[string]any) int {
+		t.Helper()
+		raw, _ := json.Marshal(map[string]any{"items": items})
+		r := httptest.NewRequest(http.MethodPut, "/api/v1/admin/lifecycle/lifecyclecheck", strings.NewReader(string(raw)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w.Code
+	}
+	state := func(code string) (string, string) {
+		t.Helper()
+		var name, color string
+		if err := pool.QueryRow(ctx, `SELECT name,color FROM lifecycle_states WHERE entity_type='lifecyclecheck' AND code=$1`, code).Scan(&name, &color); err != nil {
+			t.Fatalf("read %s: %v", code, err)
+		}
+		return name, color
+	}
+
+	// One row is unusable and another carries a real edit. The save must take
+	// neither: reporting success for half of it is what made this invisible.
+	for _, tc := range []struct {
+		name  string
+		items []map[string]any
+	}{
+		{"a cleared display name", []map[string]any{
+			{"code": "first", "name": "", "color": "#111111", "sortOrder": 0},
+			{"code": "second", "name": "둘째 단계", "color": "#ff0000", "sortOrder": 1},
+		}},
+		{"a display name that is only spaces", []map[string]any{
+			{"code": "first", "name": "   ", "color": "#111111", "sortOrder": 0},
+			{"code": "second", "name": "둘째 단계", "color": "#ff0000", "sortOrder": 1},
+		}},
+		{"a missing code", []map[string]any{
+			{"code": "", "name": "이름만 있는 상태", "color": "#111111", "sortOrder": 0},
+			{"code": "second", "name": "둘째 단계", "color": "#ff0000", "sortOrder": 1},
+		}},
+		{"a display name that is not a label", []map[string]any{
+			{"code": "first", "name": strings.Repeat("x", maxIdentifierLen+1), "color": "#111111", "sortOrder": 0},
+			{"code": "second", "name": "둘째 단계", "color": "#ff0000", "sortOrder": 1},
+		}},
+	} {
+		if code := save(tc.items); code != http.StatusBadRequest {
+			t.Errorf("%s returned %d, want 400", tc.name, code)
+		}
+		if name, _ := state("first"); name != "첫 단계" {
+			t.Errorf("%s changed the first state's name to %q", tc.name, name)
+		}
+		if _, color := state("second"); color != "#222222" {
+			t.Errorf("%s committed the other row's colour anyway (%s)", tc.name, color)
+		}
+	}
+
+	// A save with nothing wrong in it still applies in full.
+	if code := save([]map[string]any{
+		{"code": "first", "name": "첫 단계", "color": "#111111", "sortOrder": 0},
+		{"code": "second", "name": "둘째 단계", "color": "#00ff00", "sortOrder": 1},
+	}); code != http.StatusOK {
+		t.Fatalf("an ordinary save returned %d, want 200", code)
+	}
+	if _, color := state("second"); color != "#00ff00" {
+		t.Errorf("the ordinary save left the colour at %s", color)
+	}
+}
