@@ -46,7 +46,7 @@ import {
   X,
 } from "lucide-react";
 import { api, APIError, can, post, Principal, Version } from "./api";
-import { Loading, Logo, PageErrorBoundary } from "./components";
+import { BootSplash, Loading, Logo, PageErrorBoundary } from "./components";
 import { ToastProvider } from "./feedback";
 import { useNotify } from "./toast-context";
 import NotificationCenter from "./NotificationCenter";
@@ -97,7 +97,13 @@ function AppRoutes() {
   // the login form during a database restart signs everyone out and invites them
   // to retype a password that was never the problem.
   const applyFailure = useCallback((reason: unknown) => {
-    setUnavailable(reason instanceof APIError && reason.status >= 500);
+    // Only a refusal means the session is gone. A server error, or no answer at
+    // all because the request never arrived, means the question went
+    // unanswered — and showing the sign-in form there tells someone they were
+    // logged out when they were not. This used to require an APIError with a
+    // 5xx, so a dropped connection fell through to the sign-in form.
+    const refused = reason instanceof APIError && reason.status === 401;
+    setUnavailable(!refused);
     setSession(null);
   }, []);
   const load = useCallback(async () => {
@@ -126,13 +132,7 @@ function AppRoutes() {
       active = false;
     };
   }, [applyFailure]);
-  if (loading)
-    return (
-      <div className="boot">
-        <Logo />
-        <div className="boot-line" />
-      </div>
-    );
+  if (loading) return <BootSplash />;
   if (location.pathname === "/register") return <SupplierRegistration />;
   if (unavailable) return <ServiceUnavailable onRetry={load} />;
   if (!session) return <Login onLogin={load} />;
@@ -177,12 +177,7 @@ function ServiceUnavailable({ onRetry }: { onRetry: () => void }) {
 }
 
 function PageFallback() {
-  return (
-    <div className="boot">
-      <Logo />
-      <div className="boot-line" />
-    </div>
-  );
+  return <BootSplash />;
 }
 
 function SupplierRegistration() {
