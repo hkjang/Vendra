@@ -76,3 +76,30 @@ func TestAdminGuidePublishesTheRealCallbackPath(t *testing.T) {
 		t.Errorf("%s answers 401, so it is behind the session middleware and cannot be a callback", path)
 	}
 }
+
+// TestCIRunsEveryDocumentedTestDatabase keeps the integration harnesses from
+// going quiet.
+//
+// A harness that needs a DSN skips without one, and a skip is indistinguishable
+// from a pass in a green build. The README names three VENDRA_TEST_* databases
+// and describes what each verifies; CI set one, so the migration-concurrency
+// and populated-upgrade harnesses — the two that cover the riskiest things this
+// product does — never ran once.
+func TestCIRunsEveryDocumentedTestDatabase(t *testing.T) {
+	documented := regexp.MustCompile(`VENDRA_TEST_[A-Z_]+`)
+	readme := repoFile(t, "README.md")
+	workflow := repoFile(t, ".github/workflows/ci.yml")
+
+	named := map[string]bool{}
+	for _, name := range documented.FindAllString(readme, -1) {
+		named[name] = true
+	}
+	if len(named) < 2 {
+		t.Fatalf("the README names %d test databases, so this comparison proves nothing", len(named))
+	}
+	for name := range named {
+		if !strings.Contains(workflow, name+":") {
+			t.Errorf("the README says %s verifies part of the product, but CI never sets it, so that harness silently skips", name)
+		}
+	}
+}

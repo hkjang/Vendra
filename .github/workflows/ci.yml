@@ -37,12 +37,21 @@ jobs:
             exit 1
           fi
       - run: go vet ./internal/... ./cmd/...
-      - name: Prepare the test database
+      - name: Prepare the test databases
         run: |
+          # Three, because the migration and upgrade harnesses each need an
+          # empty database of their own: one starts six replicas racing to
+          # migrate, the other builds an older schema with data in it and
+          # brings it forward. Both skip silently when their DSN is unset,
+          # which is how they went unrun here for their whole life.
           PGPASSWORD=ci psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE vendra_ci'
+          PGPASSWORD=ci psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE vendra_ci_migrate'
+          PGPASSWORD=ci psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE vendra_ci_upgrade'
       - name: go test
         env:
           VENDRA_TEST_DSN: postgres://postgres:ci@127.0.0.1:5432/vendra_ci?sslmode=disable
+          VENDRA_TEST_MIGRATE_DSN: postgres://postgres:ci@127.0.0.1:5432/vendra_ci_migrate?sslmode=disable
+          VENDRA_TEST_UPGRADE_DSN: postgres://postgres:ci@127.0.0.1:5432/vendra_ci_upgrade?sslmode=disable
         run: go test ./internal/... -count=1
 
   web:
