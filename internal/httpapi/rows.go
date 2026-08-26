@@ -86,6 +86,36 @@ func topicParticle(word string) string {
 	return "은"
 }
 
+// jsonDate reads a date out of a JSON field that clients can write.
+//
+// Casting such a value directly is a defect waiting to happen. "2026-13-45"
+// satisfies any reasonable regex and then fails the cast, and the failure
+// takes the whole statement with it — one stored value left the dashboard
+// answering 500 to everyone in scope, permanently, and another stopped a
+// notification pass from generating anything. PostgreSQL 16 has no cast that
+// can decline to fail, but the silent flag on jsonb_path_query_first answers
+// NULL instead, which the caller can COALESCE or simply let fall out of a
+// comparison.
+//
+// A Z suffix is rewritten to +00:00 first: jsonpath's datetime() follows ISO
+// 8601 strictly and will not take the military form. Going through timestamptz
+// means the answer is the date where the business is, which is what these
+// comparisons are measured against.
+func jsonDate(column, key string) string {
+	return "(jsonb_path_query_first(jsonb_build_object('d',replace(" + column + "->>'" + key + "','Z','+00:00'))," +
+		"'$.d.datetime()','{}',true) #>> '{}')::timestamptz::date"
+}
+
+// jsonBool reads a boolean out of a JSON field, defaulting to true for
+// anything it cannot read. Same hazard as jsonDate: ('maybe')::boolean errors.
+// Every spelling PostgreSQL accepts as false is listed, so nothing that used
+// to read as false now reads as true.
+func jsonBool(column, key string) string {
+	return "(CASE WHEN " + column + "->'" + key + "' = 'false'::jsonb" +
+		" OR lower(trim(" + column + "->>'" + key + "')) IN ('false','f','no','n','off','0')" +
+		" THEN false ELSE true END)"
+}
+
 // uuidParam reads an optional record-id filter. A malformed id is the caller's
 // mistake in the same way a malformed date is: without this it reaches
 // `$1::uuid` and PostgreSQL rejects it, which the handler could only pass on

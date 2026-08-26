@@ -118,7 +118,7 @@ func (a *App) scheduleNotifications(ctx context.Context) error {
 	}
 	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
 	 SELECT s.owner_id,s.id,'evaluation_due','공급업체 평가 예정',s.name||' 공급업체 평가기간이 시작됩니다.','info','supplier',s.id
-	 FROM suppliers s WHERE s.deleted_at IS NULL AND s.owner_id IS NOT NULL AND CASE WHEN COALESCE(s.metadata->>'nextEvaluationDate','') ~ '^\d{4}-\d{2}-\d{2}$' THEN (s.metadata->>'nextEvaluationDate')::date END BETWEEN current_date AND current_date+30
+	 FROM suppliers s WHERE s.deleted_at IS NULL AND s.owner_id IS NOT NULL AND `+jsonDate("s.metadata", "nextEvaluationDate")+` BETWEEN current_date AND current_date+30
 	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
 	if err != nil {
 		return err

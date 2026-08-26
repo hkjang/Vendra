@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -1084,6 +1085,88 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	after := doRequest(t, handler, http.MethodGet, "/api/v1/sourcing/"+rfqID+"/comparison", admin)
 	if !strings.Contains(after.Body.String(), "77777777") {
 		t.Errorf("a submitted bid is still hidden: %s", after.Body.String())
+	}
+}
+
+// TestJSONFieldsSurviveGarbage covers the class the dashboard 500 belonged to:
+// a cast on a JSON value a client can write. "2026-13-45" satisfies any
+// reasonable regex and then fails the cast, and the failure takes the whole
+// statement with it.
+func TestJSONFieldsSurviveGarbage(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+
+	var ownerID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&ownerID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	seed := func(number, name, evaluation string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status,owner_id,metadata)
+			VALUES($1,$2,$1,'active',$3,jsonb_build_object('nextEvaluationDate',$4::text))
+			ON CONFLICT(supplier_number) DO UPDATE SET metadata=excluded.metadata,owner_id=excluded.owner_id RETURNING id`,
+			number, name, ownerID, evaluation).Scan(&id); err != nil {
+			t.Fatalf("seed supplier %s: %v", number, err)
+		}
+		return id
+	}
+	rotten := seed("SUP-EVAL-BAD", "평가일 오염 업체", "2026-13-45")
+	_ = seed("SUP-EVAL-WORSE", "평가일 쓰레기 업체", "완전 쓰레기")
+	soon := time.Now().AddDate(0, 0, 7).Format("2006-01-02")
+	healthy := seed("SUP-EVAL-OK", "평가일 정상 업체", soon)
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM notifications WHERE supplier_id IN ($1,$2)`, rotten, healthy)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number LIKE 'SUP-EVAL-%'`)
+	})
+
+	// One unreadable date used to end the pass here, so this notification kind
+	// produced nothing at all — quietly, for every supplier.
+	if err := app.scheduleNotifications(ctx); err != nil {
+		t.Fatalf("notification pass failed with an unreadable evaluation date stored: %v", err)
+	}
+	var due int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE kind='evaluation_due' AND supplier_id=$1`, healthy).Scan(&due); err != nil {
+		t.Fatalf("count notifications: %v", err)
+	}
+	if due == 0 {
+		t.Error("the supplier with a readable evaluation date got no notification")
+	}
+	var spurious int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE kind='evaluation_due' AND supplier_id=$1`, rotten).Scan(&spurious); err != nil {
+		t.Fatalf("count notifications: %v", err)
+	}
+	if spurious != 0 {
+		t.Error("an unreadable evaluation date produced a notification anyway")
+	}
+
+	// The boolean setting has the same hazard, and its safe default is "yes,
+	// require approval" — so an unreadable value must not read as false.
+	for _, tc := range []struct {
+		stored string
+		want   bool
+	}{
+		{`{"bankChangeApproval":true}`, true},
+		{`{"bankChangeApproval":false}`, false},
+		{`{"bankChangeApproval":"no"}`, false},
+		{`{"bankChangeApproval":"off"}`, false},
+		{`{"bankChangeApproval":"maybe"}`, true},
+		{`{}`, true},
+	} {
+		if _, err := pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES('supplier.registration',$1::jsonb)
+			ON CONFLICT(key) DO UPDATE SET value=excluded.value`, tc.stored); err != nil {
+			t.Fatalf("write setting %s: %v", tc.stored, err)
+		}
+		got, err := app.boolSetting(ctx, `SELECT `+jsonBool("value", "bankChangeApproval")+` FROM settings WHERE key='supplier.registration'`, true)
+		if err != nil {
+			t.Errorf("reading %s failed: %v", tc.stored, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s read as %v, want %v", tc.stored, got, tc.want)
+		}
 	}
 }
 
