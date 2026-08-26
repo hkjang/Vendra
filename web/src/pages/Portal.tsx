@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { api, date, money, patch, post, Principal, put, Version } from "../api";
+import { evaluationPeriod, type PortalEvaluation } from "./portal-format";
 import {
   Badge,
   Empty,
@@ -45,15 +46,6 @@ type SourcingItem = BusinessObject & {
     commercialTerms?: Record<string, unknown>;
     technicalResponse?: Record<string, unknown>;
   };
-};
-type PortalEvaluation = {
-  id: string;
-  evaluationType: string;
-  templateName?: string;
-  totalScore?: number;
-  grade?: string;
-  comments?: string;
-  completedAt: string;
 };
 
 const portalSections = new Set([
@@ -949,6 +941,7 @@ type PortalContact = {
   emailVerified: boolean;
 };
 
+
 function PortalEvaluations({ items }: { items: PortalEvaluation[] }) {
   return (
     <div className="portal-page">
@@ -974,7 +967,10 @@ function PortalEvaluations({ items }: { items: PortalEvaluation[] }) {
               <small> / 100</small>
             </strong>
             <p>{item.comments || "등록된 평가 의견이 없습니다."}</p>
-            <footer>{date(item.completedAt)}</footer>
+            <footer>
+              <b>{evaluationPeriod(item) || "평가 기간 미지정"}</b>
+              <small>{date(item.completedAt)} 확정</small>
+            </footer>
           </article>
         ))}
       </div>

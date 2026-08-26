@@ -335,6 +335,21 @@
   font-size: 12px;
   color: var(--muted);
 }
+/* The period the score covers leads; when it was confirmed is a footnote.
+   Two evaluations of different quarters, scored the same, used to render as
+   two identical cards — the footer showed the row's updated_at. */
+.portal-evaluation-grid footer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+.portal-evaluation-grid footer b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
 .portal-evaluation-grid article > strong {
   display: block;
   font-size: 28px;
