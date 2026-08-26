@@ -79,7 +79,10 @@ func (a *App) listObjects(objectType string) http.HandlerFunc {
 		p, _ := principalFrom(r.Context())
 		q := strings.TrimSpace(r.URL.Query().Get("q"))
 		status := strings.TrimSpace(r.URL.Query().Get("status"))
-		supplierID := strings.TrimSpace(r.URL.Query().Get("supplierId"))
+		supplierID, ok := uuidParam(w, r, "supplierId", "공급업체 ID")
+		if !ok {
+			return
+		}
 		order := strings.TrimSpace(r.URL.Query().Get("order"))
 		limit := parseLimit(r, 100)
 		organizationID := ""

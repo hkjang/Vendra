@@ -346,7 +346,10 @@ func (a *App) createOrganization(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) listAccessGrants(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("userId")
+	userID, ok := uuidParam(w, r, "userId", "사용자 ID")
+	if !ok {
+		return
+	}
 	rows, err := a.db.Query(r.Context(), `SELECT g.id,g.user_id,u.email,g.permission,g.resource_type,g.resource_id,g.conditions,g.valid_from,g.valid_until,g.delegated_by,g.created_at FROM access_grants g JOIN users u ON u.id=g.user_id WHERE ($1='' OR g.user_id=$1::uuid) ORDER BY g.created_at DESC LIMIT $2`, userID, parseLimit(r, 500))
 	if err != nil {
 		writeError(w, 500, "database_error", "임시 권한을 조회하지 못했습니다")
