@@ -1088,6 +1088,85 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestPortalWorkDoesNotCarryTheBuyersSide covers the second place the detail
+// blob went out whole. portalWork scans business objects with the same select
+// the internal handlers use and returned them unchanged, so a supplier read
+// the buyer's budget on their own purchase order, and whatever else had been
+// typed into the record.
+func TestPortalWorkDoesNotCarryTheBuyersSide(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-WORKSIDE','업무 블롭 검증','SUP-WORKSIDE','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	const poDetail = `{"item":"하우징","quantity":5000,"unit":"EA","unitPrice":24000,
+		"budget":150000000,"internalNote":"차기 협상에서 8% 추가 인하 목표"}`
+	const issueDetail = `{"description":"치수 편차 개선 요청",
+		"rootCause":"내부 판단: 공급사 공정능력 부족, 2순위 업체 전환 검토중",
+		"capa":"3개월 내 미개선시 물량 이관"}`
+	for _, seed := range []struct{ kind, number, detail string }{
+		{"purchase_order", "PO-WORKSIDE", poDetail},
+		{"issue", "ISSUE-WORKSIDE", issueDetail},
+	} {
+		if _, err := pool.Exec(ctx, `INSERT INTO business_objects(object_type,number,title,status,supplier_id,amount,created_by,data)
+			VALUES($1,$2,'블롭 검증','open',$3,120000000,$4,$5::jsonb)`, seed.kind, seed.number, supplierID, adminID, seed.detail); err != nil {
+			t.Fatalf("seed %s: %v", seed.kind, err)
+		}
+	}
+	const email = "workside@vendra.test"
+	const password = "WorkSidePassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,supplier_id) VALUES($1,'포털 담당자',$2,'supplier','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,supplier_id=excluded.supplier_id,user_type='supplier',status='active' RETURNING id`, email, hash, supplierID).Scan(&userID); err != nil {
+		t.Fatalf("seed portal user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user' ON CONFLICT DO NOTHING`, userID); err != nil {
+		t.Fatalf("assign the portal role: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number IN ('PO-WORKSIDE','ISSUE-WORKSIDE')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-WORKSIDE'`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	session := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.230:5000"))
+	w := doRequest(t, handler, http.MethodGet, "/api/v1/portal/work", session)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the portal work list returned %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	// The raw body, not a decoded field: none of this should reach the
+	// supplier by any route through the response.
+	for _, secret := range []string{"budget", "150000000", "internalNote", "8% 추가 인하", "rootCause", "2순위 업체", "capa", "물량 이관"} {
+		if strings.Contains(body, secret) {
+			t.Errorf("the supplier was handed %q: %s", secret, body)
+		}
+	}
+	// Their own side of the record is still there, including the price they
+	// were awarded — hiding that would make the list useless.
+	for _, needed := range []string{"하우징", "24000", "120000000", "치수 편차 개선 요청"} {
+		if !strings.Contains(body, needed) {
+			t.Errorf("the supplier was not shown %q, which is their own: %s", needed, body)
+		}
+	}
+}
+
 // TestBidderIsNotShownTheBuyersPosition covers a leak in the sealed part of a
 // tender. The portal handed an invited supplier the tender's detail blob
 // whole, and the buyer's own form writes budget and unitPrice into that blob —

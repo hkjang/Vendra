@@ -146,6 +146,9 @@ func (a *App) portalWork(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		o, e := scanObject(rows)
 		if e == nil {
+			// The detail blob carries the buyer's side too. Only the shared
+			// part of it belongs to the supplier reading this list.
+			o.Data = supplierVisibleData(o.Data)
 			items = append(items, o)
 		}
 	}
