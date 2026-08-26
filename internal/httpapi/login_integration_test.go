@@ -1089,6 +1089,109 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestRiskRefusesRatingsThatAreNotOnTheScale covers the numbers behind a risk
+// score. score is a generated column, probability * impact, and every risk
+// list and the MCP tool order by it.
+//
+// The form rates both 0..10 and the API rated neither, so a risk entered as
+// -5 by -8 scored 40 — the same as a genuine 5 by 8 — and sorted to the top of
+// the list beside it. Only 1000 was refused, by numeric(5,2) overflowing, and
+// then as "리스크를 저장하지 못했습니다".
+func TestRiskRefusesRatingsThatAreNotOnTheScale(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	_ = app
+
+	t.Cleanup(func() {
+		// Registered first so a failure part way through still tidies up.
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM risks WHERE supplier_id IN (SELECT id FROM suppliers WHERE supplier_number='SUP-RISKSCALE')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-RISKSCALE'`)
+	})
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-RISKSCALE','리스크 척도 검증','SUP-RISKSCALE','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.4:5000"))
+	raise := func(body map[string]any) int {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/suppliers/"+supplierID+"/risks", strings.NewReader(string(raw)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w.Code
+	}
+	risk := func(kind, severity string, probability, impact any) map[string]any {
+		body := map[string]any{"riskType": kind, "severity": severity}
+		if probability != nil {
+			body["probability"] = probability
+		}
+		if impact != nil {
+			body["impact"] = impact
+		}
+		return body
+	}
+
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"a negative rating", risk("negative", "HIGH", -5, -8)},
+		{"a rating past the top of the scale", risk("over", "HIGH", 11, 5)},
+		{"an impact past the top of the scale", risk("over-impact", "HIGH", 5, 11)},
+		{"a grade that is not one of the four", risk("grade", "아무 값", 1, 1)},
+		{"a grade in the wrong case", risk("case", "high", 1, 1)},
+		{"a risk type that is not a label", risk(strings.Repeat("x", maxIdentifierLen+1), "HIGH", 1, 1)},
+	} {
+		if code := raise(tc.body); code != http.StatusBadRequest {
+			t.Errorf("%s returned %d, want 400", tc.name, code)
+		}
+	}
+
+	// The ends of the scale are real ratings, and an unrated risk is allowed —
+	// the columns default to zero.
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"the bottom of the scale", risk("zero", "LOW", 0, 0)},
+		{"the top of the scale", risk("max", "CRITICAL", 10, 10)},
+		{"an ordinary rating", risk("ordinary", "HIGH", 5, 8)},
+		{"no rating given", risk("unrated", "MEDIUM", nil, nil)},
+	} {
+		if code := raise(tc.body); code != http.StatusCreated {
+			t.Errorf("%s returned %d, want 201", tc.name, code)
+		}
+	}
+
+	// Nothing off the scale reached the table, so nothing can sort as if it
+	// were a real rating.
+	var offScale int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM risks WHERE supplier_id=$1
+		AND (probability < 0 OR probability > 10 OR impact < 0 OR impact > 10
+		     OR severity NOT IN ('LOW','MEDIUM','HIGH','CRITICAL'))`, supplierID).Scan(&offScale); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if offScale != 0 {
+		t.Errorf("%d risks off the scale were written anyway", offScale)
+	}
+	// And the genuine one still scores what it should.
+	var score float64
+	if err := pool.QueryRow(ctx, `SELECT score FROM risks WHERE supplier_id=$1 AND risk_type='ordinary'`, supplierID).Scan(&score); err != nil {
+		t.Fatalf("read the score: %v", err)
+	}
+	if score != 40 {
+		t.Errorf("a 5 by 8 risk scored %v, want 40", score)
+	}
+}
+
 // TestSupplierRelationshipRefusesWhatIsNotOne covers the write side of the
 // supply graph. Both ends are already checked for scope; the shape of the
 // edge was not.
