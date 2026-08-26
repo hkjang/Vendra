@@ -22,6 +22,7 @@ import (
 
 	"github.com/hkjang/Vendra/internal/config"
 	"github.com/hkjang/Vendra/internal/db"
+	"github.com/hkjang/Vendra/internal/security"
 )
 
 // newTestApp brings up the real application against the PostgreSQL instance in
@@ -4560,5 +4561,89 @@ func TestBoundedListsSayTheyAreBounded(t *testing.T) {
 		if _, ok := body["limit"].(float64); !ok {
 			t.Errorf("%s does not report the bound it applied", path)
 		}
+	}
+}
+
+// TestAnUnreadableBankAccountIsNotReportedAsAbsent covers what the supplier
+// screen says when stored ciphertext will not decrypt — nearly always
+// ENCRYPTION_KEY differing from the one that wrote it. The read dropped the
+// decryption error, so the field came back missing and the screen said
+// "권한 제한 또는 미등록": an account on file was presented as an account that
+// never existed, with nothing in the log to say otherwise.
+func TestAnUnreadableBankAccountIsNotReportedAsAbsent(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number IN ('SUP-CIPHEROK','SUP-CIPHERBAD')`)
+	})
+	seed := func(number, name, cipher string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status,bank_account_encrypted) VALUES($1,$2,$1,'active',$3)
+			ON CONFLICT(supplier_number) DO UPDATE SET bank_account_encrypted=excluded.bank_account_encrypted RETURNING id`, number, name, cipher).Scan(&id); err != nil {
+			t.Fatalf("seed %s: %v", number, err)
+		}
+		return id
+	}
+	// One account written by this deployment, one written by another — the
+	// control matters: without it an empty field proves nothing, because the
+	// permission check could be what emptied it.
+	readable, err := app.vault.Encrypt("110-1111-111111")
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	otherKey := make([]byte, 32)
+	for i := range otherKey {
+		otherKey[i] = byte(i + 1)
+	}
+	stranger, err := security.NewVault(otherKey)
+	if err != nil {
+		t.Fatalf("build the other vault: %v", err)
+	}
+	foreign, err := stranger.Encrypt("110-2222-222222")
+	if err != nil {
+		t.Fatalf("encrypt with the other key: %v", err)
+	}
+	okID := seed("SUP-CIPHEROK", "복호화 되는 업체", readable)
+	badID := seed("SUP-CIPHERBAD", "복호화 안 되는 업체", foreign)
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.13:5000"))
+	read := func(id string) map[string]any {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/suppliers/"+id, nil)
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("reading %s returned %d: %s", id, w.Code, w.Body.String())
+		}
+		var out struct {
+			Supplier map[string]any `json:"supplier"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return out.Supplier
+	}
+
+	good := read(okID)
+	if account, _ := good["bankAccount"].(string); account != "110-1111-111111" {
+		t.Fatalf("the readable account came back as %q, so the fixture is not exercising the decrypt path", account)
+	}
+	if unreadable, _ := good["bankAccountUnreadable"].(bool); unreadable {
+		t.Errorf("an account that decrypted was marked unreadable")
+	}
+
+	bad := read(badID)
+	if _, present := bad["bankAccount"]; present {
+		t.Errorf("ciphertext written under another key came back as plaintext")
+	}
+	if unreadable, _ := bad["bankAccountUnreadable"].(bool); !unreadable {
+		t.Errorf("an account on file that would not decrypt was reported as absent, the same as never having had one")
 	}
 }

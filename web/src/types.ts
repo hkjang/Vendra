@@ -17,6 +17,7 @@ export type Supplier = {
   website?: string;
   financials: Record<string, unknown>;
   bankAccount?: string;
+  bankAccountUnreadable?: boolean;
   taxInfo: Record<string, unknown>;
   erpVendorId?: string;
   annualSpend: number;

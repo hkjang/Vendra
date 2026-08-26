@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -31,16 +32,20 @@ type supplier struct {
 	Website         *string          `json:"website,omitempty"`
 	Financials      map[string]any   `json:"financials"`
 	BankAccount     *string          `json:"bankAccount,omitempty"`
-	TaxInfo         map[string]any   `json:"taxInfo"`
-	ERPVendorID     *string          `json:"erpVendorId,omitempty"`
-	OwnerID         *string          `json:"ownerId,omitempty"`
-	OrganizationID  *string          `json:"organizationId,omitempty"`
-	TradingSince    *string          `json:"tradingSince,omitempty"`
-	AnnualSpend     float64          `json:"annualSpend"`
-	Score           *float64         `json:"score,omitempty"`
-	Metadata        map[string]any   `json:"metadata"`
-	CreatedAt       string           `json:"createdAt"`
-	UpdatedAt       string           `json:"updatedAt"`
+	// BankAccountUnreadable marks an account that is on file but did not
+	// decrypt, so the screen can say so instead of showing the same blank as a
+	// supplier that never had one.
+	BankAccountUnreadable bool           `json:"bankAccountUnreadable,omitempty"`
+	TaxInfo               map[string]any `json:"taxInfo"`
+	ERPVendorID           *string        `json:"erpVendorId,omitempty"`
+	OwnerID               *string        `json:"ownerId,omitempty"`
+	OrganizationID        *string        `json:"organizationId,omitempty"`
+	TradingSince          *string        `json:"tradingSince,omitempty"`
+	AnnualSpend           float64        `json:"annualSpend"`
+	Score                 *float64       `json:"score,omitempty"`
+	Metadata              map[string]any `json:"metadata"`
+	CreatedAt             string         `json:"createdAt"`
+	UpdatedAt             string         `json:"updatedAt"`
 }
 
 const supplierSelect = `SELECT id,supplier_number,name,legal_name,business_number,corporate_number,representative,status,grade,risk_level,supplier_type,industry,categories,addresses,phone,email,website,financials,tax_info,erp_vendor_id,owner_id,organization_id,to_char(trading_since,'YYYY-MM-DD'),annual_spend,score,metadata,to_char(created_at,'YYYY-MM-DD"T"HH24:MI:SSOF'),to_char(updated_at,'YYYY-MM-DD"T"HH24:MI:SSOF') FROM suppliers`
@@ -243,6 +248,17 @@ func (a *App) getSupplier(w http.ResponseWriter, r *http.Request) {
 			if value, decryptErr := a.vault.Decrypt(*cipher); decryptErr == nil {
 				s.BankAccount = &value
 				a.audit.record(r, "read_sensitive_field", "supplier", id, nil, map[string]any{"field": "bankAccount"})
+			} else {
+				// An account that will not decrypt is a deployment fault, almost
+				// always ENCRYPTION_KEY differing from the one that wrote it. The
+				// two other decrypt sites — the AI key and the OIDC secret —
+				// return the error; this one dropped it, so the screen showed the
+				// same blank as a supplier with no account and the log said
+				// nothing. An operator would re-enter the account under the new
+				// key while the old ciphertext stayed unreadable.
+				slog.Error("stored bank account did not decrypt",
+					"supplier_id", id, "request_id", requestID(r.Context()), "error", decryptErr)
+				s.BankAccountUnreadable = true
 			}
 		}
 	}
