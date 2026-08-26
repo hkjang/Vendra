@@ -2105,6 +2105,17 @@ kbd {
   flex: 1;
   padding: 0 15px;
 }
+/* A capped result list that says nothing reads as "this is everything". This
+   sits at the end of the results, where a reader who scrolled to the bottom
+   and did not find what they wanted will actually see it. */
+.search-truncated {
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .search-results {
   background: #fff;
   border: 1px solid var(--line);
