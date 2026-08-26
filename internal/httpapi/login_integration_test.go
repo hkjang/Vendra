@@ -1088,6 +1088,118 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestDispatchIsNotStarvedByARetiredAdapter covers a queue that could stop
+// moving for good. Delivery rows are created for the adapters enabled at the
+// time; when one is later disabled or removed, dispatch skipped its rows
+// without touching attempts, so they stayed pending forever. The batch is
+// ORDER BY created_at LIMIT 50, so fifty such rows at the head of the queue
+// starved every notification behind them — permanently, and quietly.
+func TestDispatchIsNotStarvedByARetiredAdapter(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+
+	var ownerID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&ownerID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	// Capture the seeded value so cleanup restores it. Deleting the row would
+	// leave every later test without adapters configured.
+	var originalAdapters []byte
+	if err := pool.QueryRow(ctx, `SELECT value FROM settings WHERE key='notification.adapters'`).Scan(&originalAdapters); err != nil {
+		t.Fatalf("read the seeded adapters: %v", err)
+	}
+	setAdapters := func(value string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES('notification.adapters',$1::jsonb)
+			ON CONFLICT(key) DO UPDATE SET value=excluded.value`, value); err != nil {
+			t.Fatalf("write adapters: %v", err)
+		}
+	}
+	notify := func(title string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO notifications(user_id,kind,title,body,severity,object_type)
+			VALUES($1,'starve_test',$2,'본문','info','supplier') RETURNING id`, ownerID, title).Scan(&id); err != nil {
+			t.Fatalf("seed notification %s: %v", title, err)
+		}
+		return id
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM notification_deliveries WHERE notification_id IN (SELECT id FROM notifications WHERE kind='starve_test')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM notifications WHERE kind='starve_test'`)
+		if _, err := pool.Exec(ctx, `UPDATE settings SET value=$1 WHERE key='notification.adapters'`, originalAdapters); err != nil {
+			t.Errorf("restoring the adapters setting failed, later runs will see this one's: %v", err)
+		}
+	})
+
+	// Sixty notifications queue against an adapter that is then retired. Sixty
+	// is past the batch limit of fifty, which is what made the starvation
+	// permanent rather than merely slow.
+	setAdapters(`[{"name":"retired","type":"log","enabled":true}]`)
+	for i := 0; i < 60; i++ {
+		notify(fmt.Sprintf("은퇴 어댑터 %d", i))
+	}
+	if err := app.scheduleNotifications(ctx); err != nil {
+		t.Fatalf("queue against the retired adapter: %v", err)
+	}
+
+	setAdapters(`[{"name":"live","type":"log","enabled":true}]`)
+	fresh := notify("살아있는 어댑터")
+	if err := app.scheduleNotifications(ctx); err != nil {
+		t.Fatalf("queue against the live adapter: %v", err)
+	}
+	// Enabling "live" also queues it against the sixty older notifications, so
+	// draining takes more than one batch of fifty. Under the old code no number
+	// of passes helped: the retired rows are the oldest, so they filled the
+	// window every time and were skipped every time.
+	for i := 0; i < 3; i++ {
+		if err := app.dispatchNotifications(ctx); err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM notification_deliveries WHERE notification_id=$1 AND adapter='live'`, fresh).Scan(&status); err != nil {
+		t.Fatalf("read the live delivery: %v", err)
+	}
+	if status != "delivered" {
+		t.Errorf("the live adapter's delivery is %q — the retired adapter's backlog is starving the queue", status)
+	}
+
+	// Re-enabling the retired adapter must let its backlog through rather than
+	// having quietly discarded it.
+	setAdapters(`[{"name":"live","type":"log","enabled":true},{"name":"retired","type":"log","enabled":true}]`)
+	for i := 0; i < 3; i++ {
+		if err := app.dispatchNotifications(ctx); err != nil {
+			t.Fatalf("dispatch after re-enabling: %v", err)
+		}
+	}
+	var stillPending int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM notification_deliveries d JOIN notifications n ON n.id=d.notification_id
+		WHERE n.kind='starve_test' AND d.adapter='retired' AND d.status='pending'`).Scan(&stillPending); err != nil {
+		t.Fatalf("count the backlog: %v", err)
+	}
+	if stillPending != 0 {
+		t.Errorf("%d deliveries are still pending after the adapter came back", stillPending)
+	}
+
+	// The settings endpoint takes any JSON, so an administrator can leave this
+	// key holding something that is not a list. Both passes used to return
+	// early on that with nothing logged — delivery stopped and nothing said so.
+	// They must not report success by crashing or erroring either.
+	for _, malformed := range []string{`{"not":"a list"}`, `"log"`, `42`} {
+		setAdapters(malformed)
+		if err := app.scheduleNotifications(ctx); err != nil {
+			t.Errorf("scheduling failed on a malformed adapters setting %s: %v", malformed, err)
+		}
+		if err := app.dispatchNotifications(ctx); err != nil {
+			t.Errorf("dispatch failed on a malformed adapters setting %s: %v", malformed, err)
+		}
+	}
+}
+
 // TestJSONFieldsSurviveGarbage covers the class the dashboard 500 belonged to:
 // a cast on a JSON value a client can write. "2026-13-45" satisfies any
 // reasonable regex and then fails the cast, and the failure takes the whole
