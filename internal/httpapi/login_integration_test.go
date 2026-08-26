@@ -3971,3 +3971,136 @@ func TestBidScoringStaysOnTheScaleTheFormOffers(t *testing.T) {
 		t.Errorf("the 9,000,000 bid outranks the 5,000,000 one: cheap=%v pricey=%v", cheap, pricey)
 	}
 }
+
+// TestApprovalStatusCannotBeClaimedWithoutTheWorkflow covers the write side of
+// the approval gate. submitObject and workflowAction are the only things that
+// may move an object into pending_approval, approved, rejected or returned;
+// createObject and updateObject took the status straight from the request, so a
+// contract could name itself approved and never reach an approver — or be walked
+// past one while the instance it belongs to still read pending.
+func TestApprovalStatusCannotBeClaimedWithoutTheWorkflow(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read the admin: %v", err)
+	}
+	// The setting is shared, so it is restored rather than deleted.
+	var originalApprovals []byte
+	if err := pool.QueryRow(ctx, `SELECT value FROM settings WHERE key='workflow.approval_enabled'`).Scan(&originalApprovals); err != nil {
+		t.Fatalf("read the approval setting: %v", err)
+	}
+	steps := `[{"name":"재무 승인","role":"","order":0}]`
+	var definitionID string
+	if err := pool.QueryRow(ctx, `INSERT INTO workflow_definitions(name,object_type,enabled,conditions,steps,created_by) VALUES('결재 상태 검증','contract',true,'{}',$1,$2) RETURNING id`, steps, adminID).Scan(&definitionID); err != nil {
+		t.Fatalf("seed the workflow: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM workflow_instances WHERE definition_id=$1`, definitionID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE title LIKE 'STATUSGATE %'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM workflow_definitions WHERE id=$1`, definitionID)
+		_, _ = pool.Exec(ctx, `UPDATE settings SET value=$1 WHERE key='workflow.approval_enabled'`, originalApprovals)
+	})
+	if _, err := pool.Exec(ctx, `UPDATE settings SET value='true'::jsonb WHERE key='workflow.approval_enabled'`); err != nil {
+		t.Fatalf("enable approvals: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.6:5000"))
+	send := func(method, path string, payload any) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		r := httptest.NewRequest(method, path, strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	draft := func(title string) string {
+		t.Helper()
+		w := send(http.MethodPost, "/api/v1/contracts", map[string]any{"title": title, "amount": 900_000_000, "status": "draft"})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("seeding %s returned %d: %s", title, w.Code, w.Body.String())
+		}
+		var out struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return out.ID
+	}
+	statusOf := func(id string) string {
+		t.Helper()
+		var status string
+		if err := pool.QueryRow(ctx, `SELECT status FROM business_objects WHERE id=$1`, id).Scan(&status); err != nil {
+			t.Fatalf("read the status: %v", err)
+		}
+		return status
+	}
+
+	owned := []string{"pending_approval", "approved", "rejected", "returned"}
+	for _, status := range owned {
+		if w := send(http.MethodPost, "/api/v1/contracts", map[string]any{"title": "STATUSGATE 생성 " + status, "amount": 900_000_000, "status": status}); w.Code != http.StatusBadRequest {
+			t.Errorf("creating a contract as %s returned %d, want 400", status, w.Code)
+		}
+	}
+	// Nothing named a workflow status for itself, so nothing skipped the queue.
+	var claimed int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM business_objects WHERE title LIKE 'STATUSGATE 생성 %'`).Scan(&claimed); err != nil {
+		t.Fatalf("count the contracts: %v", err)
+	}
+	if claimed != 0 {
+		t.Errorf("%d contracts were created holding a workflow status", claimed)
+	}
+
+	edited := draft("STATUSGATE 수정 대상")
+	for _, status := range owned {
+		if w := send(http.MethodPatch, "/api/v1/contracts/"+edited, map[string]any{"status": status}); w.Code != http.StatusBadRequest {
+			t.Errorf("patching a draft to %s returned %d, want 400", status, w.Code)
+		}
+		if now := statusOf(edited); now != "draft" {
+			t.Fatalf("patching to %s left the contract at %s", status, now)
+		}
+	}
+	// Ordinary lifecycle is not the workflow's business and stays editable.
+	for _, status := range []string{"active", "completed", "closed", "draft"} {
+		if w := send(http.MethodPatch, "/api/v1/contracts/"+edited, map[string]any{"status": status}); w.Code != http.StatusOK {
+			t.Errorf("patching to %s returned %d, want 200", status, w.Code)
+		}
+	}
+
+	// The real path still works, and the object it produced cannot then be
+	// walked past its own approver.
+	pending := draft("STATUSGATE 결재 진행")
+	if w := send(http.MethodPost, "/api/v1/contracts/"+pending+"/submit", map[string]any{}); w.Code != http.StatusOK {
+		t.Fatalf("submitting returned %d: %s", w.Code, w.Body.String())
+	}
+	if now := statusOf(pending); now != "pending_approval" {
+		t.Fatalf("a submitted contract is %s, want pending_approval", now)
+	}
+	if w := send(http.MethodPatch, "/api/v1/contracts/"+pending, map[string]any{"status": "approved"}); w.Code != http.StatusBadRequest {
+		t.Errorf("approving by PATCH returned %d, want 400", w.Code)
+	}
+	if now := statusOf(pending); now != "pending_approval" {
+		t.Errorf("the contract left the approval queue as %s", now)
+	}
+	// Restating the status the object already holds is a no-op, not a claim, so
+	// an editor that round-trips the whole object still saves.
+	if w := send(http.MethodPatch, "/api/v1/contracts/"+pending, map[string]any{"status": "pending_approval", "title": "STATUSGATE 결재 진행 제목수정"}); w.Code != http.StatusOK {
+		t.Errorf("restating the current status returned %d, want 200", w.Code)
+	}
+	// The instance and the object still agree: nothing was approved behind the
+	// approver's back.
+	var mismatched int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workflow_instances i JOIN business_objects o ON o.id=i.object_id
+		WHERE i.definition_id=$1 AND i.status='pending' AND o.status<>'pending_approval'`, definitionID).Scan(&mismatched); err != nil {
+		t.Fatalf("compare instance and object: %v", err)
+	}
+	if mismatched != 0 {
+		t.Errorf("%d objects moved on while their approval still reads pending", mismatched)
+	}
+}
