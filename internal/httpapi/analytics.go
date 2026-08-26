@@ -607,6 +607,7 @@ func (a *App) supplierNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nodes := []map[string]any{}
+	nodeIDs := []string{}
 	for nodeRows.Next() {
 		var id, name, risk string
 		var grade *string
@@ -621,6 +622,7 @@ func (a *App) supplierNetwork(w http.ResponseWriter, r *http.Request) {
 		var cats any
 		_ = json.Unmarshal(categories, &cats)
 		nodes = append(nodes, map[string]any{"id": id, "name": name, "riskLevel": risk, "grade": grade, "annualSpend": spend, "categories": cats})
+		nodeIDs = append(nodeIDs, id)
 	}
 	nodeRows.Close()
 	if err := nodeRows.Err(); err != nil {
@@ -628,7 +630,13 @@ func (a *App) supplierNetwork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "공급망을 조회하지 못했습니다")
 		return
 	}
-	edgeRows, err := a.db.Query(r.Context(), `SELECT r.id,r.source_supplier_id,r.target_supplier_id,r.relationship_type,r.criticality,r.supplied_categories,r.dependency_percent,r.notes FROM supplier_relationships r JOIN suppliers s ON s.id=r.source_supplier_id JOIN suppliers t ON t.id=r.target_supplier_id WHERE (r.valid_until IS NULL OR r.valid_until>=current_date) AND ((`+orgInScope("s.organization_id", "$1", "$2")+` AND `+orgInScope("t.organization_id", "$1", "$2")+`) OR ($1='own' AND s.owner_id=$3::uuid AND t.owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID)
+	// The nodes above are the whole universe of this response, so an edge exists
+	// only between two of them. Selecting edges on their own terms returned ones
+	// with an end the caller never received: a soft-deleted supplier kept its
+	// relationships, and so did anyone past the 500-node limit. The canvas drops
+	// such an edge silently while the inspector still counts it, so "직접 연결"
+	// disagreed with the lines actually drawn.
+	edgeRows, err := a.db.Query(r.Context(), `SELECT r.id,r.source_supplier_id,r.target_supplier_id,r.relationship_type,r.criticality,r.supplied_categories,r.dependency_percent,r.notes FROM supplier_relationships r WHERE (r.valid_until IS NULL OR r.valid_until>=current_date) AND r.source_supplier_id=ANY($1) AND r.target_supplier_id=ANY($1)`, nodeIDs)
 	if err != nil {
 		writeError(w, 500, "database_error", "공급망 관계를 조회하지 못했습니다")
 		return
