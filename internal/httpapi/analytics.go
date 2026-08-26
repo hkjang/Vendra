@@ -236,6 +236,37 @@ func (a *App) createRisk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "리스크 유형과 등급은 필수입니다")
 		return
 	}
+	// The grade drives the supplier's risk_level rollup and every badge that
+	// reads it, and the form offers exactly these four. Anything else was
+	// stored verbatim and shown as if it meant something.
+	switch severity {
+	case "LOW", "MEDIUM", "HIGH", "CRITICAL":
+	default:
+		writeError(w, 400, "validation_error", "리스크 등급은 LOW, MEDIUM, HIGH, CRITICAL 중 하나여야 합니다")
+		return
+	}
+	if utf8.RuneCountInString(typ) > maxIdentifierLen {
+		writeError(w, 400, "validation_error", fmt.Sprintf("리스크 유형은 %d자를 넘을 수 없습니다", maxIdentifierLen))
+		return
+	}
+	// score is a generated column, probability * impact, and every risk list
+	// and the MCP tool order by it. The form rates both 0..10 and the API
+	// rated neither: a risk entered as -5 by -8 scored 40, the same as a
+	// genuine 5 by 8, and sorted to the top of the list beside it. Only 1000
+	// was refused, by numeric(5,2) overflowing, and then as "리스크를 저장하지
+	// 못했습니다".
+	for _, field := range []struct {
+		key, label string
+	}{{"probability", "발생 가능성"}, {"impact", "영향도"}} {
+		value, ok := numberValue(in, field.key).(float64)
+		if !ok {
+			continue
+		}
+		if value < 0 || value > 10 {
+			writeError(w, 400, "validation_error", fmt.Sprintf("%s%s 0에서 10 사이여야 합니다", field.label, topicParticle(field.label)))
+			return
+		}
+	}
 	var id string
 	if !validDateFields(w, in, dateField{"reviewDate", "검토일"}) {
 		return
