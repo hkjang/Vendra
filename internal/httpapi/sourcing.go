@@ -215,7 +215,14 @@ func (a *App) portalDeclineSourcing(w http.ResponseWriter, r *http.Request) {
 		Reason string `json:"reason"`
 	}
 	_ = decodeJSON(r, &in)
-	tag, err := a.db.Exec(r.Context(), `UPDATE sourcing_participants SET status='declined',declined_at=now(),decline_reason=NULLIF($3,'') WHERE sourcing_id=$1 AND supplier_id=$2 AND status='invited'`, r.PathValue("id"), *p.SupplierID, in.Reason)
+	// Declining stays open until a bid is actually submitted. Restricting it to
+	// 'invited' meant that opening the quote form and saving a draft closed the
+	// only way to say no: a supplier who then found they could not supply had
+	// to either bid anyway or go quiet, and the buyer was left with a
+	// participant sitting at 'draft' with no reason attached — exactly the
+	// ambiguity this action exists to remove. A submitted bid is a commitment
+	// and is not withdrawn here.
+	tag, err := a.db.Exec(r.Context(), `UPDATE sourcing_participants SET status='declined',declined_at=now(),decline_reason=NULLIF($3,'') WHERE sourcing_id=$1 AND supplier_id=$2 AND status IN('invited','draft')`, r.PathValue("id"), *p.SupplierID, in.Reason)
 	if err != nil || tag.RowsAffected() == 0 {
 		writeError(w, 409, "cannot_decline", "참여 요청을 거절할 수 없습니다")
 		return
