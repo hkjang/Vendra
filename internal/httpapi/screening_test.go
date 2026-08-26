@@ -64,3 +64,57 @@ func TestScreeningDecidesAcrossTheConfiguredBands(t *testing.T) {
 		t.Errorf("missing required item decided %q, want REVIEW_REQUIRED", got)
 	}
 }
+
+func TestCalculateScreeningScoresWhatWasAnswered(t *testing.T) {
+	items := []byte(`[
+		{"code":"credit","name":"신용","weight":50,"required":true},
+		{"code":"safety","name":"안전","weight":30,"required":false},
+		{"code":"esg","name":"ESG","weight":20,"required":false}
+	]`)
+
+	// An unanswered item scores zero rather than being left out of the total,
+	// so a half-filled screening cannot score as well as a complete one. The
+	// supplier evaluation next door had the opposite arrangement and graded an
+	// empty submission a D on 0 points; this one drags the total down instead,
+	// which lands on REVIEW_REQUIRED rather than a verdict.
+	_, total, missing := calculateScreening(items, map[string]any{})
+	if total != 0 {
+		t.Errorf("an empty screening scored %v, want 0", total)
+	}
+	if !missing {
+		t.Error("an empty screening did not report its required item as missing")
+	}
+
+	_, total, missing = calculateScreening(items, map[string]any{"credit": 100.0, "safety": 100.0, "esg": 100.0})
+	if total != 100 {
+		t.Errorf("full marks scored %v, want 100", total)
+	}
+	if missing {
+		t.Error("a complete screening reported something missing")
+	}
+
+	// Answering only the optional items leaves the required one missing.
+	_, total, missing = calculateScreening(items, map[string]any{"safety": 100.0, "esg": 100.0})
+	if total != 50 {
+		t.Errorf("the optional half scored %v, want 50", total)
+	}
+	if !missing {
+		t.Error("the unanswered required item was not reported")
+	}
+
+	// Out-of-range answers are clamped, so a single item cannot carry the
+	// total past what the weights allow.
+	_, total, _ = calculateScreening(items, map[string]any{"credit": 1000.0, "safety": -50.0, "esg": 0.0})
+	if total != 50 {
+		t.Errorf("a 1000 on a 50-weight item scored %v, want 50", total)
+	}
+
+	// A value that is not a number is not an answer.
+	_, total, missing = calculateScreening(items, map[string]any{"credit": "100", "safety": nil})
+	if total != 0 {
+		t.Errorf("non-numeric answers scored %v, want 0", total)
+	}
+	if !missing {
+		t.Error("a non-numeric answer to a required item was counted as answered")
+	}
+}
