@@ -87,7 +87,21 @@ function parseTimestamp(value?: string | null) {
   // the day a person typed is the day they see.
   if (CALENDAR_DATE.test(value)) {
     const [year, month, day] = value.split("-").map(Number);
-    return new Date(year, month - 1, day);
+    const parsed = new Date(year, month - 1, day);
+    // The Date constructor wraps overflow rather than refusing it:
+    // new Date(2026, 12, 45) is the 14th of February 2027, and "2026-02-31"
+    // becomes the 3rd of March. A stored value that is not a date would render
+    // as a plausible wrong day, which is worse than rendering as nothing.
+    // Checking the parts survived also rejects the 29th of a non-leap
+    // February while keeping it in a leap one.
+    if (
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== day
+    ) {
+      return undefined;
+    }
+    return parsed;
   }
   // PostgreSQL may serialize UTC offsets as `+00`; browsers require `+00:00`.
   const parsed = new Date(value.replace(/([+-]\d{2})$/, "$1:00"));

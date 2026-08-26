@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # The integration tests need a real database: they exercise advisory
+        # locks, partial unique indexes, trigram search and jsonpath, none of
+        # which a fake would tell the truth about.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l internal cmd)
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./internal/... ./cmd/...
+      - name: Prepare the test database
+        run: |
+          PGPASSWORD=ci psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE vendra_ci'
+      - name: go test
+        env:
+          VENDRA_TEST_DSN: postgres://postgres:ci@127.0.0.1:5432/vendra_ci?sslmode=disable
+        run: go test ./internal/... -count=1
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npx tsc -b --noEmit
+      - run: npx eslint src --max-warnings 0
+      - run: npm test
+      - run: npm run build
