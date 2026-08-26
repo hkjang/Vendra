@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type notificationAdapter struct {
@@ -123,13 +126,9 @@ func (a *App) scheduleNotifications(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var value []byte
-	if err = a.db.QueryRow(ctx, `SELECT value FROM settings WHERE key='notification.adapters'`).Scan(&value); err != nil {
+	adapters, err := a.notificationAdapters(ctx)
+	if err != nil {
 		return err
-	}
-	var adapters []notificationAdapter
-	if json.Unmarshal(value, &adapters) != nil {
-		return nil
 	}
 	for _, adapter := range adapters {
 		if !adapter.Enabled || adapter.Name == "" {
@@ -143,20 +142,58 @@ func (a *App) scheduleNotifications(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) dispatchNotifications(ctx context.Context) error {
+// notificationAdapters reads the configured delivery adapters.
+//
+// A missing row means none are configured, not a failure. The setting is
+// seeded by migration, so this is a guard rather than a live case, but a pass
+// erroring every hour is the wrong answer to "there is nothing to deliver to".
+//
+// A value that is not a list is an administrator's mistake — the settings
+// endpoint takes any JSON — and it used to be swallowed whole: both the
+// scheduling and the dispatch pass returned early with nothing logged, so
+// notification delivery stopped altogether and nothing said so. The value
+// itself is not logged; an adapter URL can carry a token.
+func (a *App) notificationAdapters(ctx context.Context) ([]notificationAdapter, error) {
 	var value []byte
-	if err := a.db.QueryRow(ctx, `SELECT value FROM settings WHERE key='notification.adapters'`).Scan(&value); err != nil {
-		return err
+	switch err := a.db.QueryRow(ctx, `SELECT value FROM settings WHERE key='notification.adapters'`).Scan(&value); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	case err != nil:
+		return nil, err
 	}
 	var adapters []notificationAdapter
-	if json.Unmarshal(value, &adapters) != nil {
-		return nil
+	if err := json.Unmarshal(value, &adapters); err != nil {
+		slog.Error("notification.adapters is not a list of adapters, so nothing will be delivered until it is corrected", "error", err)
+		return nil, nil
+	}
+	return adapters, nil
+}
+
+func (a *App) dispatchNotifications(ctx context.Context) error {
+	adapters, err := a.notificationAdapters(ctx)
+	if err != nil {
+		return err
 	}
 	byName := map[string]notificationAdapter{}
+	active := make([]string, 0, len(adapters))
 	for _, adapter := range adapters {
 		byName[adapter.Name] = adapter
+		if adapter.Enabled && adapter.Name != "" {
+			active = append(active, adapter.Name)
+		}
 	}
-	rows, err := a.db.Query(ctx, `SELECT d.id,d.adapter,n.title,n.body,n.severity FROM notification_deliveries d JOIN notifications n ON n.id=d.notification_id WHERE d.status='pending' AND d.attempts<5 ORDER BY d.created_at LIMIT 50`)
+	if len(active) == 0 {
+		return nil
+	}
+	// Only rows for an adapter that is currently on. Delivery rows are created
+	// for whichever adapters were enabled at the time, and one later disabled
+	// or renamed leaves its rows behind. The loop below skipped them without
+	// touching attempts, so they stayed pending for good — and this batch is
+	// ORDER BY created_at LIMIT 50, so fifty of them at the head of the queue
+	// starved every notification behind them, permanently and quietly.
+	// Filtering here rather than discarding the rows means a backlog resumes if
+	// the adapter is turned back on.
+	rows, err := a.db.Query(ctx, `SELECT d.id,d.adapter,n.title,n.body,n.severity FROM notification_deliveries d JOIN notifications n ON n.id=d.notification_id WHERE d.status='pending' AND d.attempts<5 AND d.adapter = ANY($1) ORDER BY d.created_at LIMIT 50`, active)
 	if err != nil {
 		return err
 	}
