@@ -34,7 +34,7 @@ docker run -d \
   -e BOOTSTRAP_ADMIN="admin@company.com" \
   -e BOOTSTRAP_ADMIN_PASSWORD="change-this-strong-password" \
   -e ENCRYPTION_KEY="Base64Encoded32ByteKeyHere==" \
-  vendra:v0.3.0
+  vendra:latest
 ```
 
 ### 2.1 계좌정보 및 시크릿 AES-256-GCM 암호화
@@ -45,7 +45,9 @@ docker run -d \
 ## 3. Keycloak OIDC SSO 및 RBAC 그룹 매핑
 
 - **OIDC Discovery**: Keycloak Discovery 엔드포인트를 등록하고 Authorization Code + PKCE (S256) 인증을 켭니다.
-- **Valid Redirect URI**: `https://vendra.internal/api/v1/auth/oidc/callback`
+- **Valid Redirect URI**: `https://vendra.internal/api/auth/oidc/callback`
+  - 인증 경로는 `/api/v1` 아래가 아닙니다. `/api/v1/...`로 등록하면 SSO를 마치고 돌아온 사용자가 세션 인증 미들웨어에 걸려 `401 로그인이 필요합니다`를 받습니다 — 방금 로그인한 사람에게 가장 헷갈리는 응답입니다.
+  - 서비스 관리에서 **공개 URL**을 설정하면 서버가 `<공개 URL>/api/auth/oidc/callback`을 authorization 요청과 token 교환 양쪽에 같은 문자열로 사용합니다. 비워두면 요청에서 유추하므로, 프록시와 원본처럼 이름이 둘 이상인 배포에서는 `redirect_uri_mismatch`가 날 수 있습니다.
 - **그룹 매핑**: Keycloak `/vendra-admins`, `/vendra-buyers` 그룹을 사내 권한 그룹으로 맵핑하여 자동 RBAC 부여.
 
 ---
