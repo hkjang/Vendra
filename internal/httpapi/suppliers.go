@@ -114,6 +114,28 @@ func (a *App) listSuppliers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items, "count": len(items), "limit": limit, "truncated": truncated})
 }
 
+// supplierFieldLabels names the checked fields the way the form does, so the
+// rejection points at the box the person needs to fix.
+var supplierFieldLabels = map[string]string{
+	"name": "업체명", "legalName": "법인명", "representative": "대표자",
+	"businessNumber": "사업자번호", "corporateNumber": "법인번호",
+	"country": "국가", "supplierType": "업체 구분", "supplierNumber": "업체 코드",
+	"grade": "등급", "status": "상태",
+}
+
+func supplierFieldsTooLong(in map[string]any) (string, bool) {
+	field := overlongField(in, "name", "legalName", "representative", "businessNumber",
+		"corporateNumber", "country", "supplierType", "supplierNumber", "grade", "status")
+	if field == "" {
+		return "", false
+	}
+	label := supplierFieldLabels[field]
+	if label == "" {
+		label = field
+	}
+	return fmt.Sprintf("%s%s %d자를 넘을 수 없습니다", label, topicParticle(label), maxIdentifierLen), true
+}
+
 func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
 	in, err := decodeMap(r)
@@ -125,6 +147,10 @@ func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 	businessNumber := stringValue(in, "businessNumber")
 	if name == "" || businessNumber == "" {
 		writeError(w, 400, "validation_error", "업체명과 사업자번호는 필수입니다")
+		return
+	}
+	if msg, bad := supplierFieldsTooLong(in); bad {
+		writeError(w, 400, "validation_error", msg)
 		return
 	}
 	similarNameThreshold := 0.35
@@ -287,6 +313,10 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 	in, err := decodeMap(r)
 	if err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if msg, bad := supplierFieldsTooLong(in); bad {
+		writeError(w, 400, "validation_error", msg)
 		return
 	}
 	metadata := before.Metadata

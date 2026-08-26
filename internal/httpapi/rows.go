@@ -69,6 +69,23 @@ func searchSource(rows pgx.Rows, err error, scan func(pgx.Rows) (map[string]any,
 	return items, nil
 }
 
+// topicParticle picks 은 or 는 for word. Korean chooses between them on
+// whether the last syllable closes on a consonant, and a message that ducks
+// the choice with "업체명은(는)" reads like a form letter rather than a
+// sentence. A word ending outside the Hangul syllable block — a code, a
+// number — takes 는.
+func topicParticle(word string) string {
+	runes := []rune(strings.TrimSpace(word))
+	if len(runes) == 0 {
+		return "는"
+	}
+	last := runes[len(runes)-1]
+	if last < 0xAC00 || last > 0xD7A3 || (last-0xAC00)%28 == 0 {
+		return "는"
+	}
+	return "은"
+}
+
 // dateParam reads an optional YYYY-MM-DD filter. A malformed date is the
 // caller's mistake, so it is answered as one rather than reaching PostgreSQL
 // and failing there as a server error.
@@ -78,7 +95,7 @@ func dateParam(w http.ResponseWriter, r *http.Request, name, label string) (stri
 		return "", true
 	}
 	if _, err := time.Parse("2006-01-02", value); err != nil {
-		writeError(w, http.StatusBadRequest, "validation_error", label+"은(는) YYYY-MM-DD 형식이어야 합니다")
+		writeError(w, http.StatusBadRequest, "validation_error", label+topicParticle(label)+" YYYY-MM-DD 형식이어야 합니다")
 		return "", false
 	}
 	return value, true

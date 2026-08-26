@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -476,6 +477,25 @@ func parseLimit(r *http.Request, def int) int {
 	}
 	return n
 }
+
+// maxIdentifierLen bounds the short free-text fields that name a record —
+// 업체명, 대표자, 코드 — as opposed to notes and descriptions, which the 2 MB
+// body limit covers. A text column would take a megabyte happily; the screen
+// will not. One 5,000-character supplier name renders a 1,900-pixel-tall table
+// row and follows the record into every export, dropdown and audit line.
+const maxIdentifierLen = 200
+
+// overlongField returns the first of keys whose value runs past
+// maxIdentifierLen, or "" when they all fit.
+func overlongField(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if utf8.RuneCountInString(stringValue(m, k)) > maxIdentifierLen {
+			return k
+		}
+	}
+	return ""
+}
+
 func stringValue(m map[string]any, key string) string {
 	if v, ok := m[key].(string); ok {
 		return strings.TrimSpace(v)

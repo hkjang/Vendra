@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -66,12 +68,20 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func decodeJSON(r *http.Request, dst any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 2<<20))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
+	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 2<<20))
+	if err != nil {
 		return err
 	}
-	return nil
+	// A text column cannot hold a NUL byte, so a payload carrying one dies
+	// inside whatever query the handler runs next and comes back as a 500 with
+	// "database error" in the log — for what is plainly bad input. Refuse it
+	// here, where it is still recognisable as such.
+	if bytes.Contains(body, []byte(`\u0000`)) || bytes.IndexByte(body, 0) >= 0 {
+		return errors.New("입력에 저장할 수 없는 문자(NUL)가 있습니다")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	return dec.Decode(dst)
 }
 
 func hasPermission(p Principal, wanted string) bool {

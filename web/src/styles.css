@@ -1066,6 +1066,23 @@ kbd {
   border-bottom: 1px solid #edf0f4;
   font-size: 12px;
 }
+/* A record whose name is a pasted wall of text must not push its row past the
+   height of the screen — one 5,000-character supplier name rendered a
+   1,900-pixel row. Three lines is more than any real name needs; the rest is
+   elided here and still whole on the detail page. New records are bounded
+   server-side, but records already stored, or imported, are not. */
+.data-card td b,
+.data-card td small,
+.admin-card td b,
+.admin-card td small {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
 .data-card tbody tr:hover,
 .admin-card tbody tr:hover {
   background: #fafbfc;
