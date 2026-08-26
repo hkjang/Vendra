@@ -1088,6 +1088,112 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestAuditTrailDoesNotCrossTheDataScope covers a way around every other
+// boundary. An audit entry carries the record whole, before and after, and the
+// list applied no scope at all: a reader whose contract list correctly
+// returned nothing for another division's contract could read that contract's
+// amount and its change history here.
+func TestAuditTrailDoesNotCrossTheDataScope(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	org := func(name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO organizations(name,path) VALUES($1,'/') RETURNING id`, name).Scan(&id); err != nil {
+			if err := pool.QueryRow(ctx, `SELECT id FROM organizations WHERE name=$1`, name).Scan(&id); err != nil {
+				t.Fatalf("seed organisation %s: %v", name, err)
+			}
+		}
+		return id
+	}
+	t.Cleanup(func() {
+		// Registered before the seeding, so a failure part way through still
+		// tidies up. context.Background(), not t.Context(): the test context is
+		// already cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE request_id LIKE 'audit-scope-%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number LIKE 'AUDSCOPE-%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email='audit-scope@vendra.test'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='audit_scope_reader'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM organizations WHERE name LIKE '감사스코프%'`)
+	})
+	mine, theirs := org("감사스코프 A본부"), org("감사스코프 B본부")
+	contract := func(number, title, organizationID string, amount int) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,amount,organization_id,created_by)
+			VALUES('contract',$1,$2,'active',$3,$4,$5)
+			ON CONFLICT(object_type,number) DO UPDATE SET title=excluded.title,amount=excluded.amount,organization_id=excluded.organization_id
+			RETURNING id`, number, title, amount, organizationID, adminID).Scan(&id); err != nil {
+			t.Fatalf("seed contract %s: %v", number, err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM audit_logs WHERE object_id=$1`, id); err != nil {
+			t.Fatalf("clear the trail for %s: %v", number, err)
+		}
+		// The trail the reader must or must not see.
+		if _, err := pool.Exec(ctx, `INSERT INTO audit_logs(actor_email,action,object_type,object_id,previous_value,new_value,request_id)
+			VALUES($1,'update','contract',$2,jsonb_build_object('amount',$3::bigint),jsonb_build_object('amount',$4::bigint,'title',$5::text),$6)`,
+			testAdminEmail, id, amount, amount*2, title+" (증액)", "audit-scope-"+number); err != nil {
+			t.Fatalf("seed audit entry for %s: %v", number, err)
+		}
+		return id
+	}
+	const secret = "880000000"
+	theirContract := contract("AUDSCOPE-THEIRS", "타 본부 기밀 계약", theirs, 880000000)
+	myContract := contract("AUDSCOPE-MINE", "우리 본부 계약", mine, 123000000)
+
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('audit_scope_reader','감사범위검증','["audit.read","contract.read"]','department',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions,data_scope='department' RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	const email = "audit-scope@vendra.test"
+	const password = "AuditScopePassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,organization_id) VALUES($1,'범위 감사자',$2,'internal','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,organization_id=excluded.organization_id,status='active' RETURNING id`, email, hash, mine).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, roleID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	session := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.240:5000"))
+	w := doRequest(t, handler, http.MethodGet, "/api/v1/admin/audit?limit=500", session)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the audit list returned %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	if strings.Contains(body, theirContract) || strings.Contains(body, secret) || strings.Contains(body, "타 본부 기밀") {
+		t.Errorf("the audit trail carried another division's contract: %s", body)
+	}
+	// The trail for their own division is still there — a reader who sees
+	// nothing at all cannot audit anything.
+	if !strings.Contains(body, myContract) || !strings.Contains(body, "우리 본부 계약") {
+		t.Errorf("the reader lost sight of their own division's trail: %s", body)
+	}
+
+	// The control that makes the assertions above mean something: a
+	// company-scoped reader does see the other division's entry.
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.241:5000"))
+	full := doRequest(t, handler, http.MethodGet, "/api/v1/admin/audit?limit=500", admin)
+	if !strings.Contains(full.Body.String(), theirContract) {
+		t.Errorf("a company-scoped reader cannot see the other division either; the fixture proves nothing: %s", full.Body.String())
+	}
+}
+
 // TestPortalWorkDoesNotCarryTheBuyersSide covers the second place the detail
 // blob went out whole. portalWork scans business objects with the same select
 // the internal handlers use and returned them unchanged, so a supplier read

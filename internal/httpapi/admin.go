@@ -499,7 +499,28 @@ func (a *App) putLifecycle(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) listAudit(w http.ResponseWriter, r *http.Request) {
 	objectType := r.URL.Query().Get("objectType")
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',id,'occurredAt',occurred_at,'actor',actor_email,'actorEmail',actor_email,'action',action,'objectType',object_type,'objectId',object_id,'previousValue',previous_value,'newValue',new_value,'ip',ip,'sessionId',session_id,'requestId',request_id) FROM audit_logs WHERE ($1='' OR object_type=$1) ORDER BY occurred_at DESC LIMIT $2`, objectType, parseLimit(r, 200))
+	p, _ := principalFrom(r.Context())
+	organizationID := ""
+	if p.OrganizationID != nil {
+		organizationID = *p.OrganizationID
+	}
+	// An audit entry carries the whole record, before and after. Without this,
+	// the trail was a way around every other boundary: a reader whose contract
+	// list correctly returned nothing for another division's contract could
+	// read that contract's amount, its title and its change history here.
+	//
+	// Company scope still sees everything, which is what an auditor is for and
+	// what both seeded roles holding audit.read carry. Anything narrower sees
+	// the trail of the records it can reach. Entries about users, settings and
+	// tool calls are not records in a department at all, so they need the
+	// company view — a partial trail that pretended to be complete would be
+	// worse than none.
+	scoped := `($3='company'
+	 OR EXISTS(SELECT 1 FROM business_objects o WHERE o.id::text=a.object_id
+	   AND (` + orgInScope("o.organization_id", "$3", "$4") + ` OR ($3='own' AND o.owner_id=$5::uuid)))
+	 OR EXISTS(SELECT 1 FROM suppliers s WHERE s.id::text=a.object_id
+	   AND (` + orgInScope("s.organization_id", "$3", "$4") + ` OR ($3='own' AND s.owner_id=$5::uuid))))`
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',a.id,'occurredAt',a.occurred_at,'actor',a.actor_email,'actorEmail',a.actor_email,'action',a.action,'objectType',a.object_type,'objectId',a.object_id,'previousValue',a.previous_value,'newValue',a.new_value,'ip',a.ip,'sessionId',a.session_id,'requestId',a.request_id) FROM audit_logs a WHERE ($1='' OR a.object_type=$1) AND `+scoped+` ORDER BY a.occurred_at DESC LIMIT $2`, objectType, parseLimit(r, 200), p.DataScope, organizationID, p.ID)
 	if err != nil {
 		writeError(w, 500, "database_error", "감사로그를 조회하지 못했습니다")
 		return
