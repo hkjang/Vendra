@@ -652,6 +652,42 @@ function PortalSourcing({
   );
 }
 
+function TenderBrief({ data }: { data?: Record<string, unknown> }) {
+  const d = data || {};
+  const text = (key: string) => {
+    const value = d[key];
+    return value === undefined || value === null || value === "" ? "" : String(value);
+  };
+  const quantity = [text("quantity"), text("unit")].filter(Boolean).join(" ");
+  const rows = ([
+    ["품목", text("item")],
+    ["수량", quantity],
+    ["납품 장소", text("deliveryLocation")],
+    ["희망 납기", text("desiredDate") ? date(text("desiredDate")) : ""],
+    ["지급 조건", text("paymentTerms")],
+    ["SLA", text("sla")],
+    ["보증 요구", text("warranty")],
+  ] as [string, string][]).filter(([, v]) => v !== "");
+  const description = text("description");
+  if (!description && !rows.length) return null;
+  return (
+    <section className="tender-brief">
+      <h3>요청 내용</h3>
+      {description && <p>{description}</p>}
+      {rows.length > 0 && (
+        <dl>
+          {rows.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </section>
+  );
+}
+
 function SourcingResponseForm({
   item,
   onClose,
@@ -697,6 +733,10 @@ function SourcingResponseForm({
       onClose={onClose}
       wide
     >
+      {/* What was asked for, next to the answer. The requirements sat on the
+          card behind this dialog, so the technical proposal was written with
+          them out of sight. */}
+      <TenderBrief data={item.data} />
       <form onSubmit={submit}>
         <div className="form-grid">
           <Field label="총 견적금액" required>

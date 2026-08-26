@@ -1088,6 +1088,84 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestBidderIsNotShownTheBuyersPosition covers a leak in the sealed part of a
+// tender. The portal handed an invited supplier the tender's detail blob
+// whole, and the buyer's own form writes budget and unitPrice into that blob —
+// so every bidder was given the buyer's ceiling and target price. The portal
+// never rendered them, which is why it took reading the response to see it.
+func TestBidderIsNotShownTheBuyersPosition(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-SEALED','밀봉 검증 업체','SUP-SEALED','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	const detail = `{"description":"도면 기준 ±0.02mm","item":"하우징 어셈블리","quantity":5000,"unit":"EA",
+		"deliveryLocation":"평택 2공장","paymentTerms":"월말 마감 익월 30일",
+		"budget":150000000,"unitPrice":28000,"internalNote":"경쟁사 대비 15% 절감 목표"}`
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,due_date,created_by,data)
+		VALUES('rfq','RFQ-SEALED','밀봉 검증 견적','open',current_date+10,$1,$2::jsonb) RETURNING id`, adminID, detail).Scan(&rfqID); err != nil {
+		t.Fatalf("seed rfq: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO sourcing_participants(sourcing_id,supplier_id,status) VALUES($1,$2,'invited')
+		ON CONFLICT(sourcing_id,supplier_id) DO UPDATE SET status='invited'`, rfqID, supplierID); err != nil {
+		t.Fatalf("invite the supplier: %v", err)
+	}
+	const email = "sealed-bidder@vendra.test"
+	const password = "SealedBidderPassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,supplier_id) VALUES($1,'입찰 담당자',$2,'supplier','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,supplier_id=excluded.supplier_id,user_type='supplier',status='active' RETURNING id`, email, hash, supplierID).Scan(&userID); err != nil {
+		t.Fatalf("seed portal user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user' ON CONFLICT DO NOTHING`, userID); err != nil {
+		t.Fatalf("assign the portal role: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_participants WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-SEALED'`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+	session := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.220:5000"))
+	w := doRequest(t, handler, http.MethodGet, "/api/v1/portal/sourcing", session)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the portal tender list returned %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	// Asserting on the raw body, not a decoded field: the point is that these
+	// numbers do not reach the supplier at all, by any route through the
+	// response.
+	for _, secret := range []string{"budget", "150000000", "unitPrice", "28000", "internalNote", "경쟁사 대비"} {
+		if strings.Contains(body, secret) {
+			t.Errorf("the bidder was handed %q: %s", secret, body)
+		}
+	}
+	// What they do need in order to quote is still there.
+	for _, needed := range []string{"도면 기준", "하우징 어셈블리", "평택 2공장", "월말 마감"} {
+		if !strings.Contains(body, needed) {
+			t.Errorf("the bidder was not shown %q, which they need to quote: %s", needed, body)
+		}
+	}
+}
+
 // TestDecliningStaysOpenUntilABidIsSubmitted covers a dead end in the portal.
 // Declining was restricted to participants still marked 'invited', so opening
 // the quote form and saving a draft closed the only way to say no: a supplier
