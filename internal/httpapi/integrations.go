@@ -253,7 +253,14 @@ func (a *App) aiAnalyzeContract(w http.ResponseWriter, r *http.Request) {
 		writeAIBudgetExceeded(w, retryAfter, s.MaxCallsPerHour)
 		return
 	}
-	contractJSON, _ := json.Marshal(map[string]any{"contract": contract, "documents": documents})
+	// Redacted before it is marshalled, not after. Every other view of a
+	// contract goes through redactObject, which nils the amount for a reader
+	// without contract.amount.read; this one marshalled the record as scanned,
+	// so a reader who saw no amount on the detail page had it sent to the
+	// configured model — which is then asked to extract "amount" and hand it
+	// back. The data also leaves the deployment, so this is the last place it
+	// can be held back.
+	contractJSON, _ := json.Marshal(map[string]any{"contract": redactObject(p, contract), "documents": documents})
 	system := "당신은 기업 계약 및 공급망 법무 분석 전문가입니다. 제공된 계약 데이터만 근거로 분석하고 반드시 유효한 JSON 객체 하나만 반환하세요. 키는 amount, period, autoRenewal, termination, sla, penalty, liability, warranty, privacy, security, subcontracting, riskClauses, legalReviewRequired, summary 입니다. 불명확한 값은 null, riskClauses는 객체 배열, legalReviewRequired는 boolean입니다."
 	user := "다음 Vendra 계약 데이터에서 주요 조건과 위험조항을 추출하세요: " + string(contractJSON)
 	answer, usage, err := callAI(r.Context(), s, system, user)
