@@ -3846,3 +3846,128 @@ func TestDocumentUploadSignAndDownload(t *testing.T) {
 		t.Error("the download did not carry the checksum it was stored with")
 	}
 }
+
+// TestBidScoringStaysOnTheScaleTheFormOffers covers the committee's evaluation
+// score. The average of the scores map becomes total_score, recalculateSourcing
+// averages that into technical_score, and final_score orders the comparison the
+// committee awards from — so a score off the 0~100 scale the form offers is not
+// a cosmetic error, it decides who wins.
+func TestBidScoringStaysOnTheScaleTheFormOffers(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_evaluations WHERE response_id IN
+			(SELECT id FROM sourcing_responses WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number='RFQ-BIDSCALE'))`)
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_responses WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number='RFQ-BIDSCALE')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_participants WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number='RFQ-BIDSCALE')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number='RFQ-BIDSCALE'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number IN ('SUP-BIDCHEAP','SUP-BIDPRICEY')`)
+	})
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read the admin: %v", err)
+	}
+	supplier := func(number, name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES($1,$2,$1,'active')
+			ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`, number, name).Scan(&id); err != nil {
+			t.Fatalf("seed supplier %s: %v", number, err)
+		}
+		return id
+	}
+	cheapID, priceyID := supplier("SUP-BIDCHEAP", "저가 응찰"), supplier("SUP-BIDPRICEY", "고가 응찰")
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,created_by) VALUES('rfq','RFQ-BIDSCALE','평가 척도 검증 견적요청','open',$1) RETURNING id`, adminID).Scan(&rfqID); err != nil {
+		t.Fatalf("seed rfq: %v", err)
+	}
+	// Two submitted bids: the cheaper one is the honest winner on price.
+	bid := func(supplierID string, amount int, days int) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO sourcing_responses(sourcing_id,supplier_id,status,currency,total_amount,delivery_days,submitted_at)
+			VALUES($1,$2,'submitted','KRW',$3,$4,now()) RETURNING id`, rfqID, supplierID, amount, days).Scan(&id); err != nil {
+			t.Fatalf("seed bid: %v", err)
+		}
+		return id
+	}
+	cheapBid, priceyBid := bid(cheapID, 5_000_000, 20), bid(priceyID, 9_000_000, 30)
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.5:5000"))
+	evaluate := func(responseID string, scores map[string]float64) int {
+		t.Helper()
+		raw, _ := json.Marshal(map[string]any{"scores": scores, "comment": "검증"})
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/sourcing/responses/"+responseID+"/evaluate", strings.NewReader(string(raw)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w.Code
+	}
+
+	// Both bids are scored honestly first, so the ranking below has something
+	// to be wrong about.
+	for _, responseID := range []string{cheapBid, priceyBid} {
+		if code := evaluate(responseID, map[string]float64{"technical": 80, "fit": 80}); code != http.StatusOK {
+			t.Fatalf("an honest evaluation returned %d, want 200", code)
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		target string
+		scores map[string]float64
+	}{
+		{"a score past the top of the scale", priceyBid, map[string]float64{"technical": 99999, "fit": 99999}},
+		{"a score just past 100", priceyBid, map[string]float64{"technical": 101, "fit": 80}},
+		{"a negative score that sinks a rival", cheapBid, map[string]float64{"technical": -500, "fit": -500}},
+		{"one negative score among honest ones", cheapBid, map[string]float64{"technical": 80, "fit": -1}},
+		{"an evaluation with no scores at all", cheapBid, map[string]float64{}},
+		{"an item name that is not a label", priceyBid, map[string]float64{strings.Repeat("x", maxIdentifierLen+1): 80}},
+	} {
+		if code := evaluate(tc.target, tc.scores); code != http.StatusBadRequest {
+			t.Errorf("%s returned %d, want 400", tc.name, code)
+		}
+	}
+
+	// The ends of the scale are real scores, and so are fractions of a point.
+	for _, tc := range []struct {
+		name   string
+		scores map[string]float64
+	}{
+		{"the bottom of the scale", map[string]float64{"technical": 0, "fit": 0}},
+		{"the top of the scale", map[string]float64{"technical": 100, "fit": 100}},
+		{"a fraction of a point", map[string]float64{"technical": 80.5, "fit": 79.5}},
+	} {
+		if code := evaluate(priceyBid, tc.scores); code != http.StatusOK {
+			t.Errorf("%s returned %d, want 200", tc.name, code)
+		}
+	}
+
+	// Nothing off the scale was recorded, so no bid carries a weight the
+	// committee never gave it.
+	var offScale int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sourcing_evaluations WHERE response_id IN($1,$2) AND (total_score < 0 OR total_score > 100)`, cheapBid, priceyBid).Scan(&offScale); err != nil {
+		t.Fatalf("count the evaluations: %v", err)
+	}
+	if offScale != 0 {
+		t.Errorf("%d evaluations off the scale were written anyway", offScale)
+	}
+
+	// And the comparison still ranks the honest winner first. The last accepted
+	// evaluation gave the pricey bid a perfect 80 average, equal to the cheap
+	// one's, so price is what decides — as it should.
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sourcing_responses a JOIN sourcing_responses b ON b.id=$2 WHERE a.id=$1 AND a.final_score >= b.final_score`, cheapBid, priceyBid).Scan(&offScale); err != nil {
+		t.Fatalf("compare the bids: %v", err)
+	}
+	if offScale != 1 {
+		var cheap, pricey *float64
+		_ = pool.QueryRow(ctx, `SELECT (SELECT final_score FROM sourcing_responses WHERE id=$1),(SELECT final_score FROM sourcing_responses WHERE id=$2)`, cheapBid, priceyBid).Scan(&cheap, &pricey)
+		t.Errorf("the 9,000,000 bid outranks the 5,000,000 one: cheap=%v pricey=%v", cheap, pricey)
+	}
+}
