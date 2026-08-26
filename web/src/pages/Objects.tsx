@@ -946,22 +946,29 @@ function SearchPage() {
   const [result, setResult] = useState<{
     query: string;
     items: Record<string, string>[];
-  }>({ query: "", items: [] });
+    truncatedCategories: string[];
+  }>({ query: "", items: [], truncatedCategories: [] });
   useEffect(() => {
     if (q.length < 2) return;
     let active = true;
-    api<{ items: Record<string, string>[] }>(
-      `/api/v1/search?q=${encodeURIComponent(q)}`,
-    )
-      .then((response) => {
-        if (active) setResult({ query: q, items: response.items });
-      });
+    api<{
+      items: Record<string, string>[];
+      truncatedCategories?: string[];
+    }>(`/api/v1/search?q=${encodeURIComponent(q)}`).then((response) => {
+      if (active)
+        setResult({
+          query: q,
+          items: response.items,
+          truncatedCategories: response.truncatedCategories || [],
+        });
+    });
     return () => {
       active = false;
     };
   }, [q]);
   const loading = q.length >= 2 && result.query !== q;
   const items = result.query === q ? result.items : [];
+  const cutOff = result.query === q ? result.truncatedCategories : [];
   return (
     <div className="page">
       <PageHeader
@@ -998,6 +1005,12 @@ function SearchPage() {
               <Badge tone={statusTone(x.status)}>{x.status}</Badge>
             </div>
           ))}
+          {cutOff.length > 0 && (
+            <p className="search-truncated" role="status">
+              {cutOff.join(", ")} 결과가 더 있습니다. 검색어를 좁히면 나머지가
+              보입니다.
+            </p>
+          )}
         </div>
       ) : (
         <Empty

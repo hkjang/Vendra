@@ -1088,6 +1088,70 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestGlobalSearchSaysWhenItStoppedShort covers the one list in the
+// application that did not. Each leg of the search is capped, and a cap the
+// answer does not mention reads as "this is everything" — someone looking for
+// a supplier they know exists, in a register full of similarly named ones,
+// concludes it is not there.
+func TestGlobalSearchSaysWhenItStoppedShort(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	// Twelve past a cap of ten, so the answer is unambiguous.
+	for i := 0; i < 12; i++ {
+		if _, err := pool.Exec(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status)
+			VALUES($1,$2,$1,'active') ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name`,
+			fmt.Sprintf("SUP-CUTOFF-%02d", i), fmt.Sprintf("절삭검증정밀 %02d", i)); err != nil {
+			t.Fatalf("seed supplier %d: %v", i, err)
+		}
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and this would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number LIKE 'SUP-CUTOFF-%'`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.190:5000"))
+	search := func(q string) (int, bool, []string) {
+		t.Helper()
+		w := doRequest(t, handler, http.MethodGet, "/api/v1/search?q="+url.QueryEscape(q), admin)
+		if w.Code != http.StatusOK {
+			t.Fatalf("search %q returned %d: %s", q, w.Code, w.Body.String())
+		}
+		var out struct {
+			Items               []map[string]any `json:"items"`
+			Truncated           bool             `json:"truncated"`
+			TruncatedCategories []string         `json:"truncatedCategories"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("search %q: %v", q, err)
+		}
+		return len(out.Items), out.Truncated, out.TruncatedCategories
+	}
+
+	count, truncated, categories := search("절삭검증정밀")
+	if count != 10 {
+		t.Errorf("search returned %d rows, want the cap of 10", count)
+	}
+	if !truncated {
+		t.Error("twelve matches were cut to ten and the answer did not say so")
+	}
+	if len(categories) != 1 || categories[0] != "공급업체" {
+		t.Errorf("truncatedCategories = %v, want [공급업체]", categories)
+	}
+
+	// A narrower query fits, and must not claim otherwise.
+	count, truncated, categories = search("절삭검증정밀 03")
+	if count != 1 {
+		t.Errorf("the narrow search returned %d rows, want 1", count)
+	}
+	if truncated || len(categories) != 0 {
+		t.Errorf("a search that fits reported truncated=%v %v", truncated, categories)
+	}
+}
+
 // TestMalformedDateNamesTheFieldItCameFrom covers the wiring, not just the
 // validator: a bad date used to reach PostgreSQL, fail its cast, and come back
 // as "데이터를 저장하지 못했습니다" — which of the three date fields on the

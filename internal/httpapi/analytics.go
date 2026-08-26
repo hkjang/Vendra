@@ -103,19 +103,30 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 	// A leg that fails must not be mistaken for a leg that matched nothing:
 	// search quietly dropping a whole category reads as fact to the user, so a
 	// failure fails the search.
-	add := func(rows pgx.Rows, err error, scan func(pgx.Rows) (map[string]any, error)) bool {
+	// Each leg is capped, and a cap the answer does not mention reads as "this
+	// is everything". Someone looking for a supplier they know exists, in a
+	// register full of similarly named ones, concludes it is not there. Every
+	// other list in the application already says when it stopped short; this
+	// one did not. Each query now asks for one row past its limit, and the
+	// extra row answers the question without a second count.
+	cut := []string{}
+	add := func(category string, limit int, rows pgx.Rows, err error, scan func(pgx.Rows) (map[string]any, error)) bool {
 		found, err := searchSource(rows, err, scan)
 		if err != nil {
 			logDB(err)
 			writeError(w, 500, "database_error", "검색하지 못했습니다")
 			return false
 		}
-		items = append(items, found...)
+		kept, truncated := truncate(found, limit)
+		if truncated {
+			cut = append(cut, category)
+		}
+		items = append(items, kept...)
 		return true
 	}
 	if hasPermission(p, "supplier.read") || hasPermission(p, "*.read") {
-		rows, err := a.db.Query(r.Context(), `SELECT id,supplier_number,name,status FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
-		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
+		rows, err := a.db.Query(r.Context(), `SELECT id,supplier_number,name,status FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) LIMIT 11`, q, p.DataScope, organizationID, p.ID)
+		if !add("공급업체", 10, rows, err, func(rows pgx.Rows) (map[string]any, error) {
 			var id, num, title, status string
 			err := rows.Scan(&id, &num, &title, &status)
 			return map[string]any{"id": id, "type": "supplier", "number": num, "title": title, "status": status, "url": "/suppliers/" + id}, err
@@ -128,8 +139,8 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 	// whichever contracts happened to fall inside the newest thirty rows of
 	// every type, and silently lost the rest.
 	if readable := readableObjectTypes(p); len(readable) > 0 {
-		rows, err := a.db.Query(r.Context(), `SELECT id,object_type,number,title,status FROM business_objects WHERE deleted_at IS NULL AND object_type=ANY($5) AND (title ILIKE '%'||$1||'%' OR number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY updated_at DESC LIMIT 30`, q, p.DataScope, organizationID, p.ID, readable)
-		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
+		rows, err := a.db.Query(r.Context(), `SELECT id,object_type,number,title,status FROM business_objects WHERE deleted_at IS NULL AND object_type=ANY($5) AND (title ILIKE '%'||$1||'%' OR number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY updated_at DESC LIMIT 31`, q, p.DataScope, organizationID, p.ID, readable)
+		if !add("업무", 30, rows, err, func(rows pgx.Rows) (map[string]any, error) {
 			var id, typ, num, title, status string
 			err := rows.Scan(&id, &typ, &num, &title, &status)
 			return map[string]any{"id": id, "type": typ, "number": num, "title": title, "status": status}, err
@@ -138,8 +149,8 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasPermission(p, "supplier.read") || hasPermission(p, "*.read") {
-		rows, err := a.db.Query(r.Context(), `SELECT c.id,'contact',COALESCE(c.title,''),c.name,'active',c.supplier_id FROM supplier_contacts c JOIN suppliers s ON s.id=c.supplier_id WHERE (c.name ILIKE '%'||$1||'%' OR c.email ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
-		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
+		rows, err := a.db.Query(r.Context(), `SELECT c.id,'contact',COALESCE(c.title,''),c.name,'active',c.supplier_id FROM supplier_contacts c JOIN suppliers s ON s.id=c.supplier_id WHERE (c.name ILIKE '%'||$1||'%' OR c.email ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 11`, q, p.DataScope, organizationID, p.ID)
+		if !add("담당자", 10, rows, err, func(rows pgx.Rows) (map[string]any, error) {
 			var id, typ, num, title, status, supplierID string
 			err := rows.Scan(&id, &typ, &num, &title, &status, &supplierID)
 			return map[string]any{"id": id, "type": typ, "number": num, "title": title, "status": status, "url": "/suppliers/" + supplierID}, err
@@ -148,8 +159,8 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasPermission(p, "document.read") || hasPermission(p, "*.read") {
-		rows, err := a.db.Query(r.Context(), `SELECT d.id,d.document_type,d.name,d.status,d.supplier_id FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id WHERE d.name ILIKE '%'||$1||'%' AND ((d.supplier_id IS NULL AND ($2='company' OR d.uploaded_by=$4::uuid)) OR `+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
-		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
+		rows, err := a.db.Query(r.Context(), `SELECT d.id,d.document_type,d.name,d.status,d.supplier_id FROM documents d LEFT JOIN suppliers s ON s.id=d.supplier_id WHERE d.name ILIKE '%'||$1||'%' AND ((d.supplier_id IS NULL AND ($2='company' OR d.uploaded_by=$4::uuid)) OR `+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 11`, q, p.DataScope, organizationID, p.ID)
+		if !add("문서", 10, rows, err, func(rows pgx.Rows) (map[string]any, error) {
 			var id, num, title, status string
 			var supplierID *string
 			err := rows.Scan(&id, &num, &title, &status, &supplierID)
@@ -163,8 +174,8 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasPermission(p, "evaluation.read") || hasPermission(p, "*.read") {
-		rows, err := a.db.Query(r.Context(), `SELECT e.id,COALESCE(t.name,e.evaluation_type),s.name,e.status,e.supplier_id FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id LEFT JOIN scorecard_templates t ON t.id=e.template_id WHERE (s.name ILIKE '%'||$1||'%' OR COALESCE(t.name,e.evaluation_type) ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 10`, q, p.DataScope, organizationID, p.ID)
-		if !add(rows, err, func(rows pgx.Rows) (map[string]any, error) {
+		rows, err := a.db.Query(r.Context(), `SELECT e.id,COALESCE(t.name,e.evaluation_type),s.name,e.status,e.supplier_id FROM evaluations e JOIN suppliers s ON s.id=e.supplier_id LEFT JOIN scorecard_templates t ON t.id=e.template_id WHERE (s.name ILIKE '%'||$1||'%' OR COALESCE(t.name,e.evaluation_type) ILIKE '%'||$1||'%') AND s.deleted_at IS NULL AND (`+orgInScope("s.organization_id", "$2", "$3")+` OR ($2='own' AND s.owner_id=$4::uuid)) LIMIT 11`, q, p.DataScope, organizationID, p.ID)
+		if !add("평가", 10, rows, err, func(rows pgx.Rows) (map[string]any, error) {
 			var id, title, supplierName, status, supplierID string
 			err := rows.Scan(&id, &title, &supplierName, &status, &supplierID)
 			return map[string]any{"id": id, "type": "evaluation", "number": supplierName, "title": title, "status": status, "url": "/suppliers/" + supplierID + "?tab=Evaluations"}, err
@@ -172,7 +183,7 @@ func (a *App) globalSearch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	writeJSON(w, 200, map[string]any{"items": items, "truncated": len(cut) > 0, "truncatedCategories": cut})
 }
 
 func (a *App) listSupplierRisks(w http.ResponseWriter, r *http.Request) {
