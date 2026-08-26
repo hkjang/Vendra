@@ -167,6 +167,28 @@ func writeAlreadySubmitted(w http.ResponseWriter, instanceID string) {
 	writeJSON(w, 200, map[string]any{"status": "pending_approval", "workflowApplied": true, "instanceId": instanceID, "alreadySubmitted": true})
 }
 
+// workflowOwnedStatus lists the states the approval workflow awards.
+// submitObject moves an object to pending_approval, and workflowAction settles
+// it as approved, rejected or returned. Nothing else may write them: an object
+// that names one for itself never reaches the approvers its amount was supposed
+// to route to, and one already sitting in an inbox can be walked past them while
+// the instance still reads pending.
+var workflowOwnedStatus = map[string]bool{
+	"pending_approval": true, "approved": true, "rejected": true, "returned": true,
+}
+
+// refusedWorkflowStatus reports whether the request claims a workflow-owned
+// status the object does not already hold. Restating the current status is a
+// no-op and stays allowed; passing none at all leaves it untouched.
+func refusedWorkflowStatus(w http.ResponseWriter, in map[string]any, current string) bool {
+	status := stringValue(in, "status")
+	if status == "" || status == current || !workflowOwnedStatus[status] {
+		return false
+	}
+	writeError(w, 400, "validation_error", "결재 상태는 승인 절차로만 바뀝니다")
+	return true
+}
+
 func (a *App) createObject(objectType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := principalFrom(r.Context())
@@ -185,6 +207,9 @@ func (a *App) createObject(objectType string) http.HandlerFunc {
 		}
 		if !a.objectScopeAllowed(r, stringValue(in, "organizationId"), stringValue(in, "supplierId")) {
 			writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어난 조직 또는 공급업체입니다")
+			return
+		}
+		if refusedWorkflowStatus(w, in, "") {
 			return
 		}
 		number, _ := in["number"].(string)
@@ -328,6 +353,9 @@ func (a *App) updateObject(objectType string) http.HandlerFunc {
 		}
 		if supplierID := stringValue(in, "supplierId"); supplierID != "" && !a.objectScopeAllowed(r, "", supplierID) {
 			writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어난 공급업체입니다")
+			return
+		}
+		if refusedWorkflowStatus(w, in, before.Status) {
 			return
 		}
 		data := before.Data
