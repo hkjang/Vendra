@@ -1088,6 +1088,100 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestEvaluationRefusesWhatItCannotGrade covers a way to mark a supplier down
+// by accident. The score is derived from the template's criteria, never
+// asserted by the caller, so a submission carrying no scores derived zero —
+// and zero is below every grade rule, so it was stored as a genuine D and
+// answered 201. Because the supplier's grade is the average across
+// evaluations, a few of those drag a real A onto the register as a D.
+func TestEvaluationRefusesWhatItCannotGrade(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-EVALGUARD','평가 검증 업체','SUP-EVALGUARD','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM evaluations WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-EVALGUARD'`)
+	})
+
+	var criteria []byte
+	if err := pool.QueryRow(ctx, `SELECT criteria FROM scorecard_templates WHERE active=true ORDER BY created_at LIMIT 1`).Scan(&criteria); err != nil {
+		t.Fatalf("read the active template: %v", err)
+	}
+	var criteriaList []struct {
+		Code   string  `json:"code"`
+		Weight float64 `json:"weight"`
+	}
+	if err := json.Unmarshal(criteria, &criteriaList); err != nil || len(criteriaList) == 0 {
+		t.Fatalf("the seeded template has no criteria: %v", err)
+	}
+	full := map[string]float64{}
+	for _, c := range criteriaList {
+		full[c.Code] = 80
+	}
+	partial := map[string]float64{criteriaList[0].Code: 90}
+	tooHigh := map[string]float64{}
+	for k, v := range full {
+		tooHigh[k] = v
+	}
+	tooHigh[criteriaList[0].Code] = 1000
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.200:5000"))
+	evaluate := func(body map[string]any) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/suppliers/"+supplierID+"/evaluations", strings.NewReader(string(raw)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"no scores at all", map[string]any{"status": "completed"}},
+		{"an empty scores object", map[string]any{"status": "completed", "scores": map[string]float64{}}},
+		{"codes the template does not have", map[string]any{"status": "completed", "scores": map[string]float64{"nonexistent": 100}}},
+		{"only some of the criteria", map[string]any{"status": "completed", "scores": partial}},
+		{"a score past the top of the scale", map[string]any{"status": "completed", "scores": tooHigh}},
+	} {
+		if w := evaluate(tc.body); w.Code != http.StatusBadRequest {
+			t.Errorf("%s returned %d, want 400: %s", tc.name, w.Code, w.Body.String())
+		}
+	}
+
+	var planted int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM evaluations WHERE supplier_id=$1`, supplierID).Scan(&planted); err != nil {
+		t.Fatalf("count evaluations: %v", err)
+	}
+	if planted != 0 {
+		t.Fatalf("%d evaluations were recorded from submissions that could not be graded", planted)
+	}
+
+	// A complete submission still goes through, and so does a real assessment
+	// of zero — scoring badly is not the same as not scoring.
+	if w := evaluate(map[string]any{"status": "completed", "scores": full}); w.Code != http.StatusCreated {
+		t.Fatalf("a complete evaluation returned %d: %s", w.Code, w.Body.String())
+	}
+	zeros := map[string]float64{}
+	for _, c := range criteriaList {
+		zeros[c.Code] = 0
+	}
+	if w := evaluate(map[string]any{"status": "completed", "scores": zeros}); w.Code != http.StatusCreated {
+		t.Errorf("an evaluation of zero across the board returned %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestGlobalSearchSaysWhenItStoppedShort covers the one list in the
 // application that did not. Each leg of the search is capped, and a cap the
 // answer does not mention reads as "this is everything" — someone looking for
