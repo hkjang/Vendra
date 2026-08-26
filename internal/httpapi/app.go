@@ -84,6 +84,13 @@ func (a *App) Handler() http.Handler {
 // Only wildcards whose name ends in "id" are checked. Every resource behind
 // one of those is keyed by uuid; the other wildcards ({key}, {entityType})
 // name settings and lookup tables that are keyed by text.
+// routeRegistrar is what registerAPI writes its route table into. guardedMux is
+// the one the server uses; a test passes a recorder instead, which is how the
+// OpenAPI document is held to the routes that actually exist.
+type routeRegistrar interface {
+	HandleFunc(pattern string, h http.HandlerFunc)
+}
+
 type guardedMux struct{ mux *http.ServeMux }
 
 func (g *guardedMux) HandleFunc(pattern string, h http.HandlerFunc) {
@@ -146,7 +153,7 @@ func validUUID(s string) bool {
 	return true
 }
 
-func (a *App) registerAPI(m *guardedMux) {
+func (a *App) registerAPI(m routeRegistrar) {
 	m.HandleFunc("GET /api/v1/me", a.me)
 	m.HandleFunc("PATCH /api/v1/me", a.updateMe)
 	m.HandleFunc("POST /api/v1/me/password", a.changeMyPassword)
