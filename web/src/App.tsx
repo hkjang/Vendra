@@ -45,7 +45,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { api, APIError, can, post, Principal, Version } from "./api";
+import { api, can, post, Principal, sessionUnavailable, Version } from "./api";
 import { BootSplash, Loading, Logo, PageErrorBoundary } from "./components";
 import { ToastProvider } from "./feedback";
 import { useNotify } from "./toast-context";
@@ -97,13 +97,7 @@ function AppRoutes() {
   // the login form during a database restart signs everyone out and invites them
   // to retype a password that was never the problem.
   const applyFailure = useCallback((reason: unknown) => {
-    // Only a refusal means the session is gone. A server error, or no answer at
-    // all because the request never arrived, means the question went
-    // unanswered — and showing the sign-in form there tells someone they were
-    // logged out when they were not. This used to require an APIError with a
-    // 5xx, so a dropped connection fell through to the sign-in form.
-    const refused = reason instanceof APIError && reason.status === 401;
-    setUnavailable(!refused);
+    setUnavailable(sessionUnavailable(reason));
     setSession(null);
   }, []);
   const load = useCallback(async () => {

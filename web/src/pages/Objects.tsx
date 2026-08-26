@@ -940,7 +940,8 @@ function restoreForm(form: HTMLFormElement, payload: Record<string, unknown>) {
   }
 }
 
-function SearchPage() {
+// Exported so the suite can drive it; the app reaches it through the router.
+export function SearchPage() {
   const [params, setParams] = useSearchParams();
   const q = params.get("q") || "";
   const [result, setResult] = useState<{
@@ -969,6 +970,10 @@ function SearchPage() {
   const loading = q.length >= 2 && result.query !== q;
   const items = result.query === q ? result.items : [];
   const cutOff = result.query === q ? result.truncatedCategories : [];
+  // One character is not a search: the effect below never asks the server. The
+  // empty state used to answer "검색 결과가 없습니다" anyway, which tells
+  // someone their supplier is not registered when nothing was looked for.
+  const tooShort = q.length > 0 && q.length < 2;
   return (
     <div className="page">
       <PageHeader
@@ -1015,11 +1020,19 @@ function SearchPage() {
       ) : (
         <Empty
           icon={<Search />}
-          title={q ? "검색 결과가 없습니다" : "무엇을 찾고 계세요?"}
+          title={
+            tooShort
+              ? "한 글자 더 입력하세요"
+              : q
+                ? "검색 결과가 없습니다"
+                : "무엇을 찾고 계세요?"
+          }
           description={
-            q
-              ? "다른 검색어 또는 더 넓은 조건을 사용하세요."
-              : "공급업체명, 계약번호, 발주 제목 등을 검색하세요."
+            tooShort
+              ? "두 글자부터 검색합니다. 아직 찾아보지 않았습니다."
+              : q
+                ? "다른 검색어 또는 더 넓은 조건을 사용하세요."
+                : "공급업체명, 계약번호, 발주 제목 등을 검색하세요."
           }
         />
       )}

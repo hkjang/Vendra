@@ -77,6 +77,19 @@ export function money(value?: number | null) {
   }).format(value);
 }
 
+/**
+ * Whether a failed session check means the service could not answer, rather
+ * than that the caller is signed out.
+ *
+ * Only a refusal means the session is gone. A server error, or no answer at all
+ * because the request never arrived — `fetch` rejects with a TypeError there,
+ * not an APIError — means the question went unanswered, and showing the sign-in
+ * form tells someone they were logged out when they were not.
+ */
+export function sessionUnavailable(reason: unknown) {
+  return !(reason instanceof APIError && reason.status === 401);
+}
+
 const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 function parseTimestamp(value?: string | null) {
