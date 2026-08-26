@@ -106,14 +106,35 @@ func jsonDate(column, key string) string {
 		"'$.d.datetime()','{}',true) #>> '{}')::timestamptz::date"
 }
 
-// jsonBool reads a boolean out of a JSON field, defaulting to true for
-// anything it cannot read. Same hazard as jsonDate: ('maybe')::boolean errors.
-// Every spelling PostgreSQL accepts as false is listed, so nothing that used
-// to read as false now reads as true.
-func jsonBool(column, key string) string {
-	return "(CASE WHEN " + column + "->'" + key + "' = 'false'::jsonb" +
-		" OR lower(trim(" + column + "->>'" + key + "')) IN ('false','f','no','n','off','0')" +
-		" THEN false ELSE true END)"
+// jsonBool reads a boolean out of a JSON field, answering fallback for
+// anything it cannot read. Same hazard as jsonDate: ('maybe')::boolean errors,
+// and the failure takes the statement with it. Every spelling PostgreSQL
+// accepts is listed, so nothing that used to read one way now reads the other.
+func jsonBool(column, key string, fallback bool) string {
+	return jsonBoolValue(column+"->'"+key+"'", column+"->>'"+key+"'", fallback)
+}
+
+// jsonBoolSetting is jsonBool for a settings row that holds the boolean as its
+// whole value rather than under a key. The earlier sweep of these casts looked
+// for ->>'key' and so walked straight past this shape: setting
+// workflow.approval_enabled to something that is not a boolean — which the
+// settings endpoint accepts — made every submission answer 503.
+func jsonBoolSetting(column string, fallback bool) string {
+	return jsonBoolValue(column, column+" #>> '{}'", fallback)
+}
+
+func jsonBoolValue(jsonExpr, textExpr string, fallback bool) string {
+	reads := func(literal string, spellings ...string) string {
+		quoted := make([]string, len(spellings))
+		for i, s := range spellings {
+			quoted[i] = "'" + s + "'"
+		}
+		return jsonExpr + " = '" + literal + "'::jsonb OR lower(trim(" + textExpr + ")) IN (" + strings.Join(quoted, ",") + ")"
+	}
+	if fallback {
+		return "(CASE WHEN " + reads("false", "false", "f", "no", "n", "off", "0") + " THEN false ELSE true END)"
+	}
+	return "(CASE WHEN " + reads("true", "true", "t", "yes", "y", "on", "1") + " THEN true ELSE false END)"
 }
 
 // uuidParam reads an optional record-id filter. A malformed id is the caller's

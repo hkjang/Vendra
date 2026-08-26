@@ -367,7 +367,7 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		bankCipher = c
-		workflowEnabled, err := a.boolSetting(r.Context(), `SELECT COALESCE((value #>> '{}')::boolean,false) FROM settings WHERE key='workflow.approval_enabled'`, false)
+		workflowEnabled, err := a.boolSetting(r.Context(), `SELECT `+jsonBoolSetting("value", false)+` FROM settings WHERE key='workflow.approval_enabled'`, false)
 		if err != nil {
 			logDB(err)
 			writeControlUnavailable(w)
@@ -376,7 +376,7 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 		// An unconfigured supplier.registration still requires approval, which
 		// the COALESCE says but the old code lost: a missing row scanned as
 		// false and waved the change through.
-		bankApproval, err := a.boolSetting(r.Context(), `SELECT `+jsonBool("value", "bankChangeApproval")+` FROM settings WHERE key='supplier.registration'`, true)
+		bankApproval, err := a.boolSetting(r.Context(), `SELECT `+jsonBool("value", "bankChangeApproval", true)+` FROM settings WHERE key='supplier.registration'`, true)
 		if err != nil {
 			logDB(err)
 			writeControlUnavailable(w)
