@@ -533,7 +533,9 @@ function SupplierEdit({
             hint={
               supplier.bankAccount
                 ? `현재 계좌 ••••${supplier.bankAccount.slice(-4)}`
-                : "권한이 있으면 계좌 상태를 확인할 수 있습니다."
+                : supplier.bankAccountUnreadable
+                  ? "등록된 계좌를 복호화하지 못했습니다. 새로 입력하기 전에 관리자에게 문의하세요."
+                  : "권한이 있으면 계좌 상태를 확인할 수 있습니다."
             }
           >
             <input
@@ -969,7 +971,9 @@ function SupplierTab({
             <dd>
               {s.bankAccount
                 ? `•••• ${s.bankAccount.slice(-4)}`
-                : "권한 제한 또는 미등록"}
+                : s.bankAccountUnreadable
+                  ? "등록되어 있으나 복호화 실패"
+                  : "권한 제한 또는 미등록"}
             </dd>
             <dt>거래 상태</dt>
             <dd>
