@@ -1088,6 +1088,58 @@ func TestSourcingComparisonHidesUnsubmittedBids(t *testing.T) {
 	}
 }
 
+// TestBooleanSettingsSurviveGarbage covers a hard stop on the core workflow.
+// workflow.approval_enabled is read as (value #>> '{}')::boolean, and the
+// settings endpoint takes any JSON — so an administrator storing {} there made
+// every submission answer 503. The earlier sweep of these casts looked for
+// ->>'key' and walked straight past this shape.
+func TestBooleanSettingsSurviveGarbage(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+
+	var original []byte
+	if err := pool.QueryRow(ctx, `SELECT value FROM settings WHERE key='workflow.approval_enabled'`).Scan(&original); err != nil {
+		t.Fatalf("read the seeded setting: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and this would silently no-op,
+		// leaving every later test with this one's setting.
+		if _, err := pool.Exec(ctx, `UPDATE settings SET value=$1 WHERE key='workflow.approval_enabled'`, original); err != nil {
+			t.Errorf("restoring workflow.approval_enabled failed: %v", err)
+		}
+	})
+
+	enabled := `SELECT ` + jsonBoolSetting("value", false) + ` FROM settings WHERE key='workflow.approval_enabled'`
+	for _, tc := range []struct {
+		stored string
+		want   bool
+	}{
+		{`true`, true},
+		{`false`, false},
+		{`"true"`, true},
+		{`"on"`, true},
+		{`"no"`, false},
+		{`"maybe"`, false},
+		{`{}`, false},
+		{`[]`, false},
+		{`null`, false},
+		{`42`, false},
+	} {
+		if _, err := pool.Exec(ctx, `UPDATE settings SET value=$1::jsonb WHERE key='workflow.approval_enabled'`, tc.stored); err != nil {
+			t.Fatalf("write %s: %v", tc.stored, err)
+		}
+		got, err := app.boolSetting(ctx, enabled, false)
+		if err != nil {
+			t.Errorf("reading %s failed: %v", tc.stored, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s read as %v, want %v", tc.stored, got, tc.want)
+		}
+	}
+}
+
 // TestDispatchIsNotStarvedByARetiredAdapter covers a queue that could stop
 // moving for good. Delivery rows are created for the adapters enabled at the
 // time; when one is later disabled or removed, dispatch skipped its rows
@@ -1271,7 +1323,7 @@ func TestJSONFieldsSurviveGarbage(t *testing.T) {
 			ON CONFLICT(key) DO UPDATE SET value=excluded.value`, tc.stored); err != nil {
 			t.Fatalf("write setting %s: %v", tc.stored, err)
 		}
-		got, err := app.boolSetting(ctx, `SELECT `+jsonBool("value", "bankChangeApproval")+` FROM settings WHERE key='supplier.registration'`, true)
+		got, err := app.boolSetting(ctx, `SELECT `+jsonBool("value", "bankChangeApproval", true)+` FROM settings WHERE key='supplier.registration'`, true)
 		if err != nil {
 			t.Errorf("reading %s failed: %v", tc.stored, err)
 			continue

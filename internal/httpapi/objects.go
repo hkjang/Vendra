@@ -315,7 +315,7 @@ func (a *App) submitObject(objectType string) http.HandlerFunc {
 			writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어났습니다")
 			return
 		}
-		enabled, err := a.boolSetting(r.Context(), `SELECT COALESCE((value #>> '{}')::boolean,false) FROM settings WHERE key='workflow.approval_enabled'`, false)
+		enabled, err := a.boolSetting(r.Context(), `SELECT `+jsonBoolSetting("value", false)+` FROM settings WHERE key='workflow.approval_enabled'`, false)
 		if err != nil {
 			logDB(err)
 			writeControlUnavailable(w)
