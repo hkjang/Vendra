@@ -4898,3 +4898,151 @@ func TestAwardingATenderRecordsTheDecision(t *testing.T) {
 		t.Errorf("the losing bidder stands as %q", standings[loserID])
 	}
 }
+
+// TestCreatingAContactDoesNotDependOnThePrimaryFlag covers a field that is
+// optional everywhere except in the statement that stores it. primary_contact
+// is NOT NULL and the handler passed in["primary"] through untyped, so omitting
+// the field sent NULL and the save failed as "담당자를 저장하지 못했습니다",
+// while a string reached PostgreSQL's own text-to-boolean rules and "yes"
+// quietly made someone the primary contact. The portal's own create — writing
+// the same table — already read it as a bool and lowercased the address.
+func TestCreatingAContactDoesNotDependOnThePrimaryFlag(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM supplier_contacts WHERE supplier_id IN (SELECT id FROM suppliers WHERE supplier_number='SUP-CONTACTFLAG')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number='SUP-CONTACTFLAG'`)
+	})
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-CONTACTFLAG','담당자 검증','SUP-CONTACTFLAG','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed the supplier: %v", err)
+	}
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.41:5000"))
+	create := func(body map[string]any) int {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/suppliers/"+supplierID+"/contacts", strings.NewReader(string(raw)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w.Code
+	}
+	stored := func(name string) bool {
+		t.Helper()
+		var primary bool
+		if err := pool.QueryRow(ctx, `SELECT primary_contact FROM supplier_contacts WHERE supplier_id=$1 AND name=$2`, supplierID, name).Scan(&primary); err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return primary
+	}
+
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"없음", map[string]any{"name": "없음", "email": "MiXeD@Vendor.Example"}},
+		{"거짓", map[string]any{"name": "거짓", "primary": false}},
+		{"문자열", map[string]any{"name": "문자열", "primary": "yes"}},
+		{"숫자", map[string]any{"name": "숫자", "primary": 0}},
+	} {
+		if code := create(tc.body); code != http.StatusCreated {
+			t.Errorf("primary %s returned %d, want 201", tc.name, code)
+		}
+	}
+	// Only an actual true makes somebody the primary contact.
+	if code := create(map[string]any{"name": "참", "primary": true}); code != http.StatusCreated {
+		t.Fatalf("primary true returned %d", code)
+	}
+	if !stored("참") {
+		t.Error("an explicit true did not make the contact primary")
+	}
+	for _, name := range []string{"없음", "거짓", "문자열", "숫자"} {
+		if stored(name) {
+			t.Errorf("%q became the primary contact without being asked to", name)
+		}
+	}
+	// And the address is stored the way the portal stores it, since both write
+	// this table.
+	var email string
+	if err := pool.QueryRow(ctx, `SELECT email FROM supplier_contacts WHERE supplier_id=$1 AND name='없음'`, supplierID).Scan(&email); err != nil {
+		t.Fatalf("read the address: %v", err)
+	}
+	if email != "mixed@vendor.example" {
+		t.Errorf("the address was stored as %q; the portal path lowercases it", email)
+	}
+}
+
+// TestAFailedDecodeSaysSoRatherThanBlamingAField covers eleven handlers that
+// wrote `if decodeJSON(...) != nil || in.X == ""` and reported both outcomes
+// with the validation message. A caller who supplied X correctly but added one
+// unrecognised field was told X was missing, and no amount of fixing X helped.
+// Thirty-four other handlers already pass the decode error through.
+func TestAFailedDecodeSaysSoRatherThanBlamingAField(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_questions WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number='RFQ-DECODE')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number='RFQ-DECODE'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='decodecheck'`)
+	})
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read the admin: %v", err)
+	}
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,created_by) VALUES('rfq','RFQ-DECODE','디코드 오류 검증','open',$1) RETURNING id`, adminID).Scan(&rfqID); err != nil {
+		t.Fatalf("seed the rfq: %v", err)
+	}
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.42:5000"))
+	send := func(path, body string) (int, string) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		var out struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out.Error.Code
+	}
+
+	questions := "/api/v1/sourcing/" + rfqID + "/questions"
+	// A question was supplied; the body also carries a field the endpoint does
+	// not define. The answer must name that, not the question.
+	if code, kind := send(questions, `{"question":"내부 공지입니다","answer":"참고"}`); code != http.StatusBadRequest || kind != "invalid_request" {
+		t.Errorf("an unrecognised field answered %d/%s, want 400/invalid_request", code, kind)
+	}
+	if code, kind := send(questions, `{"question":`); code != http.StatusBadRequest || kind != "invalid_request" {
+		t.Errorf("malformed JSON answered %d/%s, want 400/invalid_request", code, kind)
+	}
+	// A genuinely missing question is still a validation error.
+	if code, kind := send(questions, `{"question":""}`); code != http.StatusBadRequest || kind != "validation_error" {
+		t.Errorf("an empty question answered %d/%s, want 400/validation_error", code, kind)
+	}
+	// And a good one still works, so the split did not break the path.
+	if code, _ := send(questions, `{"question":"정상 질문입니다"}`); code != http.StatusCreated {
+		t.Errorf("a valid question answered %d, want 201", code)
+	}
+
+	// The same split, on a different handler, so this is not one endpoint's fix.
+	if code, kind := send("/api/v1/admin/roles", `{"code":"decodecheck","name":"디코드 검증","unknownField":1}`); code != http.StatusBadRequest || kind != "invalid_request" {
+		t.Errorf("an unrecognised field on roles answered %d/%s, want 400/invalid_request", code, kind)
+	}
+}

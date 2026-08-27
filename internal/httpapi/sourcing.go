@@ -84,7 +84,11 @@ func (a *App) addSourcingParticipants(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		SupplierIDs []string `json:"supplierIds"`
 	}
-	if decodeJSON(r, &in) != nil || len(in.SupplierIDs) == 0 {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if len(in.SupplierIDs) == 0 {
 		writeError(w, 400, "validation_error", "초대할 공급업체를 선택하세요")
 		return
 	}
@@ -402,7 +406,11 @@ func (a *App) createInternalSourcingQuestion(w http.ResponseWriter, r *http.Requ
 		Question   string `json:"question"`
 		Visibility string `json:"visibility"`
 	}
-	if decodeJSON(r, &in) != nil || in.Question == "" {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if in.Question == "" {
 		writeError(w, 400, "validation_error", "질문은 필수입니다")
 		return
 	}
@@ -424,7 +432,11 @@ func (a *App) answerSourcingQuestion(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Answer string `json:"answer"`
 	}
-	if decodeJSON(r, &in) != nil || in.Answer == "" {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if in.Answer == "" {
 		writeError(w, 400, "validation_error", "답변은 필수입니다")
 		return
 	}
@@ -462,7 +474,11 @@ func (a *App) portalAskSourcingQuestion(w http.ResponseWriter, r *http.Request) 
 		Question string `json:"question"`
 		Private  bool   `json:"private"`
 	}
-	if decodeJSON(r, &in) != nil || in.Question == "" {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if in.Question == "" {
 		writeError(w, 400, "validation_error", "질문은 필수입니다")
 		return
 	}
@@ -547,7 +563,11 @@ func (a *App) addSourcingCommittee(w http.ResponseWriter, r *http.Request) {
 		UserIDs []string `json:"userIds"`
 		Role    string   `json:"role"`
 	}
-	if decodeJSON(r, &in) != nil || len(in.UserIDs) == 0 {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if len(in.UserIDs) == 0 {
 		writeError(w, 400, "validation_error", "평가위원을 선택하세요")
 		return
 	}
@@ -577,7 +597,11 @@ func (a *App) selectSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		SelectionType string `json:"selectionType"`
 		Reason        string `json:"reason"`
 	}
-	if decodeJSON(r, &in) != nil || in.ResponseID == "" || (in.SelectionType != "preferred" && in.SelectionType != "final") {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if in.ResponseID == "" || (in.SelectionType != "preferred" && in.SelectionType != "final") {
 		writeError(w, 400, "validation_error", "응답과 선정 유형(preferred/final)은 필수입니다")
 		return
 	}

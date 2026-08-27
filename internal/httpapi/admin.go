@@ -253,7 +253,11 @@ func (a *App) createRole(w http.ResponseWriter, r *http.Request) {
 		Permissions []string `json:"permissions"`
 		DataScope   string   `json:"dataScope"`
 	}
-	if decodeJSON(r, &in) != nil || in.Code == "" || in.Name == "" {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if in.Code == "" || in.Name == "" {
 		writeError(w, 400, "validation_error", "역할 코드와 이름은 필수입니다")
 		return
 	}
@@ -323,7 +327,11 @@ func (a *App) createOrganization(w http.ResponseWriter, r *http.Request) {
 		Name     string `json:"name"`
 		ParentID string `json:"parentId"`
 	}
-	if decodeJSON(r, &in) != nil || strings.TrimSpace(in.Name) == "" {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if strings.TrimSpace(in.Name) == "" {
 		writeError(w, 400, "validation_error", "조직 이름은 필수입니다")
 		return
 	}
@@ -397,7 +405,11 @@ func (a *App) createAccessGrant(w http.ResponseWriter, r *http.Request) {
 		ValidFrom    string `json:"validFrom"`
 		ValidUntil   string `json:"validUntil"`
 	}
-	if decodeJSON(r, &in) != nil || in.UserID == "" || in.Permission == "" {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if in.UserID == "" || in.Permission == "" {
 		writeError(w, 400, "validation_error", "사용자와 권한은 필수입니다")
 		return
 	}
