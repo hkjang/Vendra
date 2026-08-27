@@ -83,18 +83,24 @@ export default function Portal({
   });
   const [mobileNav, setMobileNav] = useState(false);
   const [help, setHelp] = useState(false);
+  // Fetched independently rather than through Promise.all. A supplier with a
+  // bid closing today must not lose the tender list because their evaluation
+  // history failed to load: with all four in one Promise.all, the least
+  // important call could hide every other one behind the loading screen.
   const load = useCallback(() => {
-    Promise.all([
-      api<{ supplier: Supplier; user: Principal }>("/api/v1/portal/profile"),
-      api<{ items: BusinessObject[] }>("/api/v1/portal/work"),
-      api<{ items: SourcingItem[] }>("/api/v1/portal/sourcing"),
-      api<{ items: PortalEvaluation[] }>("/api/v1/portal/evaluations"),
-    ]).then(([p, w, q, e]) => {
-      setProfile(p);
-      setWork(w.items);
-      setSourcing(q.items);
-      setEvaluations(e.items);
-    });
+    api<{ supplier: Supplier; user: Principal }>("/api/v1/portal/profile")
+      .then(setProfile)
+      .catch(() => setProfile(undefined));
+    const section = <T,>(path: string, apply: (items: T[]) => void) =>
+      api<{ items: T[] }>(path)
+        .then((response) => apply(response.items))
+        .catch(() => apply(undefined as unknown as T[]));
+    void section<BusinessObject>("/api/v1/portal/work", setWork);
+    void section<SourcingItem>("/api/v1/portal/sourcing", setSourcing);
+    void section<PortalEvaluation>(
+      "/api/v1/portal/evaluations",
+      setEvaluations,
+    );
   }, []);
   useEffect(() => {
     void load();
@@ -124,8 +130,22 @@ export default function Portal({
       document.removeEventListener("keydown", close);
     };
   }, [mobileNav]);
-  if (!profile || !work || !sourcing || !evaluations)
-    return <Loading label="공급업체 포털을 준비하는 중" />;
+  // Only the profile is required: it says which supplier this is. A section
+  // that failed reports itself where it renders instead of holding the rest.
+  if (!profile) return <Loading label="공급업체 포털을 준비하는 중" />;
+  // The caller supplies the particle: "결과를" but "입찰을", and a screen that
+  // writes "을(를)" reads like a form letter.
+  const unavailable = (what: string) => (
+    <Empty
+      title={`${what} 불러오지 못했습니다`}
+      description="목록이 비어 있는 것이 아니라 조회에 실패했습니다. 잠시 후 다시 시도하세요."
+      action={
+        <button className="button secondary" onClick={load}>
+          다시 시도
+        </button>
+      }
+    />
+  );
   const s = profile.supplier;
   const selectSection = (next: string) => {
     setSection(next);
@@ -217,36 +237,68 @@ export default function Portal({
           </div>
         </header>
         {section === "home" ? (
-          <PortalHome
-            supplier={s}
-            work={[...work, ...sourcing]}
-            setSection={selectSection}
-          />
+          !work || !sourcing ? (
+            <Loading label="업무를 불러오는 중" />
+          ) : (
+            <PortalHome
+              supplier={s}
+              work={[...work, ...sourcing]}
+              setSection={selectSection}
+            />
+          )
         ) : section === "profile" ? (
           <CompanyProfile supplier={s} onSaved={load} />
         ) : section === "contacts" ? (
           <PortalContacts />
         ) : section === "rfq" ? (
-          <PortalSourcing items={sourcing} onSaved={load} />
+          sourcing ? (
+            <PortalSourcing items={sourcing} onSaved={load} />
+          ) : (
+            unavailable("견적·입찰 목록을")
+          )
         ) : section === "evaluation" ? (
-          <PortalEvaluations items={evaluations} />
-        ) : (
+          evaluations ? (
+            <PortalEvaluations items={evaluations} />
+          ) : (
+            unavailable("평가 결과를")
+          )
+        ) : work ? (
           <PortalWork
             type={section}
             items={work.filter((x) => x.objectType === section)}
             related={work}
             onSaved={load}
           />
+        ) : (
+          unavailable("업무 목록을")
         )}
       </main>
       {help && (
-        <Modal title="Vendra Supplier Portal 도움말" onClose={() => setHelp(false)}>
+        <Modal
+          title="Vendra Supplier Portal 도움말"
+          onClose={() => setHelp(false)}
+        >
           <div className="portal-help">
-            <p><b>견적 · 입찰</b> 초대된 RFQ/RFP 응답을 임시 저장하거나 최종 제출합니다.</p>
-            <p><b>계약 · 발주</b> 내부 담당자가 전달한 내용을 확인하고 수신 상태를 기록합니다.</p>
-            <p><b>납품 · Invoice</b> 관련 발주를 선택해 실적과 증빙 정보를 등록합니다.</p>
-            <p><b>자료 제출</b> 문서는 체크섬과 버전, 다운로드 이력과 함께 보관됩니다.</p>
-            <p><b>빠른 이동</b> 모바일에서는 상단 메뉴 버튼으로 모든 포털 업무로 이동합니다.</p>
+            <p>
+              <b>견적 · 입찰</b> 초대된 RFQ/RFP 응답을 임시 저장하거나 최종
+              제출합니다.
+            </p>
+            <p>
+              <b>계약 · 발주</b> 내부 담당자가 전달한 내용을 확인하고 수신
+              상태를 기록합니다.
+            </p>
+            <p>
+              <b>납품 · Invoice</b> 관련 발주를 선택해 실적과 증빙 정보를
+              등록합니다.
+            </p>
+            <p>
+              <b>자료 제출</b> 문서는 체크섬과 버전, 다운로드 이력과 함께
+              보관됩니다.
+            </p>
+            <p>
+              <b>빠른 이동</b> 모바일에서는 상단 메뉴 버튼으로 모든 포털 업무로
+              이동합니다.
+            </p>
           </div>
         </Modal>
       )}
@@ -656,18 +708,22 @@ function TenderBrief({ data }: { data?: Record<string, unknown> }) {
   const d = data || {};
   const text = (key: string) => {
     const value = d[key];
-    return value === undefined || value === null || value === "" ? "" : String(value);
+    return value === undefined || value === null || value === ""
+      ? ""
+      : String(value);
   };
   const quantity = [text("quantity"), text("unit")].filter(Boolean).join(" ");
-  const rows = ([
-    ["품목", text("item")],
-    ["수량", quantity],
-    ["납품 장소", text("deliveryLocation")],
-    ["희망 납기", text("desiredDate") ? date(text("desiredDate")) : ""],
-    ["지급 조건", text("paymentTerms")],
-    ["SLA", text("sla")],
-    ["보증 요구", text("warranty")],
-  ] as [string, string][]).filter(([, v]) => v !== "");
+  const rows = (
+    [
+      ["품목", text("item")],
+      ["수량", quantity],
+      ["납품 장소", text("deliveryLocation")],
+      ["희망 납기", text("desiredDate") ? date(text("desiredDate")) : ""],
+      ["지급 조건", text("paymentTerms")],
+      ["SLA", text("sla")],
+      ["보증 요구", text("warranty")],
+    ] as [string, string][]
+  ).filter(([, v]) => v !== "");
   const description = text("description");
   if (!description && !rows.length) return null;
   return (
@@ -985,7 +1041,6 @@ type PortalContact = {
   primary: boolean;
   emailVerified: boolean;
 };
-
 
 function PortalEvaluations({ items }: { items: PortalEvaluation[] }) {
   return (
