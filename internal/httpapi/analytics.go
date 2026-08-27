@@ -683,7 +683,11 @@ func (a *App) createSupplierRelationship(w http.ResponseWriter, r *http.Request)
 		DependencyPercent *float64 `json:"dependencyPercent"`
 		Notes             string   `json:"notes"`
 	}
-	if decodeJSON(r, &in) != nil || in.SourceSupplierID == "" || in.TargetSupplierID == "" || in.RelationshipType == "" {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if in.SourceSupplierID == "" || in.TargetSupplierID == "" || in.RelationshipType == "" {
 		writeError(w, 400, "validation_error", "원천·대상 공급업체와 관계 유형은 필수입니다")
 		return
 	}

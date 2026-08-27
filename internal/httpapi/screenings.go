@@ -88,7 +88,11 @@ func (a *App) createScreeningTemplate(w http.ResponseWriter, r *http.Request) {
 		ResultRules           any      `json:"resultRules"`
 		RequiredDocumentTypes []string `json:"requiredDocumentTypes"`
 	}
-	if decodeJSON(r, &in) != nil || in.Name == "" || in.Items == nil {
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if in.Name == "" || in.Items == nil {
 		writeError(w, 400, "validation_error", "이름과 심사항목은 필수입니다")
 		return
 	}

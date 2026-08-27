@@ -535,8 +535,15 @@ func (a *App) createContact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "담당자 이름은 필수입니다")
 		return
 	}
+	// primary_contact is NOT NULL, and this passed in["primary"] through
+	// untyped: omitting the field sent NULL and the whole save failed as
+	// "담당자를 저장하지 못했습니다", while a string went to PostgreSQL's own
+	// text-to-boolean rules, so "yes" quietly made someone the primary contact.
+	// The portal's own create already reads it as a bool and lowercases the
+	// address; the two surfaces write the same table and should agree.
+	primary, _ := in["primary"].(bool)
 	var id string
-	err = a.db.QueryRow(r.Context(), `INSERT INTO supplier_contacts(supplier_id,name,title,department,email,phone,primary_contact) VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7) RETURNING id`, r.PathValue("id"), name, stringValue(in, "title"), stringValue(in, "department"), stringValue(in, "email"), stringValue(in, "phone"), in["primary"]).Scan(&id)
+	err = a.db.QueryRow(r.Context(), `INSERT INTO supplier_contacts(supplier_id,name,title,department,email,phone,primary_contact) VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF(lower($5),''),NULLIF($6,''),$7) RETURNING id`, r.PathValue("id"), name, stringValue(in, "title"), stringValue(in, "department"), stringValue(in, "email"), stringValue(in, "phone"), primary).Scan(&id)
 	if err != nil {
 		writeError(w, 400, "save_failed", "담당자를 저장하지 못했습니다")
 		return
