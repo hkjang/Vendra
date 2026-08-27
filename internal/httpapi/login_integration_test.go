@@ -4647,3 +4647,124 @@ func TestAnUnreadableBankAccountIsNotReportedAsAbsent(t *testing.T) {
 		t.Errorf("an account on file that would not decrypt was reported as absent, the same as never having had one")
 	}
 }
+
+// TestChangingAPasswordEndsTheSessionsItProtected covers a compound claim the
+// security document makes and nothing verified: both password paths revoke the
+// target's sessions — a self-change keeping only the session that asked — and
+// both clear that account's failed login history. A stolen session outliving
+// the password it was obtained under is the whole reason to change one.
+func TestChangingAPasswordEndsTheSessionsItProtected(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	const email = "session-revoke@vendra.test"
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE email=$1)`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email=$1)`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='session_revoke_reader'`)
+	})
+	var roleID string
+	if err := pool.QueryRow(ctx, `INSERT INTO roles(code,name,permissions,data_scope,system) VALUES('session_revoke_reader','세션 폐기 검증','["supplier.read"]'::jsonb,'company',false)
+		ON CONFLICT(code) DO UPDATE SET permissions=excluded.permissions RETURNING id`).Scan(&roleID); err != nil {
+		t.Fatalf("seed the role: %v", err)
+	}
+	first := "SessionRevoke!2026"
+	hash, err := app.hashPassword(ctx, first)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status) VALUES($1,'세션 검증',$2,'internal','active')
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,status='active' RETURNING id`, email, hash).Scan(&userID); err != nil {
+		t.Fatalf("seed the user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, userID, roleID); err != nil {
+		t.Fatalf("assign the role: %v", err)
+	}
+
+	signIn := func(password, addr string) string {
+		t.Helper()
+		_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+		return sessionCookieFrom(t, postLogin(t, handler, email, password, addr))
+	}
+	alive := func(token string) int {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w.Code
+	}
+	send := func(method, path, token string, payload any) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		r := httptest.NewRequest(method, path, strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	failures := func() int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM login_attempts WHERE email=$1 AND succeeded=false`, email).Scan(&n); err != nil {
+			t.Fatalf("count the attempts: %v", err)
+		}
+		return n
+	}
+
+	// Three sessions, and a run of failures behind them.
+	tokens := []string{signIn(first, "198.51.100.21:5000"), signIn(first, "198.51.100.22:5000"), signIn(first, "198.51.100.23:5000")}
+	for _, token := range tokens {
+		if code := alive(token); code != http.StatusOK {
+			t.Fatalf("a fresh session answered %d, so the fixture is not set up", code)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		postLogin(t, handler, email, "not-the-password", "198.51.100.24:5000")
+	}
+	if failures() == 0 {
+		t.Fatal("no failed attempts were recorded, so clearing them proves nothing")
+	}
+
+	// An administrator resets it: every session the old password protected ends.
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.25:5000"))
+	second := "SessionRevokeTwo!2026"
+	if w := send(http.MethodPost, "/api/v1/admin/users/"+userID+"/password", admin, map[string]any{"newPassword": second}); w.Code != http.StatusOK {
+		t.Fatalf("the reset returned %d: %s", w.Code, w.Body.String())
+	}
+	for i, token := range tokens {
+		if code := alive(token); code != http.StatusUnauthorized {
+			t.Errorf("session %d survived an administrator reset with %d", i+1, code)
+		}
+	}
+	if n := failures(); n != 0 {
+		t.Errorf("%d failed attempts survived the reset, so the account stays closer to lockout than it should", n)
+	}
+
+	// The user changes it themselves: the session that asked is the one that
+	// keeps working.
+	tokens = []string{signIn(second, "198.51.100.26:5000"), signIn(second, "198.51.100.27:5000"), signIn(second, "198.51.100.28:5000")}
+	asking := tokens[1]
+	if w := send(http.MethodPost, "/api/v1/me/password", asking, map[string]any{"currentPassword": second, "newPassword": "SessionRevokeThree!2026"}); w.Code != http.StatusOK {
+		t.Fatalf("the self-change returned %d: %s", w.Code, w.Body.String())
+	}
+	if code := alive(asking); code != http.StatusOK {
+		t.Errorf("the session that changed the password was logged out too (%d)", code)
+	}
+	for i, token := range tokens {
+		if token == asking {
+			continue
+		}
+		if code := alive(token); code != http.StatusUnauthorized {
+			t.Errorf("session %d survived the owner changing their own password with %d", i+1, code)
+		}
+	}
+}
