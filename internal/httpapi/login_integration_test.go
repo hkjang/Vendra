@@ -4768,3 +4768,133 @@ func TestChangingAPasswordEndsTheSessionsItProtected(t *testing.T) {
 		}
 	}
 }
+
+// TestAwardingATenderRecordsTheDecision covers the last action in sourcing.
+//
+// The award writes three things in one transaction — the selection, the
+// request's status, and every bidder's standing — and the statement carrying
+// two of them read
+//
+//	jsonb_build_object('selectedSupplierId',$3::text,'selectionType',$4)
+//
+// with the cast on the first value and not the second. jsonb_build_object is
+// variadic "any", so an untyped parameter has nothing to infer from and
+// PostgreSQL refuses to plan the statement: "could not determine data type of
+// parameter $4". Every award failed with a 500 and rolled back, so the request
+// stayed open and nothing was recorded. Only a real database shows this — the
+// error is raised when the statement is planned, not when a row is written.
+func TestAwardingATenderRecordsTheDecision(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs.
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_selections WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number='RFQ-AWARD')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_responses WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number='RFQ-AWARD')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_participants WHERE sourcing_id IN (SELECT id FROM business_objects WHERE number='RFQ-AWARD')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE number='RFQ-AWARD'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE supplier_number IN ('SUP-AWARDWIN','SUP-AWARDLOSE')`)
+	})
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read the admin: %v", err)
+	}
+	supplier := func(number, name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES($1,$2,$1,'active')
+			ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`, number, name).Scan(&id); err != nil {
+			t.Fatalf("seed %s: %v", number, err)
+		}
+		return id
+	}
+	winnerID, loserID := supplier("SUP-AWARDWIN", "낙찰 예정"), supplier("SUP-AWARDLOSE", "탈락 예정")
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,created_by) VALUES('rfq','RFQ-AWARD','낙찰 기록 검증','open',$1) RETURNING id`, adminID).Scan(&rfqID); err != nil {
+		t.Fatalf("seed the rfq: %v", err)
+	}
+	bid := func(supplierID, status string, amount int) string {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `INSERT INTO sourcing_participants(sourcing_id,supplier_id,status) VALUES($1,$2,'invited') ON CONFLICT DO NOTHING`, rfqID, supplierID); err != nil {
+			t.Fatalf("seed the participant: %v", err)
+		}
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO sourcing_responses(sourcing_id,supplier_id,status,currency,total_amount,submitted_at)
+			VALUES($1,$2,$3,'KRW',$4,now()) RETURNING id`, rfqID, supplierID, status, amount).Scan(&id); err != nil {
+			t.Fatalf("seed the bid: %v", err)
+		}
+		return id
+	}
+	winning, losing := bid(winnerID, "submitted", 3_000_000), bid(loserID, "draft", 2_000_000)
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.31:5000"))
+	award := func(responseID, kind, reason string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"responseId": responseID, "selectionType": kind, "reason": reason})
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/sourcing/"+rfqID+"/select", strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	// A bid the supplier never submitted cannot be awarded, and the refusal must
+	// be the deliberate one rather than a statement that would not plan.
+	if w := award(losing, "final", "초안"); w.Code != http.StatusConflict {
+		t.Errorf("awarding a draft returned %d, want 409: %s", w.Code, w.Body.String())
+	}
+
+	if w := award(winning, "final", "최저가 및 납기 우위"); w.Code != http.StatusOK {
+		t.Fatalf("the award returned %d: %s", w.Code, w.Body.String())
+	}
+
+	var selectionType, reason string
+	if err := pool.QueryRow(ctx, `SELECT selection_type,reason FROM sourcing_selections WHERE sourcing_id=$1`, rfqID).Scan(&selectionType, &reason); err != nil {
+		t.Fatalf("the award recorded no selection: %v", err)
+	}
+	if selectionType != "final" || reason != "최저가 및 납기 우위" {
+		t.Errorf("the selection reads %s/%q", selectionType, reason)
+	}
+
+	// The request itself carries the outcome, which is what every later screen
+	// reads to say who won.
+	var status, selected, kind string
+	if err := pool.QueryRow(ctx, `SELECT status,COALESCE(data->>'selectedSupplierId',''),COALESCE(data->>'selectionType','') FROM business_objects WHERE id=$1`, rfqID).Scan(&status, &selected, &kind); err != nil {
+		t.Fatalf("read the request: %v", err)
+	}
+	if status != "selected" {
+		t.Errorf("the request is %s after a final award", status)
+	}
+	if selected != winnerID {
+		t.Errorf("the request names %q as the winner, want %q", selected, winnerID)
+	}
+	if kind != "final" {
+		t.Errorf("the request records the selection as %q", kind)
+	}
+
+	// And every bidder's standing moved, so nobody is left believing they are
+	// still in the running.
+	standings := map[string]string{}
+	rows, err := pool.Query(ctx, `SELECT supplier_id,status FROM sourcing_participants WHERE sourcing_id=$1`, rfqID)
+	if err != nil {
+		t.Fatalf("read the participants: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var supplierID, standing string
+		if err := rows.Scan(&supplierID, &standing); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		standings[supplierID] = standing
+	}
+	if standings[winnerID] != "selected" {
+		t.Errorf("the winner stands as %q", standings[winnerID])
+	}
+	if standings[loserID] != "not_selected" {
+		t.Errorf("the losing bidder stands as %q", standings[loserID])
+	}
+}

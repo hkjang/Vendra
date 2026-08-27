@@ -587,6 +587,10 @@ func (a *App) selectSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "invalid_response", "제출 완료된 응답만 선정할 수 있습니다")
 		return
 	}
+	// jsonb_build_object is variadic "any", so an untyped parameter in it has
+	// nothing to infer from and PostgreSQL refuses to plan the statement at all
+	// — "could not determine data type of parameter $4". Both values need the
+	// cast; only the first one had it, so every award failed and rolled back.
 	// Awarding writes the selection, the request's status and every bidder's
 	// standing. A partial award tells the buyer the award landed while the RFQ
 	// still reads open and the losing bidders still see themselves in the
@@ -609,7 +613,7 @@ func (a *App) selectSourcingResponse(w http.ResponseWriter, r *http.Request) {
 	if in.SelectionType == "final" {
 		objectStatus = "selected"
 	}
-	_, err = tx.Exec(r.Context(), `UPDATE business_objects SET status=$2,data=data||jsonb_build_object('selectedSupplierId',$3::text,'selectionType',$4),updated_at=now() WHERE id=$1`, o.ID, objectStatus, supplierID, in.SelectionType)
+	_, err = tx.Exec(r.Context(), `UPDATE business_objects SET status=$2,data=data||jsonb_build_object('selectedSupplierId',$3::text,'selectionType',$4::text),updated_at=now() WHERE id=$1`, o.ID, objectStatus, supplierID, in.SelectionType)
 	if err != nil {
 		logDB(err)
 		writeError(w, 500, "save_failed", "선정 결과를 저장하지 못했습니다")
