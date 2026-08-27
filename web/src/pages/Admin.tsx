@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertCircle,
@@ -27,14 +27,7 @@ import {
 } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, date, del, logTime, patch, post, put, todayISO } from "../api";
-import {
-  Badge,
-  Empty,
-  Field,
-  Loading,
-  Modal,
-  PageHeader,
-} from "../components";
+import { Badge, Empty, Field, Loading, Modal, PageHeader } from "../components";
 import { statusTone } from "../status";
 
 type Setting = {
@@ -506,7 +499,9 @@ type AccessGrant = {
   validFrom: string;
   validUntil?: string;
 };
-function UsersPanel() {
+// Exported so a test can drive the search box directly, the same way
+// SearchPage is.
+export function UsersPanel() {
   const [users, setUsers] = useState<User[]>();
   const [truncated, setTruncated] = useState(false);
   const [userQuery, setUserQuery] = useState("");
@@ -519,9 +514,16 @@ function UsersPanel() {
   >();
   const [editingUser, setEditingUser] = useState<User>();
   const [editingRole, setEditingRole] = useState<AdminRole>();
+  // Searching queries per keystroke behind a debounce, and a slow answer can
+  // still land after a later one. Without this the table showed rows for a
+  // query the box no longer held — on the screen where the actions are role
+  // assignment, password reset and deactivation. Objects, Suppliers and the
+  // work inbox all guard their loads the same way.
+  const loadSequence = useRef(0);
   const load = useCallback(
-    (query = userQuery) =>
-      Promise.all([
+    (query = userQuery) => {
+      const sequence = ++loadSequence.current;
+      return Promise.all([
         api<{ items: User[]; truncated: boolean }>(
           `/api/v1/admin/users?q=${encodeURIComponent(query)}`,
         ),
@@ -529,12 +531,14 @@ function UsersPanel() {
         api<{ items: Organization[] }>("/api/v1/admin/organizations"),
         api<{ items: AccessGrant[] }>("/api/v1/admin/access-grants"),
       ]).then(([u, r, o, g]) => {
+        if (sequence !== loadSequence.current) return;
         setUsers(u.items);
         setTruncated(u.truncated);
         setRoles(r.items);
         setOrganizations(o.items);
         setGrants(g.items);
-      }),
+      });
+    },
     [userQuery],
   );
   useEffect(() => {
@@ -636,7 +640,9 @@ function UsersPanel() {
                 <td>
                   <button type="button" className="row-action">
                     <span className="supplier-cell">
-                      <span className="avatar">{u.displayName.slice(0, 1)}</span>
+                      <span className="avatar">
+                        {u.displayName.slice(0, 1)}
+                      </span>
                       <span>
                         <b>{u.displayName}</b>
                         <small>{u.email}</small>
@@ -1866,10 +1872,7 @@ function Lifecycle() {
           </p>
         </div>
         <div className="header-actions">
-          <button
-            className="button secondary"
-            onClick={() => setAdding(true)}
-          >
+          <button className="button secondary" onClick={() => setAdding(true)}>
             <Plus />
             상태 추가
           </button>
@@ -2179,7 +2182,9 @@ function ServerLogs() {
       setLoadError("");
     } catch (error) {
       setLoadError(
-        error instanceof Error ? error.message : "서버 로그를 조회하지 못했습니다.",
+        error instanceof Error
+          ? error.message
+          : "서버 로그를 조회하지 못했습니다.",
       );
     }
   }, [level, query]);
@@ -2232,14 +2237,16 @@ function ServerLogs() {
             {autoRefresh ? "자동 갱신 중" : "자동 갱신"}
           </button>
           <button className="button secondary" onClick={() => void load()}>
-            <RefreshCw />새로고침
+            <RefreshCw />
+            새로고침
           </button>
           <button
             className="button secondary"
             onClick={exportLogs}
             disabled={!items.length}
           >
-            <Download />JSON
+            <Download />
+            JSON
           </button>
         </div>
       </header>
@@ -2347,4 +2354,3 @@ function ServerLogs() {
     </div>
   );
 }
-
