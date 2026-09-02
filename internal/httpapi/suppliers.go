@@ -119,26 +119,19 @@ func (a *App) listSuppliers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items, "count": len(items), "limit": limit, "truncated": truncated})
 }
 
-// supplierFieldLabels names the checked fields the way the form does, so the
-// rejection points at the box the person needs to fix.
-var supplierFieldLabels = map[string]string{
-	"name": "업체명", "legalName": "법인명", "representative": "대표자",
-	"businessNumber": "사업자번호", "corporateNumber": "법인번호",
-	"country": "국가", "supplierType": "업체 구분", "supplierNumber": "업체 코드",
-	"grade": "등급", "status": "상태",
-}
-
-func supplierFieldsTooLong(in map[string]any) (string, bool) {
-	field := overlongField(in, "name", "legalName", "representative", "businessNumber",
-		"corporateNumber", "country", "supplierType", "supplierNumber", "grade", "status")
-	if field == "" {
-		return "", false
-	}
-	label := supplierFieldLabels[field]
-	if label == "" {
-		label = field
-	}
-	return fmt.Sprintf("%s%s %d자를 넘을 수 없습니다", label, topicParticle(label), maxIdentifierLen), true
+// supplierTextFields names the checked fields the way the form does, so the
+// rejection points at the box the person needs to fix. Contact details and the
+// industry sit here beside the names: they are the header of every Supplier 360
+// and the columns of the register, and only the first ten of them were checked.
+// The bank account is on the list because it is encrypted on the way in — a
+// megabyte of it is a megabyte of ciphertext against a number that is 20 digits.
+var supplierTextFields = []textField{
+	{"name", "업체명"}, {"legalName", "법인명"}, {"representative", "대표자"},
+	{"businessNumber", "사업자번호"}, {"corporateNumber", "법인번호"},
+	{"country", "국가"}, {"supplierType", "업체 구분"}, {"supplierNumber", "업체 코드"},
+	{"grade", "등급"}, {"status", "상태"}, {"riskLevel", "리스크 등급"},
+	{"industry", "업종"}, {"phone", "전화번호"}, {"email", "이메일"},
+	{"website", "웹사이트"}, {"erpVendorId", "ERP 코드"}, {"bankAccount", "계좌정보"},
 }
 
 func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
@@ -154,8 +147,7 @@ func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "업체명과 사업자번호는 필수입니다")
 		return
 	}
-	if msg, bad := supplierFieldsTooLong(in); bad {
-		writeError(w, 400, "validation_error", msg)
+	if !validTextFields(w, in, supplierTextFields...) {
 		return
 	}
 	if !validDateFields(w, in, dateField{"tradingSince", "거래 시작일"}) {
@@ -346,8 +338,7 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request", err.Error())
 		return
 	}
-	if msg, bad := supplierFieldsTooLong(in); bad {
-		writeError(w, 400, "validation_error", msg)
+	if !validTextFields(w, in, supplierTextFields...) {
 		return
 	}
 	metadata := before.Metadata
@@ -526,6 +517,15 @@ func (a *App) listContacts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 
+// contactTextFields bounds a supplier contact. Two doors write this table — the
+// buyer's Supplier 360 and the supplier's own portal — and the pair is listed
+// once so neither can drift from the other. The name is what the contact picker
+// on every RFQ and delivery renders.
+var contactTextFields = []textField{
+	{"name", "담당자 이름"}, {"title", "직위"}, {"department", "부서"},
+	{"email", "이메일"}, {"phone", "전화번호"},
+}
+
 func (a *App) createContact(w http.ResponseWriter, r *http.Request) {
 	if !a.supplierScopeAllowed(r, r.PathValue("id")) {
 		writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어났습니다")
@@ -539,6 +539,9 @@ func (a *App) createContact(w http.ResponseWriter, r *http.Request) {
 	name := stringValue(in, "name")
 	if name == "" {
 		writeError(w, 400, "validation_error", "담당자 이름은 필수입니다")
+		return
+	}
+	if !validTextFields(w, in, contactTextFields...) {
 		return
 	}
 	// primary_contact is NOT NULL, and this passed in["primary"] through

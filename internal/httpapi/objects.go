@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -227,6 +226,9 @@ func (a *App) createObject(objectType string) http.HandlerFunc {
 		if !validNumberFields(w, in, amountField("amount", "금액"), objectScoreField) {
 			return
 		}
+		if !validTextFields(w, in, objectTextFields...) {
+			return
+		}
 		err = a.db.QueryRow(r.Context(), `INSERT INTO business_objects(object_type,number,supplier_id,parent_id,title,status,amount,currency,owner_id,organization_id,start_date,due_date,end_date,risk_level,score,data,created_by)
 	 VALUES($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5,COALESCE(NULLIF($6,''),'draft'),$7,COALESCE(NULLIF($8,''),'KRW'),COALESCE(NULLIF($9,''),$16)::uuid,COALESCE(NULLIF($10,'')::uuid,(SELECT organization_id FROM suppliers WHERE id=NULLIF($3,'')::uuid)),NULLIF($11,'')::date,NULLIF($12,'')::date,NULLIF($13,'')::date,NULLIF($14,''),$15,$17,$16::uuid) RETURNING id`,
 			objectType, number, stringValue(in, "supplierId"), stringValue(in, "parentId"), title, stringValue(in, "status"), numberValue(in, "amount"), stringValue(in, "currency"), stringValue(in, "ownerId"), stringValue(in, "organizationId"), stringValue(in, "startDate"), stringValue(in, "dueDate"), stringValue(in, "endDate"), stringValue(in, "riskLevel"), numberValue(in, "score"), p.ID, raw(data)).Scan(&id)
@@ -369,6 +371,9 @@ func (a *App) updateObject(objectType string) http.HandlerFunc {
 			return
 		}
 		if !validNumberFields(w, in, amountField("amount", "금액"), objectScoreField) {
+			return
+		}
+		if !validTextFields(w, in, objectTextFields...) {
 			return
 		}
 		_, err = a.db.Exec(r.Context(), `UPDATE business_objects SET title=COALESCE(NULLIF($3,''),title),status=COALESCE(NULLIF($4,''),status),supplier_id=COALESCE(NULLIF($5,'')::uuid,supplier_id),amount=COALESCE($6,amount),start_date=COALESCE(NULLIF($7,'')::date,start_date),due_date=COALESCE(NULLIF($8,'')::date,due_date),end_date=COALESCE(NULLIF($9,'')::date,end_date),risk_level=COALESCE(NULLIF($10,''),risk_level),score=COALESCE($11,score),data=$12,updated_at=now() WHERE id=$1 AND object_type=$2`, id, objectType, stringValue(in, "title"), stringValue(in, "status"), stringValue(in, "supplierId"), numberValue(in, "amount"), stringValue(in, "startDate"), stringValue(in, "dueDate"), stringValue(in, "endDate"), stringValue(in, "riskLevel"), numberValue(in, "score"), raw(data))
@@ -570,22 +575,15 @@ func parseLimit(r *http.Request, def int) int {
 // nothing below it.
 var objectScoreField = numberField{key: "score", label: "점수", min: 0, max: 100}
 
-// maxIdentifierLen bounds the short free-text fields that name a record —
-// 업체명, 대표자, 코드 — as opposed to notes and descriptions, which the 2 MB
-// body limit covers. A text column would take a megabyte happily; the screen
-// will not. One 5,000-character supplier name renders a 1,900-pixel-tall table
-// row and follows the record into every export, dropdown and audit line.
-const maxIdentifierLen = 200
-
-// overlongField returns the first of keys whose value runs past
-// maxIdentifierLen, or "" when they all fit.
-func overlongField(m map[string]any, keys ...string) string {
-	for _, k := range keys {
-		if utf8.RuneCountInString(stringValue(m, k)) > maxIdentifierLen {
-			return k
-		}
-	}
-	return ""
+// objectTextFields are the labels a business object is read by. The title is
+// what every list, work inbox card, notification and audit line renders the
+// record as, and the number is what the portal and every export quote it by —
+// both are caller-supplied and both were unbounded, so a 20,000-character title
+// pushed every other row off the screen on pages nobody had opened yet. The
+// three short codes behind them drive badges and filters.
+var objectTextFields = []textField{
+	{"title", "제목"}, {"number", "번호"}, {"currency", "통화"},
+	{"status", "상태"}, {"riskLevel", "리스크 등급"},
 }
 
 func stringValue(m map[string]any, key string) string {

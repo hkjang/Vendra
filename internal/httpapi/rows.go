@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -169,6 +170,41 @@ func validDate(w http.ResponseWriter, value, label string) bool {
 		return false
 	}
 	return true
+}
+
+// maxIdentifierLen bounds the short free-text fields that name a record —
+// 업체명, 대표자, 코드 — as opposed to notes and descriptions, which the 2 MB
+// body limit covers. A text column would take a megabyte happily; the screen
+// will not. One 5,000-character supplier name renders a 1,900-pixel-tall table
+// row and follows the record into every export, dropdown and audit line.
+const maxIdentifierLen = 200
+
+// textField names a request-body field holding one of those labels, with the
+// label to use when telling the caller it is too long.
+type textField struct{ key, label string }
+
+// validTextFields bounds the optional labels taken from a request body. Only
+// the fields a caller actually sent are measured, the same way the date and
+// number checks beside it leave an absent field to the statement's own default.
+func validTextFields(w http.ResponseWriter, in map[string]any, fields ...textField) bool {
+	for _, f := range fields {
+		if !validText(w, stringValue(in, f.key), f.label) {
+			return false
+		}
+	}
+	return true
+}
+
+// validText bounds one label a typed handler has already decoded. Runes, not
+// bytes: every Hangul syllable is three bytes, so a byte-length check would cut
+// Korean names at a third of the limit it advertises.
+func validText(w http.ResponseWriter, value, label string) bool {
+	if utf8.RuneCountInString(strings.TrimSpace(value)) <= maxIdentifierLen {
+		return true
+	}
+	writeError(w, http.StatusBadRequest, "validation_error",
+		fmt.Sprintf("%s%s %d자를 넘을 수 없습니다", label, topicParticle(label), maxIdentifierLen))
+	return false
 }
 
 // maxAmount bounds the money and quantity a caller writes into the ledger.

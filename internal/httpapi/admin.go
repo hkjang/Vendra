@@ -138,6 +138,12 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "이메일과 이름은 필수입니다")
 		return
 	}
+	// The display name is the byline on every audit line, approval step and
+	// notification the account ever produces.
+	if !validText(w, in.Email, "이메일") || !validText(w, in.DisplayName, "이름") ||
+		!validText(w, in.UserType, "사용자 구분") || !validText(w, in.Status, "상태") {
+		return
+	}
 	var hash any
 	if in.Password != "" {
 		b, err := a.hashPassword(r.Context(), in.Password)
@@ -187,6 +193,9 @@ func (a *App) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if !validText(w, in.DisplayName, "이름") || !validText(w, in.Status, "상태") {
 		return
 	}
 	tx, err := a.db.Begin(r.Context())
@@ -261,6 +270,10 @@ func (a *App) createRole(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "역할 코드와 이름은 필수입니다")
 		return
 	}
+	if !validText(w, in.Code, "역할 코드") || !validText(w, in.Name, "역할 이름") ||
+		!validText(w, in.DataScope, "데이터 범위") {
+		return
+	}
 	if in.DataScope == "" {
 		in.DataScope = "own"
 	}
@@ -282,6 +295,9 @@ func (a *App) updateRole(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if !validText(w, in.Name, "역할 이름") || !validText(w, in.DataScope, "데이터 범위") {
 		return
 	}
 	_, err := a.db.Exec(r.Context(), `UPDATE roles SET name=COALESCE(NULLIF($2,''),name),permissions=CASE WHEN $3::jsonb='null'::jsonb THEN permissions ELSE $3 END,data_scope=COALESCE(NULLIF($4,''),data_scope) WHERE id=$1 AND system=false`, r.PathValue("id"), in.Name, raw(in.Permissions), in.DataScope)
@@ -333,6 +349,11 @@ func (a *App) createOrganization(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(in.Name) == "" {
 		writeError(w, 400, "validation_error", "조직 이름은 필수입니다")
+		return
+	}
+	// The organisation tree is a picker on every form and the grouping key of
+	// the spend report; one unreadable node is in front of everybody.
+	if !validText(w, in.Name, "조직 이름") {
 		return
 	}
 	tx, err := a.db.Begin(r.Context())
@@ -645,6 +666,9 @@ func (a *App) createScorecard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "평가표 이름은 필수입니다")
 		return
 	}
+	if !validText(w, in.Name, "평가표 이름") || !validText(w, in.EvaluationType, "평가 구분") {
+		return
+	}
 	var id string
 	err := a.db.QueryRow(r.Context(), `INSERT INTO scorecard_templates(name,evaluation_type,active,criteria,grade_rules) VALUES($1,$2,$3,$4,$5) RETURNING id`, in.Name, in.EvaluationType, in.Active, raw(in.Criteria), raw(in.GradeRules)).Scan(&id)
 	if err != nil {
@@ -732,6 +756,11 @@ func (a *App) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	in.Scopes = scopes
 	if in.ExpiresInDays < 1 || in.ExpiresInDays > 365 {
 		writeError(w, 400, "validation_error", "API 키 만료 기간은 1일 이상 365일 이하여야 합니다")
+		return
+	}
+	// The name is how the key is told apart from the others in the list it is
+	// revoked and rotated from, and it survives the key itself in the audit.
+	if !validText(w, in.Name, "키 이름") {
 		return
 	}
 	tokenPart, err := randomToken(32)
