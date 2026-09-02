@@ -2,7 +2,13 @@ package httpapi
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http/httptest"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +97,51 @@ func TestValidDateFieldsReportsTheFirstBadOne(t *testing.T) {
 	ok := map[string]any{"startDate": "2026-01-01", "endDate": ""}
 	if !validDateFields(httptest.NewRecorder(), ok, dateField{"startDate", "시작일"}, dateField{"endDate", "종료일"}) {
 		t.Error("validDateFields rejected a usable pair")
+	}
+}
+
+// TestEveryDateCastIsGuarded keeps the sweep from having to be redone.
+//
+// The first pass looked for the handlers somebody remembered writing a date
+// into, which found three fields on the business-object form and missed four
+// others — a bid's validity date, the portal's expected date, the supplier
+// register's trading-since and the spend ledger's transaction date. The thing
+// they had in common was not a spelling but an operation: a value from the
+// request reaching PostgreSQL as `$n::date`. So that is what is checked. A new
+// handler that casts a caller's date without validating it first fails here
+// rather than in production, where it surfaces as "저장하지 못했습니다" with
+// no field named.
+func TestEveryDateCastIsGuarded(t *testing.T) {
+	castsAParameter := regexp.MustCompile(`\$\d+,?'?'?\)?::(date|timestamptz)`)
+	validates := regexp.MustCompile(`valid(Date|DateFields|Instant)\(|dateParam\(`)
+
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(f os.FileInfo) bool {
+		return !strings.HasSuffix(f.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parse the package: %v", err)
+	}
+	for _, pkg := range pkgs {
+		for name, file := range pkg.Files {
+			source, err := os.ReadFile(name)
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			base := fset.File(file.Pos()).Base()
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				body := string(source[int(fn.Pos())-base : int(fn.End())-base])
+				if !castsAParameter.MatchString(body) || validates.MatchString(body) {
+					continue
+				}
+				t.Errorf("%s: %s casts a request parameter to a date without validating it first; "+
+					"a malformed value reaches PostgreSQL and comes back as an unattributed save failure",
+					name, fn.Name.Name)
+			}
+		}
 	}
 }

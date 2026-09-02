@@ -569,6 +569,9 @@ func (a *App) createSpendTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "공급업체, 품목명, 금액, 거래일은 필수입니다")
 		return
 	}
+	if !validDate(w, in.TransactionDate, "거래일") {
+		return
+	}
 	// The organisation is the grouping key of the organisation-level spend
 	// report, so an unchecked value attributes this spend to a division the
 	// caller has nothing to do with. The supplier was already validated.
