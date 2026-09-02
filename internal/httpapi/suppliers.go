@@ -158,6 +158,9 @@ func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", msg)
 		return
 	}
+	if !validDateFields(w, in, dateField{"tradingSince", "거래 시작일"}) {
+		return
+	}
 	similarNameThreshold := 0.35
 	var registrationSettings []byte
 	if a.db.QueryRow(r.Context(), `SELECT value FROM settings WHERE key='supplier.registration'`).Scan(&registrationSettings) == nil {

@@ -5046,3 +5046,138 @@ func TestAFailedDecodeSaysSoRatherThanBlamingAField(t *testing.T) {
 		t.Errorf("an unrecognised field on roles answered %d/%s, want 400/invalid_request", code, kind)
 	}
 }
+
+// TestEveryDateFieldOnAWriteNamesItself finishes the sweep the contract form
+// started. validDateFields was added for the three dates on a business object
+// and stopped there, so four other `::date` casts still took whatever the
+// caller sent: the supplier register's 거래 시작일, the spend ledger's 거래일,
+// and — the two that matter most, because the person on the other end is
+// outside the company and cannot ask anyone — the bid form's 견적 유효일 and
+// the portal's 예정일.
+//
+// The failure was worst on the bid. A supplier filling in a quote against a
+// deadline, whose date arrived in any shape other than YYYY-MM-DD, was told
+// "응답을 저장하지 못했습니다" with nothing to act on, and the whole bid — the
+// price, the line items, the terms — did not save.
+func TestEveryDateFieldOnAWriteNamesItself(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-DATESWEEP','날짜 검증 업체','SUP-DATESWEEP','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,due_date,created_by)
+		VALUES('rfq','RFQ-DATESWEEP','날짜 검증 견적','open',current_date+10,$1) RETURNING id`, adminID).Scan(&rfqID); err != nil {
+		t.Fatalf("seed rfq: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO sourcing_participants(sourcing_id,supplier_id,status) VALUES($1,$2,'invited')
+		ON CONFLICT(sourcing_id,supplier_id) DO UPDATE SET status='invited'`, rfqID, supplierID); err != nil {
+		t.Fatalf("invite the supplier: %v", err)
+	}
+	const email = "datesweep-bidder@vendra.test"
+	const password = "DateSweepPassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,supplier_id) VALUES($1,'날짜 담당자',$2,'supplier','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,supplier_id=excluded.supplier_id,user_type='supplier',status='active' RETURNING id`, email, hash, supplierID).Scan(&userID); err != nil {
+		t.Fatalf("seed portal user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user' ON CONFLICT DO NOTHING`, userID); err != nil {
+		t.Fatalf("assign the portal role: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM spend_transactions WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_responses WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_participants WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE id=$1 OR supplier_id=$2`, rfqID, supplierID)
+		// The bid and the portal delivery are both audited, and audit_logs
+		// holds a foreign key on the actor. Without this the user survives,
+		// and then so does the supplier that references it — leaving the next
+		// run to fail on a duplicate business number.
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE actor_id=$1`, userID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		// The supplier the test creates gets a generated supplier_number, so it
+		// has to be found by the business number the request carried. Left
+		// behind it would fail the next run twice over: business_number is
+		// unique, and the name would come back as a near-duplicate.
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE business_number IN('SUP-DATESWEEP','SUP-DATESWEEP-NEW')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email IN($1,$2)`, testAdminEmail, email)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.181:5000"))
+	bidder := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.182:5000"))
+
+	send := func(method, path, session, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	response := "/api/v1/portal/sourcing/" + rfqID + "/response"
+	for _, tc := range []struct {
+		what, method, path, session, body, names string
+	}{
+		{"the bid's validity date", http.MethodPut, response, bidder,
+			`{"totalAmount":1000000,"validityDate":"2026-13-45"}`, "견적 유효일"},
+		{"the portal's expected date", http.MethodPost, "/api/v1/portal/deliveries", bidder,
+			`{"title":"납품 등록","dueDate":"2026-02-31"}`, "예정일"},
+		{"the supplier register's trading-since", http.MethodPost, "/api/v1/suppliers", admin,
+			`{"name":"Meridian Foundry Works","businessNumber":"SUP-DATESWEEP-NEW","tradingSince":"쓰레기"}`, "거래 시작일"},
+		{"the spend ledger's transaction date", http.MethodPost, "/api/v1/spend/transactions", admin,
+			`{"supplierId":"` + supplierID + `","itemName":"검증 품목","amount":1000,"transactionDate":"2026-1-5"}`, "거래일"},
+	} {
+		w := send(tc.method, tc.path, tc.session, tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: returned %d, want 400: %s", tc.what, w.Code, w.Body.String())
+			continue
+		}
+		code, msg := errorCodeAndMessage(t, w)
+		if code != "validation_error" {
+			t.Errorf("%s: answered %q, want validation_error: %s", tc.what, code, msg)
+		}
+		if !strings.Contains(msg, tc.names) {
+			t.Errorf("%s: the rejection does not name it: %s", tc.what, msg)
+		}
+	}
+
+	// Nothing was written by any of the four. A rejection that half-saved
+	// would be the worse outcome, and the bid is the one that would hurt.
+	var responses int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sourcing_responses WHERE sourcing_id=$1`, rfqID).Scan(&responses); err != nil {
+		t.Fatalf("count responses: %v", err)
+	}
+	if responses != 0 {
+		t.Errorf("a rejected bid left %d response rows behind", responses)
+	}
+
+	// Each path still takes a well-formed date, so the guard did not close it.
+	if w := send(http.MethodPut, response, bidder, `{"submit":true,"totalAmount":1000000,"validityDate":"2026-12-31"}`); w.Code != http.StatusOK {
+		t.Errorf("a well-formed bid returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPost, "/api/v1/portal/deliveries", bidder, `{"title":"납품 등록","dueDate":"2026-03-31"}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed portal delivery returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPost, "/api/v1/suppliers", admin, `{"name":"Meridian Foundry Works","businessNumber":"SUP-DATESWEEP-NEW","tradingSince":"2020-04-01"}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed supplier returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPost, "/api/v1/spend/transactions", admin,
+		`{"supplierId":"`+supplierID+`","itemName":"검증 품목","amount":1000,"transactionDate":"2026-01-05"}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed spend transaction returned %d: %s", w.Code, w.Body.String())
+	}
+}

@@ -213,6 +213,9 @@ func (a *App) portalSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request", err.Error())
 		return
 	}
+	if !validDate(w, in.ValidityDate, "견적 유효일") {
+		return
+	}
 	status := "draft"
 	var submitted any
 	if in.Submit {
@@ -703,6 +706,9 @@ func (a *App) portalCreateBusinessObject(objectType string) http.HandlerFunc {
 		title := stringValue(in, "title")
 		if title == "" {
 			writeError(w, 400, "validation_error", "제목은 필수입니다")
+			return
+		}
+		if !validDateFields(w, in, dateField{"dueDate", "예정일"}) {
 			return
 		}
 		number := objectNumber(objectType)
