@@ -216,6 +216,18 @@ func (a *App) portalSourcingResponse(w http.ResponseWriter, r *http.Request) {
 	if !validDate(w, in.ValidityDate, "견적 유효일") {
 		return
 	}
+	// The bid the committee compares. recalculateSourcing scores price as
+	// min_amount/total_amount over the bids with a positive amount, so a
+	// negative one is dropped from the comparison after the portal answered
+	// 200 — the supplier is told the quote is in and it is scored as nothing.
+	// Delivery days lands in an integer column, where anything past 2^31 came
+	// back as "응답을 저장하지 못했습니다"; the form asks for at least one day.
+	if in.TotalAmount != nil && !validNumber(w, *in.TotalAmount, amountField("totalAmount", "총 견적금액")) {
+		return
+	}
+	if in.DeliveryDays != nil && !validNumber(w, float64(*in.DeliveryDays), numberField{key: "deliveryDays", label: "납기", min: 0, max: maxDeliveryDays}) {
+		return
+	}
 	status := "draft"
 	var submitted any
 	if in.Submit {
@@ -245,6 +257,11 @@ func (a *App) portalSourcingResponse(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"id": id, "status": status})
 }
+
+// maxDeliveryDays is a hundred years of lead time, past which the value is a
+// typo rather than a quote. The column is a plain integer, so the only bound
+// it had was 2^31.
+const maxDeliveryDays = 36500
 
 func (a *App) portalDeclineSourcing(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
@@ -709,6 +726,9 @@ func (a *App) portalCreateBusinessObject(objectType string) http.HandlerFunc {
 			return
 		}
 		if !validDateFields(w, in, dateField{"dueDate", "예정일"}) {
+			return
+		}
+		if !validNumberFields(w, in, amountField("amount", "금액")) {
 			return
 		}
 		number := objectNumber(objectType)
