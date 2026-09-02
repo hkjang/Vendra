@@ -237,11 +237,10 @@ func (a *App) createRisk(w http.ResponseWriter, r *http.Request) {
 	}
 	// The grade drives the supplier's risk_level rollup and every badge that
 	// reads it, and the form offers exactly these four. Anything else was
-	// stored verbatim and shown as if it meant something.
-	switch severity {
-	case "LOW", "MEDIUM", "HIGH", "CRITICAL":
-	default:
-		writeError(w, 400, "validation_error", "리스크 등급은 LOW, MEDIUM, HIGH, CRITICAL 중 하나여야 합니다")
+	// stored verbatim and shown as if it meant something. This was the only
+	// risk grade anybody checked; riskGrades now carries the same check to the
+	// other five doors into the same vocabulary.
+	if !validEnumFields(w, in, riskGradeField("severity", "리스크 등급")) {
 		return
 	}
 	if !validTextFields(w, in, textField{"riskType", "리스크 유형"}, textField{"status", "상태"}) {

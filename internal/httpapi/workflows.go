@@ -117,6 +117,9 @@ func (a *App) createWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 		step["order"] = i
 	}
+	if !validWorkflowConditions(w, in.Conditions) {
+		return
+	}
 	var id string
 	err := a.db.QueryRow(r.Context(), `INSERT INTO workflow_definitions(name,object_type,enabled,conditions,steps,created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, in.Name, in.ObjectType, in.Enabled, raw(in.Conditions), raw(in.Steps), p.ID).Scan(&id)
 	if err != nil {
@@ -136,6 +139,9 @@ func (a *App) updateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if !validWorkflowConditions(w, in.Conditions) {
 		return
 	}
 	var currentEnabled bool

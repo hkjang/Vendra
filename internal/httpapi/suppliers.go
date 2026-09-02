@@ -156,6 +156,9 @@ func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 	if !validNumberFields(w, in, amountField("annualSpend", "연간 거래금액")) {
 		return
 	}
+	if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급")) {
+		return
+	}
 	similarNameThreshold := 0.35
 	var registrationSettings []byte
 	if a.db.QueryRow(r.Context(), `SELECT value FROM settings WHERE key='supplier.registration'`).Scan(&registrationSettings) == nil {
@@ -339,6 +342,9 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validTextFields(w, in, supplierTextFields...) {
+		return
+	}
+	if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급")) {
 		return
 	}
 	metadata := before.Metadata
