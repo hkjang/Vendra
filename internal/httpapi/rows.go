@@ -207,6 +207,66 @@ func validText(w http.ResponseWriter, value, label string) bool {
 	return false
 }
 
+// riskGrades is the vocabulary every risk grade in the application is written
+// in. It is not a display convention: the queries branch on the spelling.
+//
+// The award calculation scores a bid's supplier with
+// `CASE risk_level WHEN 'LOW' THEN 100 WHEN 'MEDIUM' THEN 70 WHEN 'HIGH' THEN
+// 30 ELSE 0 END`, so a supplier stored as "high" is not read as high risk but
+// as worse than CRITICAL, and loses the tender to that. The dashboard's
+// high-risk count is `risk_level IN('HIGH','CRITICAL')` and the recommendation
+// tool excludes `risk_level NOT IN('CRITICAL')`, so the same record is missing
+// from the warning and present in the shortlist. On a business object the grade
+// is what an approval rule routes on, and a rule matching HIGH never sees
+// "High": the submission finds no matching workflow and is approved on the
+// spot, with no approver and nothing to notice.
+//
+// The forms offer exactly these four, upper case, everywhere they offer any.
+var riskGrades = []string{"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+
+// enumField names a request-body field whose value has to be one of a fixed
+// set, with the label to use when telling the caller it is not.
+type enumField struct {
+	key, label string
+	allowed    []string
+}
+
+// riskGradeField describes one of the fields carrying a risk grade.
+func riskGradeField(key, label string) enumField {
+	return enumField{key: key, label: label, allowed: riskGrades}
+}
+
+// validEnumFields checks the optional controlled-vocabulary fields of a request
+// body. As with the date, number and text checks beside it, a field the caller
+// left out keeps whatever default the statement applies and is not measured.
+func validEnumFields(w http.ResponseWriter, in map[string]any, fields ...enumField) bool {
+	for _, f := range fields {
+		if !validEnum(w, stringValue(in, f.key), f) {
+			return false
+		}
+	}
+	return true
+}
+
+// validEnum checks one value a typed handler has already decoded. A value
+// outside the set is the caller's mistake and is answered as one: stored, it is
+// not a different grade but no grade at all, and every query that branches on
+// the spelling silently takes its ELSE.
+func validEnum(w http.ResponseWriter, value string, f enumField) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	for _, allowed := range f.allowed {
+		if value == allowed {
+			return true
+		}
+	}
+	writeError(w, http.StatusBadRequest, "validation_error",
+		fmt.Sprintf("%s%s %s 중 하나여야 합니다", f.label, topicParticle(f.label), strings.Join(f.allowed, ", ")))
+	return false
+}
+
 // maxAmount bounds the money and quantity a caller writes into the ledger.
 //
 // Two ceilings sit above a request number, and this is under both. The columns

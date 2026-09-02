@@ -5536,3 +5536,179 @@ func TestEveryLabelOnAWriteIsBounded(t *testing.T) {
 		t.Errorf("a well-formed portal profile update returned %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestEveryRiskGradeOnAWriteIsInTheVocabulary is the date, amount and label
+// sweep run over the fourth kind of value a request body carries: a word the
+// queries branch on.
+//
+// A risk grade is not free text. The award calculation scores a bid's supplier
+// with CASE risk_level WHEN 'LOW' … ELSE 0, the dashboard counts
+// risk_level IN('HIGH','CRITICAL'), the recommendation tool drops only
+// 'CRITICAL', and an approval rule matches the object's grade exactly. So a
+// supplier stored as "high" is read as worse than CRITICAL and loses the tender
+// to it, is missing from the high-risk figure that would have warned anyone,
+// and stays on the shortlist. A contract stored as "High" matches no rule
+// written for HIGH: it finds no workflow, and submitting it approves it on the
+// spot with nothing in anyone's inbox. createRisk had checked its own field
+// since it was written and no other door into the vocabulary had.
+func TestEveryRiskGradeOnAWriteIsInTheVocabulary(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status,risk_level) VALUES('SUP-GRADESWEEP','등급 검증 업체','SUP-GRADESWEEP','active','LOW')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name,risk_level='LOW' RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM risks WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE supplier_id=$1 OR title LIKE '등급 스윕%'`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM workflow_definitions WHERE name='등급 스윕 라우팅'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE business_number IN('SUP-GRADESWEEP','SUP-GRADESWEEP-NEW')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.203:5000"))
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	idOf := func(t *testing.T, w *httptest.ResponseRecorder) string {
+		t.Helper()
+		var out struct{ ID string }
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.ID == "" {
+			t.Fatalf("read the created id: %v %s", err, w.Body.String())
+		}
+		return out.ID
+	}
+
+	// One object and one routing rule to edit, both created through the API on
+	// the grades the scale is actually written in.
+	created := send(http.MethodPost, "/api/v1/contracts", `{"title":"등급 스윕 계약","supplierId":"`+supplierID+`","riskLevel":"HIGH"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("seed a contract through the API: %d %s", created.Code, created.Body.String())
+	}
+	contractID := idOf(t, created)
+	// enabled:false — an enabled contract rule would route submissions in every
+	// other test that shares this database.
+	rule := send(http.MethodPost, "/api/v1/workflows",
+		`{"name":"등급 스윕 라우팅","objectType":"contract","enabled":false,"conditions":{"minAmount":0,"riskLevel":"HIGH"},"steps":[{"name":"팀장 승인"}]}`)
+	if rule.Code != http.StatusCreated {
+		t.Fatalf("seed a workflow through the API: %d %s", rule.Code, rule.Body.String())
+	}
+	ruleID := idOf(t, rule)
+
+	for _, tc := range []struct {
+		what, method, path, body, names string
+	}{
+		{"a supplier graded in lower case", http.MethodPost, "/api/v1/suppliers",
+			`{"name":"Zephyr Castings","businessNumber":"SUP-GRADESWEEP-NEW","riskLevel":"high"}`, "리스크 등급"},
+		{"a grade nudged onto a supplier already on the register", http.MethodPatch, "/api/v1/suppliers/" + supplierID,
+			`{"riskLevel":"Critical"}`, "리스크 등급"},
+		{"a business object graded off the scale", http.MethodPost, "/api/v1/contracts",
+			`{"title":"등급 스윕 반려 계약","riskLevel":"VERY_HIGH"}`, "리스크 등급"},
+		{"a grade rewritten on an existing object", http.MethodPatch, "/api/v1/contracts/" + contractID,
+			`{"riskLevel":"높음"}`, "리스크 등급"},
+		{"a risk record, the one door that was already checked", http.MethodPost, "/api/v1/suppliers/" + supplierID + "/risks",
+			`{"riskType":"품질","severity":"high","probability":5,"impact":5}`, "리스크 등급"},
+		{"an approval rule routed on a grade no record can carry", http.MethodPost, "/api/v1/workflows",
+			`{"name":"등급 스윕 라우팅","objectType":"contract","enabled":true,"conditions":{"riskLevel":"high"},"steps":[{"name":"팀장 승인"}]}`, "리스크 조건"},
+		{"the same grade edited into a rule that is already routing", http.MethodPatch, "/api/v1/workflows/" + ruleID,
+			`{"conditions":{"riskLevel":"high"}}`, "리스크 조건"},
+		{"a list of grades where one is misspelt", http.MethodPost, "/api/v1/workflows",
+			`{"name":"등급 스윕 라우팅","objectType":"contract","enabled":true,"conditions":{"riskLevels":["HIGH","critical"]},"steps":[{"name":"팀장 승인"}]}`, "리스크 조건"},
+		{"a condition that is not the shape the router reads", http.MethodPatch, "/api/v1/workflows/" + ruleID,
+			`{"conditions":{"minAmount":"1000"}}`, "승인 조건"},
+	} {
+		w := send(tc.method, tc.path, tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: returned %d, want 400: %s", tc.what, w.Code, w.Body.String())
+			continue
+		}
+		code, msg := errorCodeAndMessage(t, w)
+		if code != "validation_error" {
+			t.Errorf("%s: answered %q, want validation_error: %s", tc.what, code, msg)
+		}
+		if !strings.Contains(msg, tc.names) {
+			t.Errorf("%s: the rejection does not name the box to fix: %s", tc.what, msg)
+		}
+	}
+
+	// None of them reached a table, and the records they aimed at still hold
+	// the grade they were saved with.
+	var supplierGrade, objectGrade string
+	if err := pool.QueryRow(ctx, `SELECT risk_level FROM suppliers WHERE id=$1`, supplierID).Scan(&supplierGrade); err != nil {
+		t.Fatalf("read the supplier grade: %v", err)
+	}
+	if supplierGrade != "LOW" {
+		t.Errorf("a rejected update left the supplier graded %q", supplierGrade)
+	}
+	if err := pool.QueryRow(ctx, `SELECT risk_level FROM business_objects WHERE id=$1`, contractID).Scan(&objectGrade); err != nil {
+		t.Fatalf("read the contract grade: %v", err)
+	}
+	if objectGrade != "HIGH" {
+		t.Errorf("a rejected update left the contract graded %q", objectGrade)
+	}
+	for _, check := range []struct {
+		what, query string
+		args        []any
+	}{
+		{"risks", `SELECT count(*) FROM risks WHERE supplier_id=$1`, []any{supplierID}},
+		{"suppliers", `SELECT count(*) FROM suppliers WHERE business_number='SUP-GRADESWEEP-NEW'`, nil},
+		{"business objects", `SELECT count(*) FROM business_objects WHERE title='등급 스윕 반려 계약'`, nil},
+	} {
+		var n int
+		if err := pool.QueryRow(ctx, check.query, check.args...).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", check.what, err)
+		}
+		if n != 0 {
+			t.Errorf("a rejected write left %d rows in %s", n, check.what)
+		}
+	}
+	var storedGrade *string
+	if err := pool.QueryRow(ctx, `SELECT conditions->>'riskLevel' FROM workflow_definitions WHERE id=$1`, ruleID).Scan(&storedGrade); err != nil {
+		t.Fatalf("read the routing rule: %v", err)
+	}
+	if storedGrade == nil || *storedGrade != "HIGH" {
+		t.Errorf("a rejected update left the rule routing on %v", storedGrade)
+	}
+	var rules int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workflow_definitions WHERE name='등급 스윕 라우팅'`).Scan(&rules); err != nil {
+		t.Fatalf("count the routing rules: %v", err)
+	}
+	if rules != 1 {
+		t.Errorf("%d rules named 등급 스윕 라우팅 exist; the rejected ones were stored", rules)
+	}
+
+	// Every grade the scale is written in is still accepted, on each path that
+	// carries one.
+	for _, grade := range riskGrades {
+		if w := send(http.MethodPatch, "/api/v1/contracts/"+contractID, `{"riskLevel":"`+grade+`"}`); w.Code != http.StatusOK {
+			t.Errorf("a contract graded %s returned %d: %s", grade, w.Code, w.Body.String())
+		}
+		if w := send(http.MethodPost, "/api/v1/suppliers/"+supplierID+"/risks",
+			`{"riskType":"품질","severity":"`+grade+`","probability":5,"impact":5}`); w.Code != http.StatusCreated {
+			t.Errorf("a risk rated %s returned %d: %s", grade, w.Code, w.Body.String())
+		}
+		if w := send(http.MethodPatch, "/api/v1/workflows/"+ruleID,
+			`{"conditions":{"minAmount":0,"riskLevel":"`+grade+`"}}`); w.Code != http.StatusOK {
+			t.Errorf("a rule routed on %s returned %d: %s", grade, w.Code, w.Body.String())
+		}
+	}
+	if w := send(http.MethodPost, "/api/v1/suppliers",
+		`{"name":"Zephyr Castings","businessNumber":"SUP-GRADESWEEP-NEW","riskLevel":"CRITICAL"}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed supplier returned %d: %s", w.Code, w.Body.String())
+	}
+	// A rule with no risk condition at all routes on amount alone, and must
+	// keep working: an absent grade is not a wrong one.
+	if w := send(http.MethodPatch, "/api/v1/workflows/"+ruleID, `{"conditions":{"minAmount":1000000}}`); w.Code != http.StatusOK {
+		t.Errorf("a rule with no risk condition returned %d: %s", w.Code, w.Body.String())
+	}
+}

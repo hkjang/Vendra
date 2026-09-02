@@ -229,6 +229,9 @@ func (a *App) createObject(objectType string) http.HandlerFunc {
 		if !validTextFields(w, in, objectTextFields...) {
 			return
 		}
+		if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급")) {
+			return
+		}
 		err = a.db.QueryRow(r.Context(), `INSERT INTO business_objects(object_type,number,supplier_id,parent_id,title,status,amount,currency,owner_id,organization_id,start_date,due_date,end_date,risk_level,score,data,created_by)
 	 VALUES($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5,COALESCE(NULLIF($6,''),'draft'),$7,COALESCE(NULLIF($8,''),'KRW'),COALESCE(NULLIF($9,''),$16)::uuid,COALESCE(NULLIF($10,'')::uuid,(SELECT organization_id FROM suppliers WHERE id=NULLIF($3,'')::uuid)),NULLIF($11,'')::date,NULLIF($12,'')::date,NULLIF($13,'')::date,NULLIF($14,''),$15,$17,$16::uuid) RETURNING id`,
 			objectType, number, stringValue(in, "supplierId"), stringValue(in, "parentId"), title, stringValue(in, "status"), numberValue(in, "amount"), stringValue(in, "currency"), stringValue(in, "ownerId"), stringValue(in, "organizationId"), stringValue(in, "startDate"), stringValue(in, "dueDate"), stringValue(in, "endDate"), stringValue(in, "riskLevel"), numberValue(in, "score"), p.ID, raw(data)).Scan(&id)
@@ -376,6 +379,9 @@ func (a *App) updateObject(objectType string) http.HandlerFunc {
 		if !validTextFields(w, in, objectTextFields...) {
 			return
 		}
+		if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급")) {
+			return
+		}
 		_, err = a.db.Exec(r.Context(), `UPDATE business_objects SET title=COALESCE(NULLIF($3,''),title),status=COALESCE(NULLIF($4,''),status),supplier_id=COALESCE(NULLIF($5,'')::uuid,supplier_id),amount=COALESCE($6,amount),start_date=COALESCE(NULLIF($7,'')::date,start_date),due_date=COALESCE(NULLIF($8,'')::date,due_date),end_date=COALESCE(NULLIF($9,'')::date,end_date),risk_level=COALESCE(NULLIF($10,''),risk_level),score=COALESCE($11,score),data=$12,updated_at=now() WHERE id=$1 AND object_type=$2`, id, objectType, stringValue(in, "title"), stringValue(in, "status"), stringValue(in, "supplierId"), numberValue(in, "amount"), stringValue(in, "startDate"), stringValue(in, "dueDate"), stringValue(in, "endDate"), stringValue(in, "riskLevel"), numberValue(in, "score"), raw(data))
 		if err != nil {
 			logDB(err)
@@ -484,6 +490,42 @@ type workflowConditions struct {
 	Category       string   `json:"category"`
 	Project        string   `json:"project"`
 	SecurityLevel  string   `json:"securityLevel"`
+}
+
+// validWorkflowConditions checks the rule an approval is routed by, on the way
+// in rather than at submit time.
+//
+// Two things could be stored here that only ever fail later. A grade outside
+// riskGrades matches no object, so the rule it was written for never fires and
+// the submission it was meant to hold falls through to the next definition or
+// to none at all — approved on the spot, with `no_matching_workflow` in the
+// response and nothing in the inbox. And a condition that is not the shape this
+// struct reads — minAmount as "1000", conditions as a string — fails
+// json.Unmarshal in matchingWorkflow, which every submit of that object type
+// then answers 500 to, permanently, for everyone.
+func validWorkflowConditions(w http.ResponseWriter, conditions any) bool {
+	if conditions == nil {
+		return true
+	}
+	encoded, err := json.Marshal(conditions)
+	if err == nil {
+		var parsed workflowConditions
+		err = json.Unmarshal(encoded, &parsed)
+		if err == nil {
+			field := riskGradeField("riskLevel", "리스크 조건")
+			if !validEnum(w, parsed.RiskLevel, field) {
+				return false
+			}
+			for _, level := range parsed.RiskLevels {
+				if !validEnum(w, level, field) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	writeError(w, 400, "validation_error", "승인 조건 형식이 올바르지 않습니다")
+	return false
 }
 
 func (a *App) matchingWorkflow(r *http.Request, objectType string, object businessObject) (string, []byte, error) {
