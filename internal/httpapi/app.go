@@ -319,6 +319,10 @@ func (a *App) updateMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "이름은 필수입니다")
 		return
 	}
+	if !validText(w, in.DisplayName, "이름") || !validText(w, in.Locale, "언어") ||
+		!validText(w, in.Timezone, "시간대") {
+		return
+	}
 	_, err := a.db.Exec(r.Context(), `UPDATE users SET display_name=$2,locale=COALESCE(NULLIF($3,''),locale),timezone=COALESCE(NULLIF($4,''),timezone),updated_at=now() WHERE id=$1`, p.ID, in.DisplayName, in.Locale, in.Timezone)
 	if err != nil {
 		writeError(w, 500, "database_error", "프로필을 저장하지 못했습니다")

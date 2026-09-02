@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -245,8 +244,7 @@ func (a *App) createRisk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "리스크 등급은 LOW, MEDIUM, HIGH, CRITICAL 중 하나여야 합니다")
 		return
 	}
-	if utf8.RuneCountInString(typ) > maxIdentifierLen {
-		writeError(w, 400, "validation_error", fmt.Sprintf("리스크 유형은 %d자를 넘을 수 없습니다", maxIdentifierLen))
+	if !validTextFields(w, in, textField{"riskType", "리스크 유형"}, textField{"status", "상태"}) {
 		return
 	}
 	// score is a generated column, probability * impact, and every risk list
@@ -382,6 +380,9 @@ func (a *App) createEvaluation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var id string
+	if !validTextFields(w, in, textField{"evaluationType", "평가 구분"}, textField{"status", "상태"}) {
+		return
+	}
 	if !validDateFields(w, in, dateField{"periodStart", "평가 시작일"}, dateField{"periodEnd", "평가 종료일"}) {
 		return
 	}
@@ -584,6 +585,19 @@ func (a *App) createSpendTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The item name and the category are the grouping keys the spend reports are
+	// drawn by: they become chart legends, table columns and the rows of the
+	// concentration report, all of which are laid out to the longest label in
+	// the set. One unbounded row is enough to make the report unreadable.
+	for _, field := range []struct{ value, label string }{
+		{in.ItemName, "품목명"}, {in.ItemCode, "품목 코드"}, {in.Category, "분류"},
+		{in.Unit, "단위"}, {in.Currency, "통화"}, {in.PaymentStatus, "지급 상태"},
+		{in.TransactionNumber, "거래번호"},
+	} {
+		if !validText(w, field.value, field.label) {
+			return
+		}
+	}
 	// The organisation is the grouping key of the organisation-level spend
 	// report, so an unchecked value attributes this spend to a division the
 	// caller has nothing to do with. The supplier was already validated.
@@ -722,14 +736,8 @@ func (a *App) createSupplierRelationship(w http.ResponseWriter, r *http.Request)
 		writeError(w, 400, "validation_error", "의존도는 0에서 100 사이여야 합니다")
 		return
 	}
-	for _, field := range []struct{ label, value string }{
-		{"관계 유형", in.RelationshipType},
-		{"중요도", in.Criticality},
-	} {
-		if utf8.RuneCountInString(field.value) > maxIdentifierLen {
-			writeError(w, 400, "validation_error", fmt.Sprintf("%s%s %d자를 넘을 수 없습니다", field.label, topicParticle(field.label), maxIdentifierLen))
-			return
-		}
+	if !validText(w, in.RelationshipType, "관계 유형") || !validText(w, in.Criticality, "중요도") {
+		return
 	}
 	// Both ends must be in scope. The network graph filters every edge by the
 	// organisation of both suppliers, so an unchecked write let a caller draw a

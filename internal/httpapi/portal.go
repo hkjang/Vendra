@@ -35,6 +35,12 @@ func (a *App) portalUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request", err.Error())
 		return
 	}
+	// The three fields the portal lets a supplier write onto their own record.
+	// They are the contact block the buyer's register and Supplier 360 show, and
+	// the internal door onto the same columns has always been bounded.
+	if !validTextFields(w, in, textField{"phone", "전화번호"}, textField{"email", "이메일"}, textField{"website", "웹사이트"}) {
+		return
+	}
 	_, err = a.db.Exec(r.Context(), `UPDATE suppliers SET phone=COALESCE(NULLIF($2,''),phone),email=COALESCE(NULLIF($3,''),email),website=COALESCE(NULLIF($4,''),website),updated_at=now() WHERE id=$1`, *p.SupplierID, stringValue(in, "phone"), stringValue(in, "email"), stringValue(in, "website"))
 	if err != nil {
 		writeError(w, 400, "save_failed", "업체 정보를 저장하지 못했습니다")
@@ -78,6 +84,9 @@ func (a *App) portalCreateContact(w http.ResponseWriter, r *http.Request) {
 	}
 	if stringValue(in, "name") == "" {
 		writeError(w, 400, "validation_error", "담당자 이름은 필수입니다")
+		return
+	}
+	if !validTextFields(w, in, contactTextFields...) {
 		return
 	}
 	primary, _ := in["primary"].(bool)
@@ -246,6 +255,13 @@ func (a *App) registerSupplierUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	// The other door onto suppliers.name. createSupplier has bounded it since
+	// the register existed; self-registration writes the same column and never
+	// did, so the one name a stranger supplies was the one nobody measured.
+	if !validText(w, in.SupplierName, "업체명") || !validText(w, in.BusinessNumber, "사업자번호") ||
+		!validText(w, in.DisplayName, "이름") {
 		return
 	}
 	// Check the policy before touching the database, but defer the expensive

@@ -5359,3 +5359,180 @@ func TestEveryAmountOnAWriteIsBounded(t *testing.T) {
 		t.Errorf("a well-formed portal delivery returned %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestEveryLabelOnAWriteIsBounded is the same sweep as the date and amount ones
+// run over the third kind of value a request body carries: the short free-text
+// field a record is displayed by.
+//
+// PostgreSQL text has no length, so nothing refused any of these. The record
+// saved, and then it was in every list, dropdown, export and audit line that
+// quotes it — a 20,000-character contract title pushes every other row off the
+// screen for readers who never opened the record, and the ledger's item name
+// and category are the grouping keys the spend charts lay themselves out to.
+// maxIdentifierLen had been applied to ten supplier fields, the risk type and
+// the document name, and nowhere else; self-registration wrote the very same
+// suppliers.name column through a door nobody had measured.
+func TestEveryLabelOnAWriteIsBounded(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-LABELSWEEP','라벨 검증 업체','SUP-LABELSWEEP','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	const email = "labelsweep-supplier@vendra.test"
+	const password = "LabelSweepPassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,supplier_id) VALUES($1,'라벨 담당자',$2,'supplier','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,supplier_id=excluded.supplier_id,user_type='supplier',status='active' RETURNING id`, email, hash, supplierID).Scan(&userID); err != nil {
+		t.Fatalf("seed portal user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user' ON CONFLICT DO NOTHING`, userID); err != nil {
+		t.Fatalf("assign the portal role: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM spend_transactions WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM supplier_contacts WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE supplier_id=$1 OR number LIKE 'CTR-%' AND title LIKE '라벨 검증%'`, supplierID)
+		// audit_logs holds a foreign key on the actor, so the portal user
+		// survives without this — and then so does the supplier that
+		// references it, leaving the next run to fail on a duplicate business
+		// number.
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE actor_id=$1`, userID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM organizations WHERE name='라벨 검증 조직'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM roles WHERE code='label_sweep_role'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE business_number IN('SUP-LABELSWEEP','SUP-LABELSWEEP-NEW')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email IN($1,$2)`, testAdminEmail, email)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.201:5000"))
+	portal := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.202:5000"))
+
+	send := func(method, path, session, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	// One contract to patch, and one contact so the PATCH paths have a target.
+	var contract struct{ ID string }
+	w := send(http.MethodPost, "/api/v1/contracts", admin, `{"title":"라벨 검증 계약","supplierId":"`+supplierID+`"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed a contract through the API: %d %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &contract); err != nil || contract.ID == "" {
+		t.Fatalf("read the contract id: %v %s", err, w.Body.String())
+	}
+
+	long := strings.Repeat("가", maxIdentifierLen+1)
+	for _, tc := range []struct {
+		what, method, path, session, body, names string
+	}{
+		{"a contract title nobody can read", http.MethodPost, "/api/v1/contracts", admin,
+			`{"title":"` + long + `"}`, "제목"},
+		{"a caller-supplied document number", http.MethodPost, "/api/v1/contracts", admin,
+			`{"title":"라벨 검증 계약","number":"` + long + `"}`, "번호"},
+		{"a currency that is not a currency", http.MethodPatch, "/api/v1/contracts/" + contract.ID, admin,
+			`{"currency":"` + long + `"}`, "통화"},
+		{"an unbounded industry on the register", http.MethodPost, "/api/v1/suppliers", admin,
+			`{"name":"Borealis Tooling","businessNumber":"SUP-LABELSWEEP-NEW","industry":"` + long + `"}`, "업종"},
+		{"an unbounded phone number", http.MethodPost, "/api/v1/suppliers", admin,
+			`{"name":"Borealis Tooling","businessNumber":"SUP-LABELSWEEP-NEW","phone":"` + long + `"}`, "전화번호"},
+		{"an unbounded website on an update", http.MethodPatch, "/api/v1/suppliers/" + supplierID, admin,
+			`{"website":"` + long + `"}`, "웹사이트"},
+		{"a contact department", http.MethodPost, "/api/v1/suppliers/" + supplierID + "/contacts", admin,
+			`{"name":"김담당","department":"` + long + `"}`, "부서"},
+		{"a ledger item name", http.MethodPost, "/api/v1/spend/transactions", admin,
+			`{"supplierId":"` + supplierID + `","itemName":"` + long + `","amount":1000,"transactionDate":"2026-01-05"}`, "품목명"},
+		{"a ledger category, which is a chart legend", http.MethodPost, "/api/v1/spend/transactions", admin,
+			`{"supplierId":"` + supplierID + `","itemName":"검증 품목","category":"` + long + `","amount":1000,"transactionDate":"2026-01-05"}`, "분류"},
+		{"an organisation name, which is a picker on every form", http.MethodPost, "/api/v1/admin/organizations", admin,
+			`{"name":"` + long + `"}`, "조직 이름"},
+		{"a role name", http.MethodPost, "/api/v1/admin/roles", admin,
+			`{"code":"label_sweep_role","name":"` + long + `"}`, "역할 이름"},
+		{"a display name, which is the byline on every audit line", http.MethodPost, "/api/v1/admin/users", admin,
+			`{"email":"labelsweep-created@vendra.test","displayName":"` + long + `"}`, "이름"},
+		{"the caller's own display name", http.MethodPatch, "/api/v1/me", admin,
+			`{"displayName":"` + long + `"}`, "이름"},
+		{"an API key name", http.MethodPost, "/api/v1/me/api-keys", admin,
+			`{"name":"` + long + `","expiresInDays":30}`, "키 이름"},
+		{"a title the portal supplies", http.MethodPost, "/api/v1/portal/deliveries", portal,
+			`{"title":"` + long + `"}`, "제목"},
+		{"a portal contact name", http.MethodPost, "/api/v1/portal/contacts", portal,
+			`{"name":"` + long + `"}`, "담당자 이름"},
+		{"a website the portal writes onto its own record", http.MethodPatch, "/api/v1/portal/profile", portal,
+			`{"website":"` + long + `"}`, "웹사이트"},
+	} {
+		w := send(tc.method, tc.path, tc.session, tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: returned %d, want 400: %s", tc.what, w.Code, w.Body.String())
+			continue
+		}
+		code, msg := errorCodeAndMessage(t, w)
+		if code != "validation_error" {
+			t.Errorf("%s: answered %q, want validation_error: %s", tc.what, code, msg)
+		}
+		if !strings.Contains(msg, tc.names) {
+			t.Errorf("%s: the rejection does not name the box to fix: %s", tc.what, msg)
+		}
+	}
+
+	// Nothing any of them named reached a table, and the records that already
+	// existed were not half-updated.
+	for _, check := range []struct {
+		what, query string
+	}{
+		{"the ledger", `SELECT count(*) FROM spend_transactions WHERE supplier_id=$1`},
+		{"supplier contacts", `SELECT count(*) FROM supplier_contacts WHERE supplier_id=$1`},
+		{"portal-created deliveries", `SELECT count(*) FROM business_objects WHERE object_type='delivery' AND supplier_id=$1`},
+	} {
+		var n int
+		if err := pool.QueryRow(ctx, check.query, supplierID).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", check.what, err)
+		}
+		if n != 0 {
+			t.Errorf("a rejected write left %d rows in %s", n, check.what)
+		}
+	}
+	var website *string
+	if err := pool.QueryRow(ctx, `SELECT website FROM suppliers WHERE id=$1`, supplierID).Scan(&website); err != nil {
+		t.Fatalf("read the supplier website: %v", err)
+	}
+	if website != nil {
+		t.Errorf("a rejected update stored a website of %d runes", len([]rune(*website)))
+	}
+
+	// A label exactly at the limit is a label, and every path still takes one
+	// somebody would actually type.
+	atLimit := strings.Repeat("가", maxIdentifierLen)
+	if w := send(http.MethodPatch, "/api/v1/contracts/"+contract.ID, admin, `{"title":"`+atLimit+`"}`); w.Code != http.StatusOK {
+		t.Errorf("a %d-rune title returned %d: %s", maxIdentifierLen, w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPost, "/api/v1/suppliers", admin,
+		`{"name":"Borealis Tooling","businessNumber":"SUP-LABELSWEEP-NEW","industry":"정밀가공","phone":"02-1234-5678"}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed supplier returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPost, "/api/v1/suppliers/"+supplierID+"/contacts", admin,
+		`{"name":"김담당","department":"구매팀","email":"labelsweep-contact@vendra.test"}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed contact returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPost, "/api/v1/spend/transactions", admin,
+		`{"supplierId":"`+supplierID+`","itemName":"검증 품목","category":"원자재","amount":1000,"transactionDate":"2026-01-05"}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed spend transaction returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPatch, "/api/v1/portal/profile", portal, `{"website":"https://borealis.example"}`); w.Code != http.StatusOK {
+		t.Errorf("a well-formed portal profile update returned %d: %s", w.Code, w.Body.String())
+	}
+}

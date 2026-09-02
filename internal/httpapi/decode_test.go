@@ -32,22 +32,29 @@ func TestDecodeJSONRejectsNullByte(t *testing.T) {
 	}
 }
 
-func TestOverlongFieldCountsRunesNotBytes(t *testing.T) {
+func TestValidTextCountsRunesNotBytes(t *testing.T) {
 	// Every Hangul syllable is three bytes, so a byte-length check would cut
 	// Korean names at a third of the limit it advertises.
 	atLimit := map[string]any{"name": strings.Repeat("가", maxIdentifierLen)}
-	if f := overlongField(atLimit, "name"); f != "" {
-		t.Errorf("a %d-rune name was rejected as %q", maxIdentifierLen, f)
+	if !validTextFields(httptest.NewRecorder(), atLimit, textField{"name", "업체명"}) {
+		t.Errorf("a %d-rune name was rejected", maxIdentifierLen)
 	}
-	over := map[string]any{"name": strings.Repeat("가", maxIdentifierLen+1)}
-	if f := overlongField(over, "name"); f != "name" {
-		t.Errorf("overlongField = %q, want \"name\"", f)
+	if !validTextFields(httptest.NewRecorder(), map[string]any{"name": "ok"},
+		textField{"name", "업체명"}, textField{"missing", "없는 값"}) {
+		t.Error("validTextFields rejected a body that left a field out")
 	}
+
+	rec := httptest.NewRecorder()
 	several := map[string]any{"name": "ok", "country": strings.Repeat("x", maxIdentifierLen+1)}
-	if f := overlongField(several, "name", "country"); f != "country" {
-		t.Errorf("overlongField = %q, want \"country\"", f)
+	if validTextFields(rec, several, textField{"name", "업체명"}, textField{"country", "국가"}) {
+		t.Fatal("validTextFields accepted a 201-character country")
 	}
-	if f := overlongField(map[string]any{"name": "ok"}, "name", "missing"); f != "" {
-		t.Errorf("overlongField = %q, want \"\" for absent keys", f)
+	code, msg := errorCodeAndMessage(t, rec)
+	if code != "validation_error" {
+		t.Errorf("answered %q, want validation_error", code)
+	}
+	// The caller cannot fix the request without being told which box is wrong.
+	if !strings.HasPrefix(msg, "국가는 ") || !strings.Contains(msg, "200자") {
+		t.Errorf("said %q; it has to name the field, with the right particle, and the limit", msg)
 	}
 }

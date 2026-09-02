@@ -96,6 +96,9 @@ func (a *App) createScreeningTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "이름과 심사항목은 필수입니다")
 		return
 	}
+	if !validText(w, in.Name, "심사 템플릿 이름") {
+		return
+	}
 	// Without ordered, positive bounds the template cannot decide an outcome,
 	// and every screening run against it would ask for a manual review.
 	var thresholds screeningThresholds

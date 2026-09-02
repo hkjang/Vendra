@@ -731,6 +731,9 @@ func (a *App) portalCreateBusinessObject(objectType string) http.HandlerFunc {
 		if !validNumberFields(w, in, amountField("amount", "금액")) {
 			return
 		}
+		if !validTextFields(w, in, textField{"title", "제목"}, textField{"currency", "통화"}) {
+			return
+		}
 		number := objectNumber(objectType)
 		data, _ := in["data"].(map[string]any)
 		if data == nil {
