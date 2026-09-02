@@ -255,17 +255,10 @@ func (a *App) createRisk(w http.ResponseWriter, r *http.Request) {
 	// genuine 5 by 8, and sorted to the top of the list beside it. Only 1000
 	// was refused, by numeric(5,2) overflowing, and then as "리스크를 저장하지
 	// 못했습니다".
-	for _, field := range []struct {
-		key, label string
-	}{{"probability", "발생 가능성"}, {"impact", "영향도"}} {
-		value, ok := numberValue(in, field.key).(float64)
-		if !ok {
-			continue
-		}
-		if value < 0 || value > 10 {
-			writeError(w, 400, "validation_error", fmt.Sprintf("%s%s 0에서 10 사이여야 합니다", field.label, topicParticle(field.label)))
-			return
-		}
+	if !validNumberFields(w, in,
+		numberField{key: "probability", label: "발생 가능성", min: 0, max: 10},
+		numberField{key: "impact", label: "영향도", min: 0, max: 10}) {
+		return
 	}
 	var id string
 	if !validDateFields(w, in, dateField{"reviewDate", "검토일"}) {
@@ -565,12 +558,31 @@ func (a *App) createSpendTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request", err.Error())
 		return
 	}
-	if in.SupplierID == "" || in.ItemName == "" || in.Amount < 0 || in.TransactionDate == "" {
+	if in.SupplierID == "" || in.ItemName == "" || in.TransactionDate == "" {
 		writeError(w, 400, "validation_error", "공급업체, 품목명, 금액, 거래일은 필수입니다")
 		return
 	}
 	if !validDate(w, in.TransactionDate, "거래일") {
 		return
+	}
+	// The ledger every spend figure is derived from: the supplier's annual
+	// spend is the sum of these rows, and the concentration report divides one
+	// supplier's share by that sum. A negative amount was refused by the form
+	// and taken by the API, and it does not merely understate a supplier — it
+	// can drive the denominator to zero and take the whole report with it.
+	// Quantity and unit price were not checked at all, and the two of them are
+	// how a reader checks an amount is what the invoice said.
+	for _, bound := range []struct {
+		value *float64
+		field numberField
+	}{
+		{&in.Amount, amountField("amount", "금액")},
+		{in.Quantity, amountField("quantity", "수량")},
+		{in.UnitPrice, amountField("unitPrice", "단가")},
+	} {
+		if bound.value != nil && !validNumber(w, *bound.value, bound.field) {
+			return
+		}
 	}
 	// The organisation is the grouping key of the organisation-level spend
 	// report, so an unchecked value attributes this spend to a division the

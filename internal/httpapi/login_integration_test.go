@@ -5181,3 +5181,181 @@ func TestEveryDateFieldOnAWriteNamesItself(t *testing.T) {
 		t.Errorf("a well-formed spend transaction returned %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestEveryAmountOnAWriteIsBounded is the date sweep run again over the other
+// kind of value a request carries. validNumberFields existed only as a loop
+// inside the risk handler; everywhere else a number went from the body to a
+// numeric column untouched.
+//
+// Out of range it failed the way the dates did — "저장하지 못했습니다" with no
+// field named — but in range it did something worse, because these numbers are
+// what the money reports are made of. A negative amount on a purchase order
+// subtracts from the supplier's annual spend and from the denominator of the
+// concentration report, and it sits under every minAmount an approval rule
+// routes on. A business object scored 99,999 is averaged into the Supplier
+// 360's quality figure. Every one of them was answered 201.
+func TestEveryAmountOnAWriteIsBounded(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status) VALUES('SUP-AMOUNTSWEEP','금액 검증 업체','SUP-AMOUNTSWEEP','active')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	var rfqID string
+	if err := pool.QueryRow(ctx, `INSERT INTO business_objects(object_type,number,title,status,due_date,created_by)
+		VALUES('rfq','RFQ-AMOUNTSWEEP','금액 검증 견적','open',current_date+10,$1) RETURNING id`, adminID).Scan(&rfqID); err != nil {
+		t.Fatalf("seed rfq: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO sourcing_participants(sourcing_id,supplier_id,status) VALUES($1,$2,'invited')
+		ON CONFLICT(sourcing_id,supplier_id) DO UPDATE SET status='invited'`, rfqID, supplierID); err != nil {
+		t.Fatalf("invite the supplier: %v", err)
+	}
+	const email = "amountsweep-bidder@vendra.test"
+	const password = "AmountSweepPassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,supplier_id) VALUES($1,'금액 담당자',$2,'supplier','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,supplier_id=excluded.supplier_id,user_type='supplier',status='active' RETURNING id`, email, hash, supplierID).Scan(&userID); err != nil {
+		t.Fatalf("seed portal user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user' ON CONFLICT DO NOTHING`, userID); err != nil {
+		t.Fatalf("assign the portal role: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM spend_transactions WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_responses WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM sourcing_participants WHERE sourcing_id=$1`, rfqID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE id=$1 OR supplier_id=$2`, rfqID, supplierID)
+		// audit_logs holds a foreign key on the actor, so the portal user
+		// survives without this — and then so does the supplier that
+		// references it, leaving the next run to fail on a duplicate business
+		// number. The admin is never deleted, so its rows are left alone.
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE actor_id=$1`, userID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE business_number IN('SUP-AMOUNTSWEEP','SUP-AMOUNTSWEEP-NEW')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email IN($1,$2)`, testAdminEmail, email)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.191:5000"))
+	bidder := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.192:5000"))
+
+	send := func(method, path, session, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	// One contract to patch. Its score stays untouched by the rejected PATCH.
+	var contract struct{ ID string }
+	w := send(http.MethodPost, "/api/v1/contracts", admin, `{"title":"금액 검증 계약","supplierId":"`+supplierID+`","amount":5000000}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed a contract through the API: %d %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &contract); err != nil || contract.ID == "" {
+		t.Fatalf("read the contract id: %v %s", err, w.Body.String())
+	}
+
+	response := "/api/v1/portal/sourcing/" + rfqID + "/response"
+	for _, tc := range []struct {
+		what, method, path, session, body, names string
+	}{
+		{"a negative contract amount", http.MethodPost, "/api/v1/contracts", admin,
+			`{"title":"금액 검증 계약","amount":-1000000}`, "금액"},
+		{"an amount past what the column holds", http.MethodPost, "/api/v1/contracts", admin,
+			`{"title":"금액 검증 계약","amount":1e19}`, "금액"},
+		{"an off-scale score on an update", http.MethodPatch, "/api/v1/contracts/" + contract.ID, admin,
+			`{"score":9999}`, "점수"},
+		{"a negative annual spend on the register", http.MethodPost, "/api/v1/suppliers", admin,
+			`{"name":"Aurora Precision Casting","businessNumber":"SUP-AMOUNTSWEEP-NEW","annualSpend":-1}`, "연간 거래금액"},
+		{"a negative ledger amount", http.MethodPost, "/api/v1/spend/transactions", admin,
+			`{"supplierId":"` + supplierID + `","itemName":"검증 품목","amount":-1000,"transactionDate":"2026-01-05"}`, "금액"},
+		{"a negative ledger quantity", http.MethodPost, "/api/v1/spend/transactions", admin,
+			`{"supplierId":"` + supplierID + `","itemName":"검증 품목","amount":1000,"quantity":-5,"transactionDate":"2026-01-05"}`, "수량"},
+		{"a unit price past numeric(20,4)", http.MethodPost, "/api/v1/spend/transactions", admin,
+			`{"supplierId":"` + supplierID + `","itemName":"검증 품목","amount":1000,"unitPrice":1e17,"transactionDate":"2026-01-05"}`, "단가"},
+		{"a negative bid", http.MethodPut, response, bidder,
+			`{"submit":true,"totalAmount":-1000000}`, "총 견적금액"},
+		{"a lead time past the integer column", http.MethodPut, response, bidder,
+			`{"totalAmount":1000000,"deliveryDays":3000000000}`, "납기"},
+		{"a negative amount from the portal", http.MethodPost, "/api/v1/portal/deliveries", bidder,
+			`{"title":"납품 등록","amount":-5}`, "금액"},
+	} {
+		w := send(tc.method, tc.path, tc.session, tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: returned %d, want 400: %s", tc.what, w.Code, w.Body.String())
+			continue
+		}
+		code, msg := errorCodeAndMessage(t, w)
+		if code != "validation_error" {
+			t.Errorf("%s: answered %q, want validation_error: %s", tc.what, code, msg)
+		}
+		if !strings.Contains(msg, tc.names) {
+			t.Errorf("%s: the rejection does not name it: %s", tc.what, msg)
+		}
+	}
+
+	// Nothing was written by any of them, and the record that already existed
+	// was not half-updated.
+	var responses, deliveries int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sourcing_responses WHERE sourcing_id=$1`, rfqID).Scan(&responses); err != nil {
+		t.Fatalf("count responses: %v", err)
+	}
+	if responses != 0 {
+		t.Errorf("a rejected bid left %d response rows behind", responses)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM business_objects WHERE object_type='delivery' AND supplier_id=$1`, supplierID).Scan(&deliveries); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveries != 0 {
+		t.Errorf("a rejected portal delivery created %d rows anyway", deliveries)
+	}
+	var ledger int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM spend_transactions WHERE supplier_id=$1`, supplierID).Scan(&ledger); err != nil {
+		t.Fatalf("count the ledger: %v", err)
+	}
+	if ledger != 0 {
+		t.Errorf("three rejected ledger rows left %d behind", ledger)
+	}
+	var score *float64
+	if err := pool.QueryRow(ctx, `SELECT score FROM business_objects WHERE id=$1`, contract.ID).Scan(&score); err != nil {
+		t.Fatalf("read the contract score: %v", err)
+	}
+	if score != nil {
+		t.Errorf("the rejected PATCH stored a score of %v", *score)
+	}
+
+	// Each path still takes a value somebody would actually enter, so the
+	// bound did not close it. maxAmount itself is accepted.
+	if w := send(http.MethodPatch, "/api/v1/contracts/"+contract.ID, admin, `{"score":88,"amount":1e15}`); w.Code != http.StatusOK {
+		t.Errorf("a well-formed contract update returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPost, "/api/v1/suppliers", admin,
+		`{"name":"Aurora Precision Casting","businessNumber":"SUP-AMOUNTSWEEP-NEW","annualSpend":120000000}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed supplier returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPost, "/api/v1/spend/transactions", admin,
+		`{"supplierId":"`+supplierID+`","itemName":"검증 품목","amount":1000,"quantity":2,"unitPrice":500,"transactionDate":"2026-01-05"}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed spend transaction returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPut, response, bidder, `{"submit":true,"totalAmount":1000000,"deliveryDays":30}`); w.Code != http.StatusOK {
+		t.Errorf("a well-formed bid returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPost, "/api/v1/portal/deliveries", bidder, `{"title":"납품 등록","amount":5000}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed portal delivery returned %d: %s", w.Code, w.Body.String())
+	}
+}

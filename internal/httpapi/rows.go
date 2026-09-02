@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -167,6 +169,84 @@ func validDate(w http.ResponseWriter, value, label string) bool {
 		return false
 	}
 	return true
+}
+
+// maxAmount bounds the money and quantity a caller writes into the ledger.
+//
+// Two ceilings sit above a request number, and this is under both. The columns
+// are numeric(20,2) and numeric(20,4), so 10^16 already overflows the narrower
+// one — and PostgreSQL reports that as a failed statement, which the handler
+// can only pass on as "저장하지 못했습니다" with no field named, the same dead
+// end the dates were. Lower still, a JSON number is decoded into a float64,
+// and past 2^53 it stops being the number the caller sent: 9007199254740993
+// arrives as ...992, so the ledger would hold an amount the invoice does not.
+// Under 10^15 every accepted value is stored as written, and 10^15 KRW is
+// three orders of magnitude above the largest transaction anyone books.
+const maxAmount = 1e15
+
+// numberField names a request-body field holding a number, with the label and
+// the range to use when telling the caller the value is outside it.
+type numberField struct {
+	key, label string
+	min, max   float64
+}
+
+// amountField describes a money or quantity field, which runs from zero to
+// maxAmount. The forms mark every one of them min="0"; only the API took a
+// negative, and a negative amount is not a smaller purchase but a wrong one —
+// it subtracts from the spend rollup, the concentration report and the
+// supplier's annual spend, and slips under every minAmount an approval rule
+// routes on.
+func amountField(key, label string) numberField {
+	return numberField{key: key, label: label, min: 0, max: maxAmount}
+}
+
+// validNumberFields checks optional numbers taken from a request body. A field
+// the caller left out keeps whatever default the statement applies, so only a
+// value that is actually present is ranged.
+func validNumberFields(w http.ResponseWriter, in map[string]any, fields ...numberField) bool {
+	for _, f := range fields {
+		value, ok := numberValue(in, f.key).(float64)
+		if !ok {
+			continue
+		}
+		if !validNumber(w, value, f) {
+			return false
+		}
+	}
+	return true
+}
+
+// validNumber ranges one number that a typed handler has already decoded.
+func validNumber(w http.ResponseWriter, value float64, f numberField) bool {
+	if value >= f.min && value <= f.max {
+		return true
+	}
+	writeError(w, http.StatusBadRequest, "validation_error",
+		fmt.Sprintf("%s%s %s에서 %s 사이여야 합니다", f.label, topicParticle(f.label), groupDigits(f.min), groupDigits(f.max)))
+	return false
+}
+
+// groupDigits writes a bound the way the message needs to read it: 100 stays
+// 100, and maxAmount is unreadable as 1000000000000000.
+func groupDigits(v float64) string {
+	s := strconv.FormatFloat(v, 'f', -1, 64)
+	sign := ""
+	if strings.HasPrefix(s, "-") {
+		sign, s = "-", s[1:]
+	}
+	whole, frac, hasFrac := strings.Cut(s, ".")
+	var b strings.Builder
+	for i := range whole {
+		if i > 0 && (len(whole)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte(whole[i])
+	}
+	if hasFrac {
+		b.WriteString("." + frac)
+	}
+	return sign + b.String()
 }
 
 // validInstant is validDate for a field carrying a point in time. The spellings
