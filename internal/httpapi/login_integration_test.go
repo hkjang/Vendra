@@ -5712,3 +5712,175 @@ func TestEveryRiskGradeOnAWriteIsInTheVocabulary(t *testing.T) {
 		t.Errorf("a rule with no risk condition returned %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestEveryRecordIDOnAWriteIsChecked is the date, amount, label and vocabulary
+// sweep run over the fifth kind of value a request body carries: the id of
+// another record.
+//
+// Path ids have been checked at the router since app.go was written and query
+// filters since uuidParam; the ids a body carries were the third door and
+// nobody stood at it. What arrived was not a different record but no record,
+// and the answer depended on who asked. A handler that looks the id up first
+// treats the failed query as a denial — so a typo in supplierId came back as
+// 403 "데이터 접근 범위를 벗어났습니다", telling the caller they may not see a
+// record that does not exist — while a company-scope account skipped that
+// lookup, reached the cast and got 400 "저장하지 못했습니다" with no field
+// named. Neither answer points at the box to fix, and on the upload path the
+// file has already been streamed and hashed by the time the insert runs.
+func TestEveryRecordIDOnAWriteIsChecked(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status,risk_level) VALUES('SUP-IDSWEEP','아이디 검증 업체','SUP-IDSWEEP','active','LOW')
+		ON CONFLICT(supplier_number) DO UPDATE SET name=excluded.name RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.204:5000"))
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	idOf := func(t *testing.T, w *httptest.ResponseRecorder) string {
+		t.Helper()
+		var out struct{ ID string }
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.ID == "" {
+			t.Fatalf("read the created id: %v %s", err, w.Body.String())
+		}
+		return out.ID
+	}
+
+	created := send(http.MethodPost, "/api/v1/contracts", `{"title":"아이디 스윕 계약","supplierId":"`+supplierID+`"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("seed a contract through the API: %d %s", created.Code, created.Body.String())
+	}
+	contractID := idOf(t, created)
+	tender := send(http.MethodPost, "/api/v1/rfq", `{"title":"아이디 스윕 입찰"}`)
+	if tender.Code != http.StatusCreated {
+		t.Fatalf("seed an RFQ through the API: %d %s", tender.Code, tender.Body.String())
+	}
+	rfqID := idOf(t, tender)
+	user := send(http.MethodPost, "/api/v1/admin/users", `{"email":"idsweep@vendra.test","displayName":"아이디 스윕"}`)
+	if user.Code != http.StatusCreated {
+		t.Fatalf("seed a user through the API: %d %s", user.Code, user.Body.String())
+	}
+	userID := idOf(t, user)
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		// The audit rows go before the user they name, or the next run of this
+		// test cannot delete the account it is about to recreate.
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE actor_id=$1 OR object_id=$1`, userID)
+		_, _ = pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id=$1`, userID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, userID)
+		_, _ = pool.Exec(ctx, `DELETE FROM business_objects WHERE supplier_id=$1 OR title LIKE '아이디 스윕%'`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM risks WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM spend_transactions WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM organizations WHERE name='아이디 스윕 조직'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE business_number IN('SUP-IDSWEEP','SUP-IDSWEEP-NEW')`)
+	})
+
+	// Every one of these is a value a client actually sends where an id belongs:
+	// the supplier's own number, the name off the screen, a template string that
+	// was never filled in.
+	for _, tc := range []struct {
+		what, method, path, body, names string
+	}{
+		{"a supplier owned by a name", http.MethodPost, "/api/v1/suppliers",
+			`{"name":"Ridgeway Tooling","businessNumber":"SUP-IDSWEEP-NEW","ownerId":"김구매"}`, "담당자 ID"},
+		{"an object filed against a supplier number", http.MethodPost, "/api/v1/contracts",
+			`{"title":"아이디 스윕 반려 계약","supplierId":"SUP-IDSWEEP"}`, "공급업체 ID"},
+		{"an object hung off a parent that is not an id", http.MethodPost, "/api/v1/deliveries",
+			`{"title":"아이디 스윕 반려 납품","parentId":"PO-2026-0001"}`, "상위 업무 ID"},
+		{"a supplier moved onto an existing object by number", http.MethodPatch, "/api/v1/contracts/" + contractID,
+			`{"supplierId":"SUP-IDSWEEP"}`, "공급업체 ID"},
+		{"a risk owned by a name", http.MethodPost, "/api/v1/suppliers/" + supplierID + "/risks",
+			`{"riskType":"품질","severity":"HIGH","ownerId":"김품질"}`, "담당자 ID"},
+		{"an evaluation on a template picked by name", http.MethodPost, "/api/v1/suppliers/" + supplierID + "/evaluations",
+			`{"templateId":"기본 스코어카드"}`, "평가 템플릿 ID"},
+		{"a screening on a template picked by name", http.MethodPost, "/api/v1/suppliers/" + supplierID + "/screenings",
+			`{"templateId":"기본 심사표"}`, "심사 템플릿 ID"},
+		{"a ledger row pointing at a contract number", http.MethodPost, "/api/v1/spend/transactions",
+			`{"supplierId":"` + supplierID + `","itemName":"베어링","amount":1000,"transactionDate":"2026-01-05","contractId":"CT-2026-0007"}`, "계약 ID"},
+		{"a supply relationship drawn between names", http.MethodPost, "/api/v1/supplier-network/relationships",
+			`{"sourceSupplierId":"` + supplierID + `","targetSupplierId":"다라상사","relationshipType":"tier2"}`, "대상 공급업체 ID"},
+		{"an account placed in an organisation by name", http.MethodPost, "/api/v1/admin/users",
+			`{"email":"idsweep2@vendra.test","displayName":"아이디 스윕2","organizationId":"구매팀"}`, "조직 ID"},
+		{"an account bound to a supplier by number", http.MethodPatch, "/api/v1/admin/users/" + userID,
+			`{"supplierId":"SUP-IDSWEEP"}`, "공급업체 ID"},
+		{"an organisation under a parent named rather than identified", http.MethodPost, "/api/v1/admin/organizations",
+			`{"name":"아이디 스윕 조직","parentId":"본사"}`, "상위 조직 ID"},
+		{"a temporary permission over a resource that is not an id", http.MethodPost, "/api/v1/admin/access-grants",
+			`{"userId":"` + userID + `","permission":"supplier.read","resourceType":"supplier","resourceId":"SUP-IDSWEEP"}`, "리소스 ID"},
+		{"a temporary permission granted to a name", http.MethodPost, "/api/v1/admin/access-grants",
+			`{"userId":"김구매","permission":"supplier.read"}`, "사용자 ID"},
+		{"an invitation binding an account to a supplier number", http.MethodPost, "/api/v1/invitations",
+			`{"email":"vendor@example.test","supplierId":"SUP-IDSWEEP"}`, "공급업체 ID"},
+		{"an award naming a bid rather than identifying it", http.MethodPost, "/api/v1/sourcing/" + rfqID + "/select",
+			`{"responseId":"가나상사 견적","selectionType":"final"}`, "응답 ID"},
+	} {
+		w := send(tc.method, tc.path, tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: returned %d, want 400: %s", tc.what, w.Code, w.Body.String())
+			continue
+		}
+		code, msg := errorCodeAndMessage(t, w)
+		if code != "validation_error" {
+			t.Errorf("%s: answered %q, want validation_error: %s", tc.what, code, msg)
+		}
+		if !strings.Contains(msg, tc.names) {
+			t.Errorf("%s: the rejection does not name the box to fix: %s", tc.what, msg)
+		}
+	}
+
+	// None of them reached a table, and the records they aimed at are untouched.
+	var objectSupplier *string
+	if err := pool.QueryRow(ctx, `SELECT supplier_id::text FROM business_objects WHERE id=$1`, contractID).Scan(&objectSupplier); err != nil {
+		t.Fatalf("read the contract: %v", err)
+	}
+	if objectSupplier == nil || *objectSupplier != supplierID {
+		t.Errorf("a rejected update left the contract filed against %v", objectSupplier)
+	}
+	var accountSupplier *string
+	if err := pool.QueryRow(ctx, `SELECT supplier_id::text FROM users WHERE id=$1`, userID).Scan(&accountSupplier); err != nil {
+		t.Fatalf("read the account: %v", err)
+	}
+	if accountSupplier != nil {
+		t.Errorf("a rejected update bound the account to supplier %v", *accountSupplier)
+	}
+	for _, check := range []struct {
+		what, query string
+		args        []any
+	}{
+		{"suppliers", `SELECT count(*) FROM suppliers WHERE business_number='SUP-IDSWEEP-NEW'`, nil},
+		{"business objects", `SELECT count(*) FROM business_objects WHERE title LIKE '아이디 스윕 반려%'`, nil},
+		{"risks", `SELECT count(*) FROM risks WHERE supplier_id=$1`, []any{supplierID}},
+		{"spend transactions", `SELECT count(*) FROM spend_transactions WHERE supplier_id=$1`, []any{supplierID}},
+		{"organizations", `SELECT count(*) FROM organizations WHERE name='아이디 스윕 조직'`, nil},
+		{"users", `SELECT count(*) FROM users WHERE email='idsweep2@vendra.test'`, nil},
+		{"invitations", `SELECT count(*) FROM invitations WHERE email='vendor@example.test'`, nil},
+		{"access grants", `SELECT count(*) FROM access_grants WHERE user_id=$1`, []any{userID}},
+	} {
+		var n int
+		if err := pool.QueryRow(ctx, check.query, check.args...).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", check.what, err)
+		}
+		if n != 0 {
+			t.Errorf("a rejected write left %d rows in %s", n, check.what)
+		}
+	}
+
+	// An id the caller did not send is not a wrong one: the statement's own
+	// default still applies and the write goes through.
+	if w := send(http.MethodPatch, "/api/v1/contracts/"+contractID, `{"title":"아이디 스윕 계약 v2"}`); w.Code != http.StatusOK {
+		t.Errorf("an update carrying no id returned %d: %s", w.Code, w.Body.String())
+	}
+}

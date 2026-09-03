@@ -159,6 +159,9 @@ func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 	if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급")) {
 		return
 	}
+	if !validUUIDFields(w, in, uuidField{"ownerId", "담당자 ID"}, uuidField{"organizationId", "조직 ID"}) {
+		return
+	}
 	similarNameThreshold := 0.35
 	var registrationSettings []byte
 	if a.db.QueryRow(r.Context(), `SELECT value FROM settings WHERE key='supplier.registration'`).Scan(&registrationSettings) == nil {

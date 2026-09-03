@@ -87,6 +87,16 @@ func (a *App) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	// so the value never arrived, every portal upload was stored with no
 	// supplier, and the uploader could not see it in their own list.
 	supplierID := r.FormValue("supplierId")
+	// Both ids are checked before the two scope lookups below, each of which
+	// selects the row and reads a failed query as a denial: a typo in either
+	// came back as 403 "…데이터 접근 범위를 벗어났습니다", telling the uploader
+	// they may not reach a record that was never a record. And this is the one
+	// path where the answer costs more than a message — the file has already
+	// been streamed and hashed by the time the insert runs, so every retry
+	// spends the upload again.
+	if !validRecordID(w, supplierID, "공급업체 ID") || !validRecordID(w, r.FormValue("objectId"), "업무 ID") {
+		return
+	}
 	if p.UserType == "supplier" {
 		if p.SupplierID == nil {
 			writeError(w, 403, "portal_scope", "공급업체 계정이 아닙니다")

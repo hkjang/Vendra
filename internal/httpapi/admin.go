@@ -144,6 +144,13 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 		!validText(w, in.UserType, "사용자 구분") || !validText(w, in.Status, "상태") {
 		return
 	}
+	// The two ids decide what the new account can reach: the organisation is
+	// its data scope and the supplier is the portal it is confined to. A typo
+	// in either failed the insert as "사용자를 저장하지 못했습니다", which names
+	// neither of the two boxes on the form that could have caused it.
+	if !validRecordID(w, in.OrganizationID, "조직 ID") || !validRecordID(w, in.SupplierID, "공급업체 ID") {
+		return
+	}
 	var hash any
 	if in.Password != "" {
 		b, err := a.hashPassword(r.Context(), in.Password)
@@ -196,6 +203,9 @@ func (a *App) updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validText(w, in.DisplayName, "이름") || !validText(w, in.Status, "상태") {
+		return
+	}
+	if !validRecordID(w, in.OrganizationID, "조직 ID") || !validRecordID(w, in.SupplierID, "공급업체 ID") {
 		return
 	}
 	tx, err := a.db.Begin(r.Context())
@@ -356,6 +366,12 @@ func (a *App) createOrganization(w http.ResponseWriter, r *http.Request) {
 	if !validText(w, in.Name, "조직 이름") {
 		return
 	}
+	// Checked before the parent lookup below, which would otherwise report a
+	// malformed id as "상위 조직을 찾을 수 없습니다" — an organisation that was
+	// never named as missing.
+	if !validRecordID(w, in.ParentID, "상위 조직 ID") {
+		return
+	}
 	tx, err := a.db.Begin(r.Context())
 	if err != nil {
 		writeError(w, 500, "database_error", "조직을 저장하지 못했습니다")
@@ -449,6 +465,9 @@ func (a *App) createAccessGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	var id string
 	if !validInstant(w, in.ValidFrom, "시작 시각") || !validInstant(w, in.ValidUntil, "종료 시각") {
+		return
+	}
+	if !validRecordID(w, in.UserID, "사용자 ID") || !validRecordID(w, in.ResourceID, "리소스 ID") {
 		return
 	}
 	err := a.db.QueryRow(r.Context(), `INSERT INTO access_grants(user_id,permission,resource_type,resource_id,conditions,valid_from,valid_until,delegated_by) VALUES($1,$2,NULLIF($3,''),NULLIF($4,'')::uuid,$5,COALESCE(NULLIF($6,'')::timestamptz,now()),NULLIF($7,'')::timestamptz,$8) RETURNING id`, in.UserID, in.Permission, in.ResourceType, in.ResourceID, raw(conditions), in.ValidFrom, in.ValidUntil, p.ID).Scan(&id)
