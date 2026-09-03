@@ -207,6 +207,114 @@ func validText(w http.ResponseWriter, value, label string) bool {
 	return false
 }
 
+// maxEmailLen bounds an address at the length the mail system itself does. RFC
+// 5321 caps a forward path at 254 characters, so anything longer is not a long
+// address but no address: nothing could be delivered to it however it is spelt.
+const maxEmailLen = 254
+
+// emailField names a request-body field holding an email address, with the
+// label to use when telling the caller it is not one.
+type emailField struct{ key, label string }
+
+// validEmailFields checks the addresses a request body carries and rewrites
+// each one into the form the rest of the application reads it in.
+//
+// An address is not free text the way a title is. It is a destination — the
+// invitation link, the tax invoice, the verification mail all go where it says
+// — and on users.email it is the account's identity: login selects
+// `WHERE email=$1` on the trimmed, lower-cased value the sign-in form sends.
+// Nothing between the request and the column agreed with that. The insert
+// lower-cases but does not trim, so an admin who pastes "  gu@acme.co.kr " from
+// a spreadsheet creates an account that no password will ever open, and whose
+// only symptom is 자격 증명이 올바르지 않습니다 forever; the same stored space
+// defeats the ON CONFLICT(email) that is supposed to attach the OIDC identity
+// to the existing account, so signing in through Keycloak silently opens a
+// second one. And nothing checked the shape at all, so "김구매" — the name, in
+// the box above — saved without complaint on every one of these surfaces. Only
+// the forms objected, through type="email", which is no help to the portal,
+// the API client or the paste that skips the keystroke.
+//
+// So both halves are the caller's answer: the value is normalised to what the
+// lookups use, and anything that is not an address is refused by the field the
+// form shows it in. Only a field the caller actually sent is measured, the same
+// way the date, number and label checks beside it leave an absent one to the
+// statement's own default.
+func validEmailFields(w http.ResponseWriter, in map[string]any, fields ...emailField) bool {
+	for _, f := range fields {
+		address, ok := validEmail(w, stringValue(in, f.key), f.label)
+		if !ok {
+			return false
+		}
+		if _, sent := in[f.key].(string); sent {
+			in[f.key] = address
+		}
+	}
+	return true
+}
+
+// validEmail checks one address a typed handler has already decoded and answers
+// the form to store, which is the form login looks it up in.
+func validEmail(w http.ResponseWriter, value, label string) (string, bool) {
+	address := strings.ToLower(strings.TrimSpace(value))
+	if address == "" {
+		return "", true
+	}
+	if len(address) > maxEmailLen {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("%s%s %d자를 넘을 수 없습니다", label, topicParticle(label), maxEmailLen))
+		return "", false
+	}
+	if !isEmailAddress(address) {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			label+topicParticle(label)+" 올바른 이메일 형식이 아닙니다")
+		return "", false
+	}
+	return address, true
+}
+
+// isEmailAddress reports whether address is one, by the rules that matter to a
+// procurement system rather than by RFC 5322's grammar — which also admits
+// quoted local parts, nested comments and bracketed IP literals that no buyer
+// has ever typed and no mail client would show back to them. Accepting those
+// would buy nothing and cost the thing this check exists for.
+//
+// The local part is held to ASCII on purpose. An address in Hangul is not a
+// thing anyone here has; a Hangul local part is what it looks like — the
+// person's name, entered in the box below the one it belongs in.
+func isEmailAddress(address string) bool {
+	local, domain, ok := strings.Cut(address, "@")
+	if !ok || strings.Contains(domain, "@") {
+		return false
+	}
+	if local == "" || strings.HasPrefix(local, ".") || strings.HasSuffix(local, ".") || strings.Contains(local, "..") {
+		return false
+	}
+	for _, c := range local {
+		if c <= ' ' || c >= 0x7f || strings.ContainsRune(`"(),:;<>[\]`, c) {
+			return false
+		}
+	}
+	// A domain has to carry a dot with something either side of it. "kim@사내"
+	// and "kim@localhost" are hostnames on somebody's machine, not somewhere a
+	// supplier's invitation can arrive.
+	labels := strings.Split(domain, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, c := range label {
+			alphanumeric := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+			if !alphanumeric && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // uuidField names a request-body field holding the id of another record, with
 // the label to use when telling the caller it is not one.
 type uuidField struct{ key, label string }

@@ -130,8 +130,27 @@ var supplierTextFields = []textField{
 	{"businessNumber", "사업자번호"}, {"corporateNumber", "법인번호"},
 	{"country", "국가"}, {"supplierType", "업체 구분"}, {"supplierNumber", "업체 코드"},
 	{"grade", "등급"}, {"status", "상태"}, {"riskLevel", "리스크 등급"},
-	{"industry", "업종"}, {"phone", "전화번호"}, {"email", "이메일"},
+	{"industry", "업종"}, {"phone", "전화번호"},
 	{"website", "웹사이트"}, {"erpVendorId", "ERP 코드"}, {"bankAccount", "계좌정보"},
+}
+
+// supplierEmailFields names the addresses on a supplier record. The
+// representative address is the one the register shows and the buyer writes to;
+// the tax-invoice address sits inside taxInfo, which the form fills in from the
+// same screen and nothing on the way in ever looked at.
+var supplierEmailFields = []emailField{{"email", "이메일"}}
+
+// validSupplierEmails checks both of them. The register and the edit form write
+// the same two boxes, so the pair is listed once and neither surface can drift
+// from the other.
+func validSupplierEmails(w http.ResponseWriter, in map[string]any) bool {
+	if !validEmailFields(w, in, supplierEmailFields...) {
+		return false
+	}
+	// The nested map is the one the statement stores — normalising it here
+	// reaches the value that is written, not a copy of it.
+	tax, _ := in["taxInfo"].(map[string]any)
+	return validEmailFields(w, tax, emailField{"invoiceEmail", "세금계산서 이메일"})
 }
 
 func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
@@ -148,6 +167,9 @@ func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validTextFields(w, in, supplierTextFields...) {
+		return
+	}
+	if !validSupplierEmails(w, in) {
 		return
 	}
 	if !validDateFields(w, in, dateField{"tradingSince", "거래 시작일"}) {
@@ -347,6 +369,9 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 	if !validTextFields(w, in, supplierTextFields...) {
 		return
 	}
+	if !validSupplierEmails(w, in) {
+		return
+	}
 	if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급")) {
 		return
 	}
@@ -532,8 +557,13 @@ func (a *App) listContacts(w http.ResponseWriter, r *http.Request) {
 // on every RFQ and delivery renders.
 var contactTextFields = []textField{
 	{"name", "담당자 이름"}, {"title", "직위"}, {"department", "부서"},
-	{"email", "이메일"}, {"phone", "전화번호"},
+	{"phone", "전화번호"},
 }
+
+// contactEmailFields is the same pair of doors onto the contact's address. It
+// is the one an RFQ, a delivery notice and a verification link are sent to, and
+// the register shows it beside the name whether or not it can be written to.
+var contactEmailFields = []emailField{{"email", "담당자 이메일"}}
 
 func (a *App) createContact(w http.ResponseWriter, r *http.Request) {
 	if !a.supplierScopeAllowed(r, r.PathValue("id")) {
@@ -550,7 +580,7 @@ func (a *App) createContact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "담당자 이름은 필수입니다")
 		return
 	}
-	if !validTextFields(w, in, contactTextFields...) {
+	if !validTextFields(w, in, contactTextFields...) || !validEmailFields(w, in, contactEmailFields...) {
 		return
 	}
 	// primary_contact is NOT NULL, and this passed in["primary"] through

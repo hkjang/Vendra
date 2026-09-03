@@ -4231,7 +4231,16 @@ func TestInvitationExpiryStaysWithinTheWindowTheFormOffers(t *testing.T) {
 	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "198.51.100.9:5000"))
 	invite := func(label string, body map[string]any) int {
 		t.Helper()
-		body["email"] = "invite-window-" + label + "@vendra.test"
+		// The label is carried into the address so a failure names the case it
+		// came from, but an address is checked as one now: the spaces in it
+		// would be rejected before the period this test is about is read.
+		slug := strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+				return r
+			}
+			return '-'
+		}, label)
+		body["email"] = "invite-window-" + slug + "@vendra.test"
 		body["supplierId"] = supplierID
 		raw, _ := json.Marshal(body)
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/invitations", strings.NewReader(string(raw)))
@@ -5882,5 +5891,136 @@ func TestEveryRecordIDOnAWriteIsChecked(t *testing.T) {
 	// default still applies and the write goes through.
 	if w := send(http.MethodPatch, "/api/v1/contracts/"+contractID, `{"title":"아이디 스윕 계약 v2"}`); w.Code != http.StatusOK {
 		t.Errorf("an update carrying no id returned %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestEveryEmailOnAWriteIsAnAddress walks the doors the sweep covers, through
+// the router, with a session on them.
+//
+// Two failures, one on each half. The shape was never examined, so the name out
+// of the box above saved as an address on every one of these surfaces and was
+// found — if it was found — when mail did not arrive. And the form was never
+// normalised, so an address pasted with its surrounding spaces became an
+// account no password opens: the insert lower-cases but does not trim, and
+// login selects `WHERE email=$1` on a value it trimmed itself.
+func TestEveryEmailOnAWriteIsAnAddress(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status,risk_level,email) VALUES('SUP-MAILSWEEP','메일 검증 업체','SUP-MAILSWEEP','active','LOW','buyer@mailsweep.test')
+		ON CONFLICT(supplier_number) DO UPDATE SET email=excluded.email RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts`)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.205:5000"))
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: admin})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		// The audit rows go before the accounts they name, or the next run
+		// cannot delete the account it is about to recreate.
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE actor_id IN(SELECT id FROM users WHERE email LIKE '%mailsweep%')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE object_id IN(SELECT id::text FROM users WHERE email LIKE '%mailsweep%')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id IN(SELECT id FROM users WHERE email LIKE '%mailsweep%')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email LIKE '%mailsweep%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email LIKE '%mailsweep%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM invitations WHERE email LIKE '%mailsweep%'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM supplier_contacts WHERE supplier_id=$1`, supplierID)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE business_number IN('SUP-MAILSWEEP','SUP-MAILSWEEP-NEW')`)
+	})
+
+	// Every one of these is a value a client actually sends where an address
+	// belongs: the name from the box above, the whole line off a spreadsheet,
+	// two addresses in a field that holds one.
+	for _, tc := range []struct {
+		what, method, path, body, names string
+	}{
+		{"a supplier reachable at a name", http.MethodPost, "/api/v1/suppliers",
+			`{"name":"Ridgeway Tooling","businessNumber":"SUP-MAILSWEEP-NEW","email":"김구매"}`, "이메일"},
+		{"a tax invoice addressed to a department", http.MethodPost, "/api/v1/suppliers",
+			`{"name":"Ridgeway Tooling","businessNumber":"SUP-MAILSWEEP-NEW","taxInfo":{"invoiceEmail":"경리부"}}`, "세금계산서 이메일"},
+		{"a register entry moved onto two addresses at once", http.MethodPatch, "/api/v1/suppliers/" + supplierID,
+			`{"email":"gu@acme.co.kr, jy@acme.co.kr"}`, "이메일"},
+		{"a contact whose address is the line from the address book", http.MethodPost, "/api/v1/suppliers/" + supplierID + "/contacts",
+			`{"name":"김구매","email":"김구매 <gu@acme.co.kr>"}`, "담당자 이메일"},
+		{"an account identified by a name", http.MethodPost, "/api/v1/admin/users",
+			`{"email":"김구매","displayName":"김구매","organizationId":""}`, "이메일"},
+		{"an invitation sent to a machine", http.MethodPost, "/api/v1/invitations",
+			`{"email":"vendor@localhost"}`, "이메일"},
+	} {
+		w := send(tc.method, tc.path, tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: returned %d, want 400: %s", tc.what, w.Code, w.Body.String())
+			continue
+		}
+		code, msg := errorCodeAndMessage(t, w)
+		if code != "validation_error" {
+			t.Errorf("%s: answered %q, want validation_error: %s", tc.what, code, msg)
+		}
+		if !strings.Contains(msg, tc.names) {
+			t.Errorf("%s: the rejection does not name the box to fix: %s", tc.what, msg)
+		}
+	}
+
+	// None of them reached a table, and the record they aimed at is untouched.
+	var registered string
+	if err := pool.QueryRow(ctx, `SELECT email FROM suppliers WHERE id=$1`, supplierID).Scan(&registered); err != nil {
+		t.Fatalf("read the supplier: %v", err)
+	}
+	if registered != "buyer@mailsweep.test" {
+		t.Errorf("a rejected update left the supplier reachable at %q", registered)
+	}
+	for _, check := range []struct {
+		what, query string
+		args        []any
+	}{
+		{"suppliers", `SELECT count(*) FROM suppliers WHERE business_number='SUP-MAILSWEEP-NEW'`, nil},
+		{"supplier contacts", `SELECT count(*) FROM supplier_contacts WHERE supplier_id=$1`, []any{supplierID}},
+		{"users", `SELECT count(*) FROM users WHERE display_name='김구매'`, nil},
+		{"invitations", `SELECT count(*) FROM invitations WHERE email='vendor@localhost'`, nil},
+	} {
+		var n int
+		if err := pool.QueryRow(ctx, check.query, check.args...).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", check.what, err)
+		}
+		if n != 0 {
+			t.Errorf("a rejected write left %d rows in %s", n, check.what)
+		}
+	}
+
+	// The other half. This is the address off a spreadsheet cell, pasted with
+	// everything the cell held, and it is a real one — so it is accepted, and
+	// what is stored is what sign-in looks up.
+	created := send(http.MethodPost, "/api/v1/admin/users",
+		`{"email":"  Gu.Kim@MailSweep.TEST ","displayName":"메일 스윕","password":"`+testAdminPassword+`"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("a pasted address was refused: %d %s", created.Code, created.Body.String())
+	}
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT email FROM users WHERE display_name='메일 스윕'`).Scan(&stored); err != nil {
+		t.Fatalf("read the account: %v", err)
+	}
+	if stored != "gu.kim@mailsweep.test" {
+		t.Errorf("the account was stored as %q, which sign-in would never find", stored)
+	}
+	if w := postLogin(t, handler, "gu.kim@mailsweep.test", testAdminPassword, "203.0.113.206:5000"); w.Code != http.StatusOK {
+		t.Errorf("the account created from a pasted address cannot sign in: %d %s", w.Code, w.Body.String())
+	}
+
+	// An address the caller did not send is not a wrong one: the statement's
+	// own default still applies and the write goes through.
+	if w := send(http.MethodPatch, "/api/v1/suppliers/"+supplierID, `{"name":"메일 검증 업체 v2"}`); w.Code != http.StatusOK {
+		t.Errorf("an update carrying no address returned %d: %s", w.Code, w.Body.String())
 	}
 }
