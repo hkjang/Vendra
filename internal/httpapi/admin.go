@@ -140,10 +140,19 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// The display name is the byline on every audit line, approval step and
 	// notification the account ever produces.
-	if !validText(w, in.Email, "이메일") || !validText(w, in.DisplayName, "이름") ||
+	if !validText(w, in.DisplayName, "이름") ||
 		!validText(w, in.UserType, "사용자 구분") || !validText(w, in.Status, "상태") {
 		return
 	}
+	// The address is this account's identity, not a field on it: login selects
+	// on it and the OIDC link conflicts on it, both against the trimmed and
+	// lower-cased form. Storing anything else creates an account nobody can
+	// sign in to, and the only symptom is the wrong-password message.
+	email, ok := validEmail(w, in.Email, "이메일")
+	if !ok {
+		return
+	}
+	in.Email = email
 	// The two ids decide what the new account can reach: the organisation is
 	// its data scope and the supplier is the portal it is confined to. A typo
 	// in either failed the insert as "사용자를 저장하지 못했습니다", which names

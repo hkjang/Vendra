@@ -247,3 +247,71 @@ func TestAPortalWriteNamesAMalformedRecordID(t *testing.T) {
 		t.Errorf("the rejected delivery answered %q/%q, want validation_error naming 상위 업무 ID", code, msg)
 	}
 }
+
+// TestAPortalWriteNamesAMalformedEmail is the address sweep at the door
+// outsiders come through.
+//
+// The supplier maintains their own contact block and their own people, and both
+// are how the buyer reaches them: the representative address on the register and
+// the contact an RFQ, a delivery notice and a verification link are sent to.
+// Nothing looked at either, so a name typed into the address box saved as one,
+// and the first anyone knew of it was mail that never arrived.
+func TestAPortalWriteNamesAMalformedEmail(t *testing.T) {
+	f, pool := newPortalFixture(t)
+	post := func(path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.token})
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		return w
+	}
+	patch := func(path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.token})
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		return w
+	}
+
+	w := patch("/api/v1/portal/profile", `{"email":"영업부"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("a profile reachable at a department = %d, want 400\n  body: %s", w.Code, w.Body.String())
+	}
+	if code, msg := errorCodeAndMessage(t, w); code != "validation_error" || !strings.Contains(msg, "이메일") {
+		t.Errorf("the rejected profile answered %q/%q, want validation_error naming 이메일", code, msg)
+	}
+
+	w = post("/api/v1/portal/contacts", `{"name":"이영업","email":"이영업"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("a contact reachable at a name = %d, want 400\n  body: %s", w.Code, w.Body.String())
+	}
+	if code, msg := errorCodeAndMessage(t, w); code != "validation_error" || !strings.Contains(msg, "담당자 이메일") {
+		t.Errorf("the rejected contact answered %q/%q, want validation_error naming 담당자 이메일", code, msg)
+	}
+
+	var contacts int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM supplier_contacts WHERE supplier_id=$1`, f.supplierA).Scan(&contacts); err != nil {
+		t.Fatalf("count contacts: %v", err)
+	}
+	if contacts != 0 {
+		t.Errorf("a rejected write left %d contacts behind", contacts)
+	}
+
+	// A real address, pasted as it came, is stored as sign-in and the contact
+	// list read it — not as the cell it was copied out of.
+	if w := post("/api/v1/portal/contacts", `{"name":"이영업","email":" Lee.YS@Acme.CO.KR "}`); w.Code != http.StatusCreated {
+		t.Fatalf("a pasted contact address was refused: %d %s", w.Code, w.Body.String())
+	}
+	var stored string
+	if err := pool.QueryRow(context.Background(), `SELECT email FROM supplier_contacts WHERE supplier_id=$1`, f.supplierA).Scan(&stored); err != nil {
+		t.Fatalf("read the contact: %v", err)
+	}
+	if stored != "lee.ys@acme.co.kr" {
+		t.Errorf("the contact was stored as %q", stored)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM supplier_contacts WHERE supplier_id=$1`, f.supplierA)
+	})
+}

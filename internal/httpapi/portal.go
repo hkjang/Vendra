@@ -38,7 +38,8 @@ func (a *App) portalUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	// The three fields the portal lets a supplier write onto their own record.
 	// They are the contact block the buyer's register and Supplier 360 show, and
 	// the internal door onto the same columns has always been bounded.
-	if !validTextFields(w, in, textField{"phone", "전화번호"}, textField{"email", "이메일"}, textField{"website", "웹사이트"}) {
+	if !validTextFields(w, in, textField{"phone", "전화번호"}, textField{"website", "웹사이트"}) ||
+		!validEmailFields(w, in, supplierEmailFields...) {
 		return
 	}
 	_, err = a.db.Exec(r.Context(), `UPDATE suppliers SET phone=COALESCE(NULLIF($2,''),phone),email=COALESCE(NULLIF($3,''),email),website=COALESCE(NULLIF($4,''),website),updated_at=now() WHERE id=$1`, *p.SupplierID, stringValue(in, "phone"), stringValue(in, "email"), stringValue(in, "website"))
@@ -86,7 +87,7 @@ func (a *App) portalCreateContact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "담당자 이름은 필수입니다")
 		return
 	}
-	if !validTextFields(w, in, contactTextFields...) {
+	if !validTextFields(w, in, contactTextFields...) || !validEmailFields(w, in, contactEmailFields...) {
 		return
 	}
 	primary, _ := in["primary"].(bool)
@@ -211,6 +212,15 @@ func (a *App) createInvitation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "이메일은 필수입니다")
 		return
 	}
+	// This address is where the invitation is sent, and registration copies it
+	// onto both the supplier record and the portal account it creates — so a
+	// typo here is not one wrong field but a supplier the buyer cannot write to
+	// and an account its owner cannot sign in to, discovered weeks later.
+	email, ok := validEmail(w, in.Email, "이메일")
+	if !ok {
+		return
+	}
+	in.Email = email
 	// The link is a bearer credential: whoever holds it registers a portal
 	// account bound to this supplier. The form offers at most 14 days, and
 	// nothing bounded the API — 100000 wrote an invitation valid until the year

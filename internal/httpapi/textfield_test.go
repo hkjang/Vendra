@@ -22,6 +22,11 @@ var unboundedByDesign = map[string]string{
 	"comments":    "평가 의견",
 	// Enumerated in the handler itself, which is a stricter check than a length.
 	"severity": "리스크 등급",
+	// Held to the shape of an address by the email sweep, which is a stricter
+	// check than a length and bounds it at maxEmailLen on the way past.
+	// TestEveryStoredEmailIsAnAddress watches these, and watches them by the
+	// column they are written to rather than by the name the request gives them.
+	"email": "이메일",
 }
 
 // TestEveryRequestLabelIsBounded keeps this sweep from having to be redone, the
