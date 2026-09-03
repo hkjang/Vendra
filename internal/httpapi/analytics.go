@@ -261,6 +261,9 @@ func (a *App) createRisk(w http.ResponseWriter, r *http.Request) {
 	if !validDateFields(w, in, dateField{"reviewDate", "검토일"}) {
 		return
 	}
+	if !validUUIDFields(w, in, uuidField{"ownerId", "담당자 ID"}) {
+		return
+	}
 	err = a.db.QueryRow(r.Context(), `INSERT INTO risks(supplier_id,risk_type,probability,impact,severity,status,description,mitigation,owner_id,review_date) VALUES($1,$2,COALESCE($3,0),COALESCE($4,0),$5,COALESCE(NULLIF($6,''),'open'),NULLIF($7,''),NULLIF($8,''),NULLIF($9,'')::uuid,NULLIF($10,'')::date) RETURNING id`, r.PathValue("id"), typ, numberValue(in, "probability"), numberValue(in, "impact"), severity, stringValue(in, "status"), stringValue(in, "description"), stringValue(in, "mitigation"), stringValue(in, "ownerId"), stringValue(in, "reviewDate")).Scan(&id)
 	if err != nil {
 		writeError(w, 400, "save_failed", "리스크를 저장하지 못했습니다")
@@ -320,6 +323,12 @@ func (a *App) createEvaluation(w http.ResponseWriter, r *http.Request) {
 	in, err := decodeMap(r)
 	if err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	// Before the lookup: a malformed id fails that query too, and the handler
+	// reported it as "평가 템플릿을 찾을 수 없습니다" — a template that was never
+	// named as missing, on a form where the picker is the only other suspect.
+	if !validUUIDFields(w, in, uuidField{"templateId", "평가 템플릿 ID"}) {
 		return
 	}
 	templateID := stringValue(in, "templateId")
@@ -597,6 +606,19 @@ func (a *App) createSpendTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Ahead of the scope check, which reads a malformed supplier id as a record
+	// the caller may not see and answers 403. Three of these five ids are the
+	// ledger row's only link back to the paperwork it settles — the order, the
+	// contract, the invoice — and a typo in any of them failed the insert as
+	// "구매 원장을 저장하지 못했습니다" with no field named.
+	for _, id := range []struct{ value, label string }{
+		{in.SupplierID, "공급업체 ID"}, {in.OrganizationID, "조직 ID"},
+		{in.PurchaseOrderID, "발주 ID"}, {in.ContractID, "계약 ID"}, {in.InvoiceID, "인보이스 ID"},
+	} {
+		if !validRecordID(w, id.value, id.label) {
+			return
+		}
+	}
 	// The organisation is the grouping key of the organisation-level spend
 	// report, so an unchecked value attributes this spend to a division the
 	// caller has nothing to do with. The supplier was already validated.
@@ -736,6 +758,9 @@ func (a *App) createSupplierRelationship(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !validText(w, in.RelationshipType, "관계 유형") || !validText(w, in.Criticality, "중요도") {
+		return
+	}
+	if !validRecordID(w, in.SourceSupplierID, "원천 공급업체 ID") || !validRecordID(w, in.TargetSupplierID, "대상 공급업체 ID") {
 		return
 	}
 	// Both ends must be in scope. The network graph filters every edge by the

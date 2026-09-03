@@ -549,6 +549,11 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		if len(ids) == 0 {
 			return nil, mcpToolError("compare_suppliers requires supplierIds")
 		}
+		for _, id := range ids {
+			if !validUUID(id) {
+				return nil, mcpToolError("supplierIds must be record ids, not names: %q", id)
+			}
+		}
 		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE id=ANY($1::uuid[]) AND deleted_at IS NULL AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name`, ids, p.DataScope, organizationID, p.ID, showSpend)
 		if err != nil {
 			return nil, err
@@ -628,6 +633,14 @@ func (a *App) mcpObjects(r *http.Request, typ string, args map[string]any) ([]an
 		organizationID = *p.OrganizationID
 	}
 	showAmount := hasPermission(p, typ+".amount.read")
+	// The filter reaches the query as `$2::uuid`, so a model that passes a name
+	// where an id belongs failed the statement — and a failure that is not an
+	// errMCPTool is logged and relayed as "도구를 실행하지 못했습니다", which
+	// tells the model nothing it can correct and leaves it retrying the same
+	// call. get_supplier already said so in words; these say it too.
+	if supplierID := stringValue(args, "supplierId"); supplierID != "" && !validUUID(supplierID) {
+		return nil, mcpToolError("supplierId must be a record id, not a name")
+	}
 	return a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'status',o.status,'supplierId',o.supplier_id,'supplierName',s.name,'amount',CASE WHEN $7 THEN o.amount END,'dueDate',o.due_date,'endDate',o.end_date,'riskLevel',o.risk_level,'data',o.data) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.supplier_id=$2::uuid) AND ($3='' OR o.title ILIKE '%'||$3||'%' OR o.number ILIKE '%'||$3||'%') AND (`+orgInScope("o.organization_id", "$4", "$5")+` OR ($4='own' AND o.owner_id=$6::uuid)) ORDER BY o.updated_at DESC LIMIT 100`, typ, stringValue(args, "supplierId"), stringValue(args, "query"), p.DataScope, organizationID, p.ID, showAmount)
 }
 

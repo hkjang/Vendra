@@ -201,6 +201,15 @@ func (a *App) createObject(objectType string) http.HandlerFunc {
 			writeError(w, 400, "validation_error", "제목은 필수입니다")
 			return
 		}
+		// Ahead of the scope check: objectScopeAllowed selects the organisation
+		// and the supplier and treats a failed query as a denial, so a typo in
+		// either was answered as 403 "데이터 접근 범위를 벗어난 조직 또는
+		// 공급업체입니다" for a department account and as 400 "데이터를 저장하지
+		// 못했습니다" for a company one — two different wrong answers to the
+		// same mistake, neither naming the field.
+		if !validUUIDFields(w, in, objectUUIDFields...) {
+			return
+		}
 		if stringValue(in, "organizationId") == "" && p.OrganizationID != nil {
 			in["organizationId"] = *p.OrganizationID
 		}
@@ -357,6 +366,12 @@ func (a *App) updateObject(objectType string) http.HandlerFunc {
 		in, err := decodeMap(r)
 		if err != nil {
 			writeError(w, 400, "invalid_request", err.Error())
+			return
+		}
+		// Only supplierId: the update statement is the one id it rewrites, and
+		// refusing a request over a field it does not read would be a new way
+		// to fail rather than a clearer one.
+		if !validUUIDFields(w, in, uuidField{"supplierId", "공급업체 ID"}) {
 			return
 		}
 		if supplierID := stringValue(in, "supplierId"); supplierID != "" && !a.objectScopeAllowed(r, "", supplierID) {
@@ -626,6 +641,15 @@ var objectScoreField = numberField{key: "score", label: "점수", min: 0, max: 1
 var objectTextFields = []textField{
 	{"title", "제목"}, {"number", "번호"}, {"currency", "통화"},
 	{"status", "상태"}, {"riskLevel", "리스크 등급"},
+}
+
+// objectUUIDFields are the four records a business object is filed against: the
+// supplier it is with, the object it hangs off, the person answerable for it
+// and the organisation it belongs to. Every one of them is a `$n::uuid` in the
+// insert, so a typo failed the whole statement.
+var objectUUIDFields = []uuidField{
+	{"supplierId", "공급업체 ID"}, {"parentId", "상위 업무 ID"},
+	{"ownerId", "담당자 ID"}, {"organizationId", "조직 ID"},
 }
 
 func stringValue(m map[string]any, key string) string {

@@ -35,6 +35,15 @@ func newPortalFixture(t *testing.T) (*portalFixture, *pgxpool.Pool) {
 	suffix := fmt.Sprintf("%d", len(t.Name()))
 	cleanup := func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM documents WHERE name LIKE 'portal-test-%'`)
+		// The audit rows go before the account that wrote them. Signing in is
+		// itself an audited act, so audit_logs.actor_id holds this user by the
+		// time any test body runs, and the delete below fails on that reference
+		// — silently, because these are best-effort. The account then survives
+		// holding a reference of its own to the supplier, so the supplier
+		// survives too, and the next run of whichever test shares this suffix
+		// fails seeding on a duplicate supplier number rather than on anything
+		// it did.
+		_, _ = pool.Exec(context.Background(), `DELETE FROM audit_logs WHERE actor_id IN(SELECT id FROM users WHERE email=$1)`, "portal"+suffix+"@vendra.test")
 		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE email=$1`, "portal"+suffix+"@vendra.test")
 		_, _ = pool.Exec(context.Background(), `DELETE FROM roles WHERE code=$1`, "portal_probe_"+suffix)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM business_objects WHERE number LIKE 'PT-'||$1||'-%'`, suffix)
@@ -196,5 +205,45 @@ func TestPortalUploadAcceptsOwnObject(t *testing.T) {
 	})
 	if rec.Code != http.StatusCreated {
 		t.Errorf("upload against own contract = %d, want 201\n  body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAPortalWriteNamesAMalformedRecordID is the record-id sweep at the door
+// outsiders come through.
+//
+// A supplier files a delivery against the order it fulfils and an invoice
+// against the delivery, and attaches the paperwork to the same record — three
+// writes that each carry an id the portal user copied off a screen or an email.
+// A malformed one used to fail the insert as "업무를 등록하지 못했습니다", or,
+// on the upload, come back as 403 "문서 대상 업무가 데이터 접근 범위를
+// 벗어났습니다": the supplier told they may not reach their own buyer's record,
+// after the file had already been streamed and hashed, so every retry spent the
+// upload again.
+func TestAPortalWriteNamesAMalformedRecordID(t *testing.T) {
+	f, _ := newPortalFixture(t)
+
+	rec := f.upload(t, "portal-test-badid.txt", map[string]string{
+		"documentType": "quotation",
+		"objectType":   "contract",
+		"objectId":     "PO-2026-0001",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("an upload filed against an order number = %d, want 400\n  body: %s", rec.Code, rec.Body.String())
+	}
+	if code, msg := errorCodeAndMessage(t, rec); code != "validation_error" || !strings.Contains(msg, "업무 ID") {
+		t.Errorf("the rejected upload answered %q/%q, want validation_error naming 업무 ID", code, msg)
+	}
+
+	body := `{"title":"납품 등록","parentId":"PO-2026-0001"}`
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/portal/deliveries", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.token})
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("a delivery filed against an order number = %d, want 400\n  body: %s", w.Code, w.Body.String())
+	}
+	if code, msg := errorCodeAndMessage(t, w); code != "validation_error" || !strings.Contains(msg, "상위 업무 ID") {
+		t.Errorf("the rejected delivery answered %q/%q, want validation_error naming 상위 업무 ID", code, msg)
 	}
 }

@@ -146,6 +146,9 @@ func (a *App) createScreening(w http.ResponseWriter, r *http.Request) {
 		TemplateID string `json:"templateId"`
 	}
 	_ = decodeJSON(r, &in)
+	if !validRecordID(w, in.TemplateID, "심사 템플릿 ID") {
+		return
+	}
 	if in.TemplateID == "" {
 		_ = a.db.QueryRow(r.Context(), `SELECT id FROM screening_templates WHERE active=true ORDER BY created_at LIMIT 1`).Scan(&in.TemplateID)
 	}

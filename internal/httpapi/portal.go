@@ -224,6 +224,11 @@ func (a *App) createInvitation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Before the scope check below, which reads a malformed id as a supplier the
+	// inviter may not see rather than as a typo in the one field the form has.
+	if !validRecordID(w, in.SupplierID, "공급업체 ID") {
+		return
+	}
 	// The invitation binds the future portal account to this supplier, so an
 	// unchecked id grants someone access to a supplier the inviter cannot see.
 	if in.SupplierID != "" && !a.supplierScopeAllowed(r, in.SupplierID) {

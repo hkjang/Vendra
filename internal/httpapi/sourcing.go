@@ -625,6 +625,12 @@ func (a *App) selectSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "응답과 선정 유형(preferred/final)은 필수입니다")
 		return
 	}
+	// Before the lookup below, which fails on a malformed id and reports it
+	// through the same branch as a bid that is not submitted — "제출 완료된
+	// 응답만 선정할 수 있습니다", said about a response that does not exist.
+	if !validRecordID(w, in.ResponseID, "응답 ID") {
+		return
+	}
 	var supplierID, status string
 	err = a.db.QueryRow(r.Context(), `SELECT supplier_id,status FROM sourcing_responses WHERE id=$1 AND sourcing_id=$2`, in.ResponseID, o.ID).Scan(&supplierID, &status)
 	if err != nil || status != "submitted" {
@@ -732,6 +738,13 @@ func (a *App) portalCreateBusinessObject(objectType string) http.HandlerFunc {
 			return
 		}
 		if !validTextFields(w, in, textField{"title", "제목"}, textField{"currency", "통화"}) {
+			return
+		}
+		// The parent is how a supplier files a delivery against the order it
+		// fulfils or an invoice against the delivery. Unchecked, a typo failed
+		// the insert as "업무를 등록하지 못했습니다", and this is the door
+		// outsiders come through.
+		if !validUUIDFields(w, in, uuidField{"parentId", "상위 업무 ID"}) {
 			return
 		}
 		number := objectNumber(objectType)

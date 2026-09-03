@@ -207,6 +207,48 @@ func validText(w http.ResponseWriter, value, label string) bool {
 	return false
 }
 
+// uuidField names a request-body field holding the id of another record, with
+// the label to use when telling the caller it is not one.
+type uuidField struct{ key, label string }
+
+// validUUIDFields checks the optional record ids taken from a request body.
+//
+// Every one of them reaches the statement as `$n::uuid`, and PostgreSQL answers
+// a malformed id by failing the whole statement — which the handler can only
+// pass on as "저장하지 못했습니다" with no field named, the same dead end the
+// dates, numbers and labels were. The path ids have been checked at the router
+// since app.go was written and the query filters since uuidParam; the ids a
+// body carries were the third door and nobody stood at it.
+//
+// Worse than the message is where the check has to sit. A malformed id is
+// currently caught, by accident, by the scope lookups: supplierScopeAllowed
+// selects the row and treats a failed query as a denial, so a typo in
+// supplierId comes back as 403 "데이터 접근 범위를 벗어났습니다" — the caller is
+// told they lack permission for a record that does not exist. The same request
+// from a company-scope account skips that lookup entirely and gets a 400
+// instead. So these run before the scope checks: a value that is not an id is
+// the caller's mistake, not a decision about what they may see.
+func validUUIDFields(w http.ResponseWriter, in map[string]any, fields ...uuidField) bool {
+	for _, f := range fields {
+		if !validRecordID(w, stringValue(in, f.key), f.label) {
+			return false
+		}
+	}
+	return true
+}
+
+// validRecordID checks one id a typed handler has already decoded. As with the
+// checks beside it, an id the caller left out keeps whatever default the
+// statement applies and is not measured.
+func validRecordID(w http.ResponseWriter, value, label string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || validUUID(value) {
+		return true
+	}
+	writeError(w, http.StatusBadRequest, "validation_error", label+topicParticle(label)+" 올바른 형식이 아닙니다")
+	return false
+}
+
 // riskGrades is the vocabulary every risk grade in the application is written
 // in. It is not a display convention: the queries branch on the spelling.
 //
@@ -375,11 +417,10 @@ func validInstant(w http.ResponseWriter, value, label string) bool {
 // as a 500.
 func uuidParam(w http.ResponseWriter, r *http.Request, name, label string) (string, bool) {
 	value := strings.TrimSpace(r.URL.Query().Get(name))
-	if value == "" || validUUID(value) {
-		return value, true
+	if !validRecordID(w, value, label) {
+		return "", false
 	}
-	writeError(w, http.StatusBadRequest, "validation_error", label+topicParticle(label)+" 올바른 형식이 아닙니다")
-	return "", false
+	return value, true
 }
 
 // dateParam reads an optional YYYY-MM-DD filter. A malformed date is the
