@@ -178,7 +178,7 @@ func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 	if !validNumberFields(w, in, amountField("annualSpend", "연간 거래금액")) {
 		return
 	}
-	if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급")) {
+	if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급"), supplierStatusField("status", "거래 상태")) {
 		return
 	}
 	if !validUUIDFields(w, in, uuidField{"ownerId", "담당자 ID"}, uuidField{"organizationId", "조직 ID"}) {
@@ -372,7 +372,7 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 	if !validSupplierEmails(w, in) {
 		return
 	}
-	if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급")) {
+	if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급"), supplierStatusField("status", "거래 상태")) {
 		return
 	}
 	metadata := before.Metadata
