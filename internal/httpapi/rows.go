@@ -386,6 +386,33 @@ func riskGradeField(key, label string) enumField {
 	return enumField{key: key, label: label, allowed: riskGrades}
 }
 
+// supplierStatuses is the vocabulary a supplier's 거래 상태 is written in. Like
+// the risk grades, these are not labels but words the queries branch on: the
+// dashboard's 거래 가능 tile counts status='active' and its 심사 대기 tile
+// status='screening', the recommendation tool shortlists only
+// status IN('active','approved'), and the register's status filter selects on
+// the spelling exactly.
+//
+// Every status the application writes for itself is on this list — 'candidate'
+// is what a supplier is created as, 'registration' is what portal self-signup
+// inserts, and completing a screening moves the supplier to 'screening',
+// 'approved' or 'suspended'. The remaining four are what the edit form offers a
+// buyer, and that form is where the vocabulary had already split: its dropdown
+// said "registered", a spelling that exists nowhere else in the application.
+// Saving it produced a supplier the 등록 filter never returns, with no label and
+// the wrong badge colour; and because "registration" was not among the options,
+// opening any self-registered supplier and pressing save silently reset it to
+// 후보 — the browser selects the first option when the current value is not one.
+var supplierStatuses = []string{
+	"candidate", "registration", "screening", "approved", "active",
+	"preferred", "improvement", "suspended", "terminated",
+}
+
+// supplierStatusField describes a field carrying one of those statuses.
+func supplierStatusField(key, label string) enumField {
+	return enumField{key: key, label: label, allowed: supplierStatuses}
+}
+
 // validEnumFields checks the optional controlled-vocabulary fields of a request
 // body. As with the date, number and text checks beside it, a field the caller
 // left out keeps whatever default the statement applies and is not measured.

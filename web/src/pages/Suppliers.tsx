@@ -36,7 +36,7 @@ import {
   RiskBadge,
   ScoreRing,
 } from "../components";
-import { statusTone } from "../status";
+import { statusTone, supplierStatuses, supplierStatusLabel } from "../status";
 import { BusinessObject, Supplier } from "../types";
 
 export default function Suppliers() {
@@ -117,13 +117,11 @@ export default function Suppliers() {
           aria-label="상태 필터"
         >
           <option value="">모든 상태</option>
-          <option value="candidate">후보</option>
-          <option value="registration">등록</option>
-          <option value="screening">심사</option>
-          <option value="approved">승인</option>
-          <option value="active">거래 가능</option>
-          <option value="improvement">개선 대상</option>
-          <option value="suspended">거래 중단</option>
+          {supplierStatuses.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
         </select>
         <select
           value={risk}
@@ -221,7 +219,7 @@ function SupplierTable({
               </td>
               <td>
                 <Badge tone={statusTone(s.status)}>
-                  {statusLabel(s.status)}
+                  {supplierStatusLabel(s.status)}
                 </Badge>
               </td>
               <td>
@@ -294,7 +292,7 @@ function SupplierCards({ items }: { items: Supplier[] }) {
             </div>
           </div>
           <footer>
-            <Badge tone={statusTone(s.status)}>{statusLabel(s.status)}</Badge>
+            <Badge tone={statusTone(s.status)}>{supplierStatusLabel(s.status)}</Badge>
             <span>{s.industry || "업종 미지정"}</span>
             <ArrowRight />
           </footer>
@@ -414,7 +412,7 @@ function NewSupplier({
   );
 }
 
-function SupplierEdit({
+export function SupplierEdit({
   supplier,
   onClose,
   onSaved,
@@ -489,18 +487,10 @@ function SupplierEdit({
           </Field>
           <Field label="거래 상태">
             <select name="status" defaultValue={supplier.status}>
-              {[
-                "candidate",
-                "registered",
-                "screening",
-                "approved",
-                "active",
-                "preferred",
-                "improvement",
-                "suspended",
-                "terminated",
-              ].map((value) => (
-                <option key={value}>{value}</option>
+              {supplierStatuses.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
               ))}
             </select>
           </Field>
@@ -755,7 +745,7 @@ export function SupplierDetail() {
             <p>{s.legalName || s.industry || "공급업체 상세정보"}</p>
           </div>
           <div className="supplier-badges">
-            <Badge tone={statusTone(s.status)}>{statusLabel(s.status)}</Badge>
+            <Badge tone={statusTone(s.status)}>{supplierStatusLabel(s.status)}</Badge>
             <RiskBadge level={s.riskLevel} />
           </div>
         </div>
@@ -977,7 +967,7 @@ function SupplierTab({
             </dd>
             <dt>거래 상태</dt>
             <dd>
-              <Badge tone={statusTone(s.status)}>{statusLabel(s.status)}</Badge>
+              <Badge tone={statusTone(s.status)}>{supplierStatusLabel(s.status)}</Badge>
             </dd>
           </dl>
         </div>
@@ -1856,20 +1846,5 @@ function Metric({ label, value }: { label: string; value: number }) {
         <b style={{ width: `${Math.min(100, value)}%` }} />
       </i>
     </div>
-  );
-}
-function statusLabel(s: string) {
-  return (
-    (
-      {
-        candidate: "후보",
-        registration: "등록",
-        screening: "심사",
-        approved: "승인",
-        active: "거래 가능",
-        improvement: "개선 대상",
-        suspended: "거래 중단",
-      } as Record<string, string>
-    )[s] || s
   );
 }
