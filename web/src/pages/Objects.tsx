@@ -35,7 +35,12 @@ import {
   PageHeader,
   RiskBadge,
 } from "../components";
-import { statusTone } from "../status";
+import {
+  canSubmitForApproval,
+  objectStatusFilters,
+  objectStatusLabel,
+  statusTone,
+} from "../status";
 import { BusinessObject, Supplier } from "../types";
 
 const defaultObjectColumns = ["supplier", "status", "amount", "risk", "start", "due"];
@@ -312,12 +317,11 @@ function ObjectList({ type }: { type: string }) {
           aria-label="상태 필터"
         >
           <option value="">모든 상태</option>
-          <option value="draft">초안</option>
-          <option value="pending_approval">승인 대기</option>
-          <option value="approved">승인</option>
-          <option value="active">진행 중</option>
-          <option value="completed">완료</option>
-          <option value="rejected">반려</option>
+          {objectStatusFilters.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
         </select>
         <select value={order} onChange={(event) => set("order", event.target.value)} aria-label="정렬 기준">
           <option value="updated_desc">최근 수정순</option>
@@ -438,7 +442,7 @@ type SavedView = {
   owned: boolean;
 };
 
-function ObjectTable({
+export function ObjectTable({
   items,
   empty,
   onSubmit,
@@ -477,7 +481,7 @@ function ObjectTable({
     }
   }
   async function submitSelected() {
-    const targets = items.filter((item) => selected.has(item.id) && item.status === "draft");
+    const targets = items.filter((item) => selected.has(item.id) && canSubmitForApproval(item.status));
     if (!targets.length) return;
     setBulkBusy(true);
     setBulkMessage("");
@@ -491,7 +495,10 @@ function ObjectTable({
     setBulkMessage(failed ? `${succeeded}건 처리, ${failed}건 실패했습니다.` : `${succeeded}건을 승인 요청했습니다.`);
     onSubmit();
   }
-  const selectable = items.filter((item) => item.status === "draft");
+  // 초안 and the requests an approver handed back with 보완 요청. A returned
+  // request is exactly the one that has to go round again, and it was the one
+  // the list gave no way to send.
+  const selectable = items.filter((item) => canSubmitForApproval(item.status));
   function toggleSelection(id: string) {
     setSelected((current) => {
       const next = new Set(current);
@@ -518,7 +525,7 @@ function ObjectTable({
               <th className="selection-cell">
                 <input
                   type="checkbox"
-                  aria-label="모든 초안 선택"
+                  aria-label="승인 요청할 수 있는 항목 모두 선택"
                   checked={selectable.length > 0 && selectable.every((item) => selected.has(item.id))}
                   onChange={(event) => setSelected(event.target.checked ? new Set(selectable.map((item) => item.id)) : new Set())}
                 />
@@ -537,7 +544,7 @@ function ObjectTable({
             {items.map((o) => (
               <tr key={o.id}>
                 <td className="selection-cell">
-                  <input type="checkbox" aria-label={`${o.title} 선택`} disabled={o.status !== "draft"} checked={selected.has(o.id)} onChange={() => toggleSelection(o.id)} />
+                  <input type="checkbox" aria-label={`${o.title} 선택`} disabled={!canSubmitForApproval(o.status)} checked={selected.has(o.id)} onChange={() => toggleSelection(o.id)} />
                 </td>
                 <td>
                   <span className="stack">
@@ -556,7 +563,7 @@ function ObjectTable({
                 </td>
                 {visibleColumns.includes("supplier") && <td>{o.supplierName || "—"}</td>}
                 {visibleColumns.includes("status") && <td>
-                  <Badge tone={statusTone(o.status)}>{o.status}</Badge>
+                  <Badge tone={statusTone(o.status)}>{objectStatusLabel(o.status)}</Badge>
                 </td>}
                 {visibleColumns.includes("amount") && <td className="number">{money(o.amount)}</td>}
                 {visibleColumns.includes("risk") && <td>
@@ -579,9 +586,9 @@ function ObjectTable({
                         <Bot />
                       </button>
                     )}
-                    {o.status === "draft" && (
+                    {canSubmitForApproval(o.status) && (
                       <button
-                        title="승인 요청"
+                        title={o.status === "returned" ? "보완 후 다시 승인 요청" : "승인 요청"}
                         className="icon-button"
                         onClick={() => submit(o.id, o.objectType)}
                       >
