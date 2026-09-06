@@ -1266,15 +1266,28 @@ type Wf = {
   name: string;
   objectType: string;
   enabled: boolean;
-  conditions: unknown;
+  // The form edits 최소 금액 and Risk 조건; the rest of the rule's conditions
+  // are carried through untouched, because a PATCH replaces the whole object
+  // and a condition this screen never shows must not be dropped by an edit
+  // that was only meant to correct an amount.
+  conditions: Record<string, unknown>;
   steps: { name: string; role: string }[];
   version: number;
   updatedAt: string;
 };
+const numberCondition = (w: Wf | undefined, key: string) =>
+  typeof w?.conditions?.[key] === "number"
+    ? String(w.conditions[key])
+    : undefined;
+const textCondition = (w: Wf | undefined, key: string) =>
+  typeof w?.conditions?.[key] === "string"
+    ? (w.conditions[key] as string)
+    : undefined;
 export function WorkflowPanel({ notify }: { notify: (s: string) => void }) {
   const [items, setItems] = useState<Wf[]>();
   const [settings, setSettings] = useState<Setting[]>();
   const [modal, setModal] = useState(false);
+  const [editing, setEditing] = useState<Wf>();
   const load = () =>
     Promise.all([
       api<{ items: Wf[] }>("/api/v1/workflows"),
@@ -1354,6 +1367,13 @@ export function WorkflowPanel({ notify }: { notify: (s: string) => void }) {
                 ))}
               </div>
             </div>
+            <button
+              className="button secondary"
+              onClick={() => setEditing(w)}
+              aria-label={`${w.name} 수정`}
+            >
+              수정
+            </button>
           </div>
         ))}
         {!items.length && (
@@ -1365,7 +1385,7 @@ export function WorkflowPanel({ notify }: { notify: (s: string) => void }) {
         )}
       </div>
       {modal && (
-        <NewWorkflow
+        <WorkflowForm
           onClose={() => setModal(false)}
           saved={() => {
             setModal(false);
@@ -1373,37 +1393,67 @@ export function WorkflowPanel({ notify }: { notify: (s: string) => void }) {
           }}
         />
       )}
+      {editing && (
+        <WorkflowForm
+          workflow={editing}
+          onClose={() => setEditing(undefined)}
+          saved={() => {
+            setEditing(undefined);
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }
-function NewWorkflow({
+/**
+ * The form an approval rule is written in, and — since a rule is a rule for as
+ * long as it is 활성 — the only place one can be corrected or stopped.
+ *
+ * It used to create only. A 최소 금액 typed with one zero too few could not be
+ * fixed and could not be switched off: it stayed 활성 and kept routing every
+ * submission it matched, and the only answer was a second rule beside the
+ * first, with matchingWorkflow taking whichever of the two it reached first.
+ * PATCH /api/v1/workflows/{id} was already there and had no caller.
+ *
+ * 업무 유형 is not editable: it is what the rule was filed under, and the
+ * request already in flight against it was snapshotted from this definition.
+ * A rule written for the wrong type is switched off here and written again.
+ */
+function WorkflowForm({
+  workflow,
   onClose,
   saved,
 }: {
+  workflow?: Wf;
   onClose: () => void;
   saved: () => void;
 }) {
-  const [steps, setSteps] = useState([
-    { name: "팀장 승인", role: "procurement_manager" },
-  ]);
+  const [steps, setSteps] = useState(
+    workflow?.steps.map((s) => ({ name: s.name, role: s.role })) ?? [
+      { name: "팀장 승인", role: "procurement_manager" },
+    ],
+  );
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const d = new FormData(e.currentTarget);
-    await post("/api/v1/workflows", {
+    const body = {
       name: d.get("name"),
-      objectType: d.get("objectType"),
-      enabled: true,
+      enabled: d.get("enabled") === "on",
       conditions: {
+        ...(workflow?.conditions ?? {}),
         minAmount: Number(d.get("minAmount")) || 0,
         riskLevel: d.get("riskLevel"),
       },
       steps,
-    });
+    };
+    if (workflow) await patch(`/api/v1/workflows/${workflow.id}`, body);
+    else await post("/api/v1/workflows", { ...body, objectType: d.get("objectType") });
     saved();
   }
   return (
     <Modal
-      title="승인 Workflow 만들기"
+      title={workflow ? "승인 Workflow 수정" : "승인 Workflow 만들기"}
       description="조건에 맞는 업무 제출 시 순서대로 승인 단계를 실행합니다."
       onClose={onClose}
       wide
@@ -1411,10 +1461,14 @@ function NewWorkflow({
       <form onSubmit={submit}>
         <div className="form-grid">
           <Field label="Workflow 이름" required>
-            <input name="name" required autoFocus />
+            <input name="name" required autoFocus defaultValue={workflow?.name} />
           </Field>
           <Field label="업무 유형">
-            <select name="objectType">
+            <select
+              name="objectType"
+              defaultValue={workflow?.objectType}
+              disabled={Boolean(workflow)}
+            >
               {workflowObjectTypes.map((t) => (
                 <option key={t.value} value={t.value}>
                   {t.label}
@@ -1423,13 +1477,21 @@ function NewWorkflow({
             </select>
           </Field>
           <Field label="최소 금액">
-            <input name="minAmount" type="number" min="0" />
+            <input
+              name="minAmount"
+              type="number"
+              min="0"
+              defaultValue={numberCondition(workflow, "minAmount")}
+            />
           </Field>
           {/* The grade matched is the one on the submitted 업무 객체, not the
               supplier's; the label used to say 공급업체 and sent whoever read
               it looking at the wrong record. */}
           <Field label="업무 Risk 조건">
-            <select name="riskLevel">
+            <select
+              name="riskLevel"
+              defaultValue={textCondition(workflow, "riskLevel")}
+            >
               <option value="">모든 등급</option>
               <option>LOW</option>
               <option>MEDIUM</option>
@@ -1438,6 +1500,21 @@ function NewWorkflow({
             </select>
           </Field>
         </div>
+        <label className="toggle-row">
+          <span>
+            <b>활성</b>
+            <small>
+              끄면 이 Workflow는 더 이상 제출된 업무를 승인 단계로 보내지
+              않습니다. 진행 중인 승인은 그대로 유지됩니다.
+            </small>
+          </span>
+          <input
+            type="checkbox"
+            name="enabled"
+            aria-label="활성"
+            defaultChecked={workflow?.enabled ?? true}
+          />
+        </label>
         <fieldset className="steps-editor">
           <legend>승인 단계</legend>
           {steps.map((s, i) => (
@@ -1470,6 +1547,19 @@ function NewWorkflow({
                 <option value="security">보안 담당자</option>
                 <option value="system_admin">시스템 관리자</option>
               </select>
+              {/* The API refuses a rule with no steps at all: a request routed
+                  by an empty list reaches nobody's 승인함 and can never be
+                  approved, rejected or sent back. */}
+              {steps.length > 1 && (
+                <button
+                  type="button"
+                  className="button ghost"
+                  aria-label={`${i + 1}단계 삭제`}
+                  onClick={() => setSteps((v) => v.filter((_, n) => n !== i))}
+                >
+                  삭제
+                </button>
+              )}
             </div>
           ))}
           <button

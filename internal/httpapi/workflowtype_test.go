@@ -105,9 +105,9 @@ func TestTheWorkflowTypesTheFormOffersAreTheOnesTheAPIAccepts(t *testing.T) {
 	// The form must take its options from that list rather than writing a second
 	// copy, which is how the first one came apart.
 	admin := repoFile(t, "web/src/pages/Admin.tsx")
-	form := regexp.MustCompile(`(?s)\nfunction NewWorkflow\(.*?\n\}\n`).FindString(admin)
+	form := regexp.MustCompile(`(?s)\nfunction WorkflowForm\(.*?\n\}\n`).FindString(admin)
 	if form == "" {
-		t.Fatal("Admin.tsx no longer declares NewWorkflow; this test is no longer watching the form")
+		t.Fatal("Admin.tsx no longer declares WorkflowForm; this test is no longer watching the form")
 	}
 	for _, typeName := range append(workflowObjectTypes(), "supplier") {
 		if strings.Contains(form, `<option value="`+typeName+`"`) {
