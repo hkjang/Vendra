@@ -93,6 +93,43 @@ func (a *App) listWorkflows(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "truncated": truncated})
 }
 
+// workflowObjectTypes is the vocabulary an approval rule's 대상 유형 is written
+// in. It is not a caption: matchingWorkflow picks the rules that could route a
+// submission with `WHERE object_type=$1` against the type name the route
+// itself carries, so a rule filed under any other word is a rule that can
+// never fire — and the submission it was written to hold falls through to
+// `no_matching_workflow`, which is answered by stamping the object 승인 on the
+// spot, with no approver and nothing in anyone's inbox.
+//
+// The eleven routed types are read out of objectRoutes rather than written
+// down again: a type added there gets a submit endpoint the moment it is
+// added, and an approval rule has to be writable for it. supplier_bank_change
+// is the twelfth — changing a supplier's bank account opens a business object
+// and submits it in the same statement instead of through a route of its own,
+// and the rule installed with the schema is written for it.
+//
+// Nothing checked this, and the admin form had already come off the list. Its
+// 업무 유형 dropdown offered four names, and one of them — "supplier", shown as
+// 공급업체 — is a word no submit path in the application uses: the rule was
+// accepted, listed as 활성, and matched nothing, ever. The eight real types the
+// dropdown left out are the worse half. 납품, 검수, 품질, 이슈, RFQ, RFP,
+// Invoice and 지급 all carry a 승인 요청 button, and with no rule that could be
+// written for them at all, every one of those submissions was approved the
+// instant it was sent.
+func workflowObjectTypes() []string {
+	types := make([]string, 0, len(objectRoutes)+1)
+	for _, route := range objectRoutes {
+		types = append(types, route.objectType)
+	}
+	return append(types, "supplier_bank_change")
+}
+
+// workflowObjectTypeField describes the field an approval rule names its
+// target type in.
+func workflowObjectTypeField() enumField {
+	return enumField{key: "objectType", label: "업무 유형", allowed: workflowObjectTypes()}
+}
+
 func (a *App) createWorkflow(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
 	var in struct {
@@ -108,6 +145,9 @@ func (a *App) createWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Name == "" || in.ObjectType == "" || len(in.Steps) == 0 {
 		writeError(w, 400, "validation_error", "이름, 대상 유형, 승인 단계가 필요합니다")
+		return
+	}
+	if !validEnum(w, in.ObjectType, workflowObjectTypeField()) {
 		return
 	}
 	for i, step := range in.Steps {
