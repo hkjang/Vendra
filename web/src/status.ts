@@ -101,6 +101,41 @@ export const objectStatusFilters: { value: string; label: string }[] = [
   { value: "rejected", label: "반려" },
 ];
 
+// workflowObjectTypes is the 업무 유형 an approval rule can be written for, in
+// the order the API holds them in workflowObjectTypes(). It is the type name
+// the routing matches on, not a caption, so a rule filed under anything else
+// never fires and the submission it was meant to hold is approved on the spot.
+//
+// The form wrote its own four-item list, and it was wrong in both directions.
+// 공급업체 saved "supplier", a type no submit path in the application uses, so
+// the rule sat in the list as 활성 and matched nothing. And the eight types it
+// left out — 납품, 검수, 품질, 이슈, RFQ, RFP, Invoice, 지급 — all carry a 승인
+// 요청 button with no way to put an approval in front of it: an invoice was
+// stamped 승인 the moment it was sent, by nobody.
+export const workflowObjectTypes: { value: string; label: string }[] = [
+  { value: "contract", label: "계약" },
+  { value: "purchase_request", label: "구매요청" },
+  { value: "rfq", label: "RFQ" },
+  { value: "rfp", label: "RFP · 입찰" },
+  { value: "purchase_order", label: "발주" },
+  { value: "delivery", label: "납품" },
+  { value: "inspection", label: "검수" },
+  { value: "quality", label: "품질 · CAPA" },
+  { value: "issue", label: "공급업체 이슈" },
+  { value: "invoice", label: "Invoice" },
+  { value: "payment", label: "지급" },
+  // Not a record anyone files: changing a supplier's bank account opens one
+  // and submits it in the same step. The rule installed with the schema is
+  // written for it, and the Workflow list is the only screen that shows it.
+  { value: "supplier_bank_change", label: "공급업체 계좌정보 변경" },
+];
+
+export function workflowObjectTypeLabel(objectType: string): string {
+  return (
+    workflowObjectTypes.find((t) => t.value === objectType)?.label || objectType
+  );
+}
+
 // sourcingParticipantLabels is the vocabulary a bidder's standing in an RFQ/RFP
 // is written in — the same list the API holds in sourcingParticipantStatuses,
 // plus the 마감 the portal reports once the due date has passed.

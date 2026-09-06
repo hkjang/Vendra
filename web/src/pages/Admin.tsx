@@ -28,7 +28,11 @@ import {
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, date, del, logTime, patch, post, put, todayISO } from "../api";
 import { Badge, Empty, Field, Loading, Modal, PageHeader } from "../components";
-import { statusTone } from "../status";
+import {
+  statusTone,
+  workflowObjectTypeLabel,
+  workflowObjectTypes,
+} from "../status";
 
 type Setting = {
   key: string;
@@ -1267,7 +1271,7 @@ type Wf = {
   version: number;
   updatedAt: string;
 };
-function WorkflowPanel({ notify }: { notify: (s: string) => void }) {
+export function WorkflowPanel({ notify }: { notify: (s: string) => void }) {
   const [items, setItems] = useState<Wf[]>();
   const [settings, setSettings] = useState<Setting[]>();
   const [modal, setModal] = useState(false);
@@ -1338,7 +1342,7 @@ function WorkflowPanel({ notify }: { notify: (s: string) => void }) {
                 </Badge>
               </span>
               <p>
-                {w.objectType} · v{w.version}
+                {workflowObjectTypeLabel(w.objectType)} · v{w.version}
               </p>
               <div className="workflow-steps">
                 {w.steps.map((s, i) => (
@@ -1411,16 +1415,20 @@ function NewWorkflow({
           </Field>
           <Field label="업무 유형">
             <select name="objectType">
-              <option value="purchase_request">구매요청</option>
-              <option value="contract">계약</option>
-              <option value="purchase_order">발주</option>
-              <option value="supplier">공급업체</option>
+              {workflowObjectTypes.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
             </select>
           </Field>
           <Field label="최소 금액">
             <input name="minAmount" type="number" min="0" />
           </Field>
-          <Field label="공급업체 Risk 조건">
+          {/* The grade matched is the one on the submitted 업무 객체, not the
+              supplier's; the label used to say 공급업체 and sent whoever read
+              it looking at the wrong record. */}
+          <Field label="업무 Risk 조건">
             <select name="riskLevel">
               <option value="">모든 등급</option>
               <option>LOW</option>
