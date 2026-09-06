@@ -11,6 +11,39 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// sourcingParticipantStatuses is the vocabulary a bidder's standing in an
+// RFQ/RFP is written in. Like the supplier statuses beside it, these are words
+// the statements branch on rather than labels: declining is allowed only from
+// IN('invited','draft'), asking a question only while status<>'declined', and
+// the buyer's 참여 공급업체 list and the supplier's own portal card both print
+// the stored word.
+//
+// The award used to put the request's status onto the bidders as well, so a
+// 우선협상 selection wrote "preferred_negotiation" — a word this list does not
+// hold, that no other statement here matches, and that the two screens showed
+// in English. The bidder's standing and the request's status are two different
+// answers and only one of them is this one.
+var sourcingParticipantStatuses = []string{
+	"invited", "draft", "submitted", "declined",
+	"preferred", "selected", "not_selected",
+}
+
+// sourcingStandingIsTheCommittees reports whether a standing was written by the
+// award rather than by the bidder. The response save ends by stamping the
+// participant row with the bid's own status, and that stamp must not land on
+// top of the committee's answer.
+func sourcingStandingIsTheCommittees(standing string) bool {
+	return standing == "preferred" || standing == "selected" || standing == "not_selected"
+}
+
+// sourcingBiddingClosed reports whether the committee's answer about this
+// bidder is final. 우선협상 is not — the preferred bidder is the one still being
+// negotiated with, and revising the quote is the point of it — but 선정 and
+// 미선정 are, and a bid may not move after them.
+func sourcingBiddingClosed(standing string) bool {
+	return standing == "selected" || standing == "not_selected"
+}
+
 func (a *App) sourcingObject(r *http.Request, id string) (businessObject, error) {
 	o, err := scanObject(a.db.QueryRow(r.Context(), objectSelect+` WHERE o.id=$1 AND o.object_type IN('rfq','rfp') AND o.deleted_at IS NULL`, id))
 	if err != nil {
@@ -162,7 +195,10 @@ func (a *App) portalSourcing(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "portal_scope", "공급업체 계정이 아닙니다")
 		return
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',o.id,'objectType',o.object_type,'number',o.number,'title',o.title,'status',CASE WHEN o.due_date<current_date THEN 'closed' ELSE p.status END,'dueDate',o.due_date,'data',`+tenderDetailForBidder("o.data")+`,'response',CASE WHEN sr.id IS NULL THEN NULL ELSE jsonb_build_object('id',sr.id,'status',sr.status,'currency',sr.currency,'totalAmount',sr.total_amount,'deliveryDays',sr.delivery_days,'warranty',sr.warranty,'validityDate',sr.validity_date,'commercialTerms',sr.commercial_terms,'technicalResponse',sr.technical_response,'lineItems',sr.line_items,'submittedAt',sr.submitted_at) END) FROM sourcing_participants p JOIN business_objects o ON o.id=p.sourcing_id LEFT JOIN sourcing_responses sr ON sr.sourcing_id=o.id AND sr.supplier_id=p.supplier_id WHERE p.supplier_id=$1 AND o.deleted_at IS NULL ORDER BY o.due_date NULLS LAST,o.updated_at DESC`, *p.SupplierID)
+	// The award outranks the deadline. Reporting 'closed' over a standing the
+	// committee wrote told a bidder the request had shut without telling them
+	// they had won it, which is the one thing this list exists to say.
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',o.id,'objectType',o.object_type,'number',o.number,'title',o.title,'status',CASE WHEN p.status IN('preferred','selected','not_selected') THEN p.status WHEN o.due_date<current_date THEN 'closed' ELSE p.status END,'dueDate',o.due_date,'data',`+tenderDetailForBidder("o.data")+`,'response',CASE WHEN sr.id IS NULL THEN NULL ELSE jsonb_build_object('id',sr.id,'status',sr.status,'currency',sr.currency,'totalAmount',sr.total_amount,'deliveryDays',sr.delivery_days,'warranty',sr.warranty,'validityDate',sr.validity_date,'commercialTerms',sr.commercial_terms,'technicalResponse',sr.technical_response,'lineItems',sr.line_items,'submittedAt',sr.submitted_at) END) FROM sourcing_participants p JOIN business_objects o ON o.id=p.sourcing_id LEFT JOIN sourcing_responses sr ON sr.sourcing_id=o.id AND sr.supplier_id=p.supplier_id WHERE p.supplier_id=$1 AND o.deleted_at IS NULL ORDER BY o.due_date NULLS LAST,o.updated_at DESC`, *p.SupplierID)
 	if err != nil {
 		writeError(w, 500, "database_error", "견적·입찰 요청을 조회하지 못했습니다")
 		return
@@ -195,6 +231,19 @@ func (a *App) portalSourcingResponse(w http.ResponseWriter, r *http.Request) {
 	}
 	if participantStatus == "declined" {
 		writeError(w, 409, "participation_declined", "이미 참여를 거절했습니다")
+		return
+	}
+	// An award is an answer about this bidder, and the bidder does not get to
+	// write over it. Only the due date stood here before, and the two are not
+	// the same date: a losing bidder who reopened the quote form before the
+	// deadline had their 미선정 stamped back to 작성 중 by the read receipt at the
+	// end of this handler, so the buyer's participant list showed them in the
+	// running again with nothing to say the award had been made — and on submit,
+	// recalculateSourcing re-scored the comparison the decision was taken from,
+	// after it was taken. The 우선협상 bidder is deliberately still able to save:
+	// revising the quote is what that selection is for.
+	if sourcingBiddingClosed(participantStatus) {
+		writeError(w, 409, "sourcing_awarded", "선정이 완료되어 응답을 수정할 수 없습니다")
 		return
 	}
 	var in struct {
@@ -247,8 +296,11 @@ func (a *App) portalSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "save_failed", "응답을 저장하지 못했습니다")
 		return
 	}
-	// A read receipt, not part of what the response reports.
-	if _, err := a.db.Exec(r.Context(), `UPDATE sourcing_participants SET status=$3,viewed_at=COALESCE(viewed_at,now()) WHERE sourcing_id=$1 AND supplier_id=$2`, r.PathValue("id"), *p.SupplierID, status); err != nil {
+	// A read receipt, not part of what the response reports. A standing the
+	// award wrote outranks it: the 우선협상 bidder revising terms is still the
+	// preferred bidder, and the guard above has already turned away the two
+	// final standings this could otherwise erase.
+	if _, err := a.db.Exec(r.Context(), `UPDATE sourcing_participants SET status=CASE WHEN status IN('preferred','selected','not_selected') THEN status ELSE $3 END,viewed_at=COALESCE(viewed_at,now()) WHERE sourcing_id=$1 AND supplier_id=$2`, r.PathValue("id"), *p.SupplierID, status); err != nil {
 		logDB(err)
 	}
 	a.audit.record(r, status, "sourcing_response", id, nil, map[string]any{"sourcingId": r.PathValue("id"), "supplierId": *p.SupplierID, "totalAmount": in.TotalAmount})
@@ -659,9 +711,15 @@ func (a *App) selectSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "save_failed", "선정 결과를 저장하지 못했습니다")
 		return
 	}
-	objectStatus := "preferred_negotiation"
+	// The request's status and the bidders' standings are written from two
+	// vocabularies. They used to be written from one: the participant update
+	// below took objectStatus, so a 우선협상 selection put "preferred_negotiation"
+	// on the chosen bidder — not a standing sourcingParticipantStatuses holds,
+	// not a word any other statement about that table matches, and one both the
+	// buyer's list and the supplier's portal card printed in English.
+	objectStatus, standing := "preferred_negotiation", "preferred"
 	if in.SelectionType == "final" {
-		objectStatus = "selected"
+		objectStatus, standing = "selected", "selected"
 	}
 	_, err = tx.Exec(r.Context(), `UPDATE business_objects SET status=$2,data=data||jsonb_build_object('selectedSupplierId',$3::text,'selectionType',$4::text),updated_at=now() WHERE id=$1`, o.ID, objectStatus, supplierID, in.SelectionType)
 	if err != nil {
@@ -669,7 +727,7 @@ func (a *App) selectSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "save_failed", "선정 결과를 저장하지 못했습니다")
 		return
 	}
-	_, err = tx.Exec(r.Context(), `UPDATE sourcing_participants SET status=CASE WHEN supplier_id=$2 THEN $3 ELSE CASE WHEN $3='selected' THEN 'not_selected' ELSE status END END WHERE sourcing_id=$1`, o.ID, supplierID, objectStatus)
+	_, err = tx.Exec(r.Context(), `UPDATE sourcing_participants SET status=CASE WHEN supplier_id=$2 THEN $3 ELSE CASE WHEN $3='selected' THEN 'not_selected' ELSE status END END WHERE sourcing_id=$1`, o.ID, supplierID, standing)
 	if err != nil {
 		logDB(err)
 		writeError(w, 500, "save_failed", "선정 결과를 저장하지 못했습니다")

@@ -101,6 +101,47 @@ export const objectStatusFilters: { value: string; label: string }[] = [
   { value: "rejected", label: "반려" },
 ];
 
+// sourcingParticipantLabels is the vocabulary a bidder's standing in an RFQ/RFP
+// is written in — the same list the API holds in sourcingParticipantStatuses,
+// plus the 마감 the portal reports once the due date has passed.
+//
+// Neither screen showing a standing had a word for it. The buyer's 참여 공급업체
+// list and the supplier's own portal card both printed the stored value, so the
+// company that had not been chosen read "not_selected" in the blue tone every
+// unrecognised status gets — the same tone, and as much information, as the one
+// that had won.
+const sourcingParticipantLabels: Record<string, string> = {
+  invited: "초대",
+  draft: "작성 중",
+  submitted: "제출 완료",
+  declined: "참여 거절",
+  preferred: "우선협상",
+  selected: "선정",
+  not_selected: "미선정",
+  closed: "마감",
+};
+
+export function sourcingParticipantLabel(status: string): string {
+  return sourcingParticipantLabels[status] || status;
+}
+
+// sourcingStandingIsTheCommittees reports whether a standing was written by the
+// award rather than by the bidder. When it was, it is what the card says: the
+// bidder's own submission status is no longer the news.
+export function sourcingStandingIsTheCommittees(status?: string): boolean {
+  return (
+    status === "preferred" || status === "selected" || status === "not_selected"
+  );
+}
+
+// sourcingBiddingClosed reports whether that answer is final, which is when the
+// portal stops offering the response form — the same two standings the API
+// refuses a save from. 우선협상 is not one of them: revising the quote is what
+// that selection is for.
+export function sourcingBiddingClosed(status?: string): boolean {
+  return status === "selected" || status === "not_selected";
+}
+
 export function statusTone(status?: string): StatusTone {
   const value = (status || "").toLowerCase();
   if (
@@ -113,6 +154,7 @@ export function statusTone(status?: string): StatusTone {
       "s",
       "a",
       "preferred",
+      "selected",
     ].includes(value)
   )
     return "success";
@@ -124,6 +166,9 @@ export function statusTone(status?: string): StatusTone {
       "suspended",
       "terminated",
       "failed",
+      // The bidder was not chosen. It used to share the neutral blue with
+      // 제출 완료, so losing an award looked like the bid was still in.
+      "not_selected",
     ].includes(value)
   )
     return "danger";

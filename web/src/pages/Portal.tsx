@@ -29,7 +29,12 @@ import {
   Modal,
   RiskBadge,
 } from "../components";
-import { statusTone } from "../status";
+import {
+  sourcingBiddingClosed,
+  sourcingParticipantLabel,
+  sourcingStandingIsTheCommittees,
+  statusTone,
+} from "../status";
 import { errorMessage, useNotify } from "../toast-context";
 import { BusinessObject, Supplier } from "../types";
 import { DocumentUpload } from "./Suppliers";
@@ -601,7 +606,16 @@ function PortalSourcing({
         </div>
       </div>
       <div className="portal-sourcing-grid">
-        {items.map((item) => (
+        {items.map((item) => {
+          // Once the committee has ruled, that is the card's news. The badge
+          // used to prefer the bid's own status, so a company that had just
+          // been told nothing still read 제출 완료 — its own last action —
+          // where the award should have been.
+          const closed = sourcingBiddingClosed(item.status);
+          const standing = sourcingStandingIsTheCommittees(item.status)
+            ? item.status
+            : item.response?.status || item.status;
+          return (
           <article className="card portal-sourcing-card" key={item.id}>
             <header>
               <span className="object-icon">
@@ -612,8 +626,8 @@ function PortalSourcing({
                 <h2>{item.title}</h2>
                 <p>{item.number}</p>
               </div>
-              <Badge tone={statusTone(item.response?.status || item.status)}>
-                {item.response?.status || item.status}
+              <Badge tone={statusTone(standing)}>
+                {sourcingParticipantLabel(standing)}
               </Badge>
             </header>
             <dl>
@@ -630,7 +644,8 @@ function PortalSourcing({
                   no way to say so. A submitted bid is a commitment; anything
                   short of that can still be declined. */}
               {item.response?.status !== "submitted" &&
-                item.status !== "closed" && (
+                item.status !== "closed" &&
+                !closed && (
                   <button
                     className="button ghost danger-text"
                     onClick={() => setDeclining(item)}
@@ -638,9 +653,12 @@ function PortalSourcing({
                     참여 거절
                   </button>
                 )}
+              {/* An awarded request takes no more responses — the API answers
+                  the save with 409 — so the form is not offered, the same way
+                  a closed one is not. */}
               <button
                 className="button"
-                disabled={item.status === "closed"}
+                disabled={item.status === "closed" || closed}
                 onClick={() => setSelected(item)}
               >
                 <Send />
@@ -648,7 +666,8 @@ function PortalSourcing({
               </button>
             </footer>
           </article>
-        ))}
+          );
+        })}
       </div>
       {!items.length && (
         <Empty

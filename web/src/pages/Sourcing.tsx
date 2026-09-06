@@ -19,7 +19,7 @@ import {
   PageHeader,
   RiskBadge,
 } from "../components";
-import { statusTone } from "../status";
+import { sourcingParticipantLabel, statusTone } from "../status";
 import { BusinessObject, Supplier } from "../types";
 
 type Participant = {
@@ -239,7 +239,9 @@ export default function SourcingWorkspace() {
                 <b>{p.supplierName}</b>
                 <small>초대 {date(p.invitedAt)}</small>
               </div>
-              <Badge tone={statusTone(p.status)}>{p.status}</Badge>
+              <Badge tone={statusTone(p.status)}>
+                {sourcingParticipantLabel(p.status)}
+              </Badge>
             </div>
           ))}
           {!participants.length && (
