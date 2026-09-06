@@ -1,17 +1,19 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { WorkflowPanel } from "./Admin";
-import { api, post } from "../api";
+import { api, patch, post } from "../api";
 import { workflowObjectTypes } from "../status";
 
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
   api: vi.fn(),
+  patch: vi.fn(),
   post: vi.fn(),
 }));
 
 const call = vi.mocked(api);
 const send = vi.mocked(post);
+const edit = vi.mocked(patch);
 
 /**
  * The 업무 유형 dropdown is the only place an approval rule is created from, and
@@ -24,6 +26,9 @@ const send = vi.mocked(post);
  */
 describe("승인 Workflow 만들기", () => {
   function mount() {
+    // The mocks are module-level: without this, a call another test made is
+    // still in the list this one reads.
+    vi.clearAllMocks();
     call.mockImplementation((path: string) => {
       if (path === "/api/v1/workflows") {
         return Promise.resolve({
@@ -33,8 +38,13 @@ describe("승인 Workflow 만들기", () => {
               name: "공급업체 계좌정보 변경 승인",
               objectType: "supplier_bank_change",
               enabled: true,
-              conditions: {},
-              steps: [{ name: "구매 관리자 승인", role: "procurement_manager" }],
+              // securityLevel is a condition the form does not show; an edit
+              // that only corrects the amount must not drop it.
+              conditions: { minAmount: 100, securityLevel: "CONFIDENTIAL" },
+              steps: [
+                { name: "구매 관리자 승인", role: "procurement_manager" },
+                { name: "재무 승인", role: "finance" },
+              ],
               version: 1,
               updatedAt: "2026-09-06T00:00:00Z",
             },
@@ -55,6 +65,7 @@ describe("승인 Workflow 만들기", () => {
       }) as ReturnType<typeof api>;
     });
     send.mockResolvedValue({} as never);
+    edit.mockResolvedValue({} as never);
     return render(<WorkflowPanel notify={() => {}} />);
   }
 
@@ -106,5 +117,111 @@ describe("승인 Workflow 만들기", () => {
     expect(
       await screen.findByText("공급업체 계좌정보 변경 · v1"),
     ).toBeTruthy();
+  });
+});
+
+/**
+ * A rule was write-once. There was no 수정 and no way to switch one off, so a
+ * 최소 금액 typed with one zero too few kept routing every submission it
+ * matched, and the only answer was a second rule beside the first. PATCH
+ * /api/v1/workflows/{id} had been there the whole time with no caller.
+ */
+describe("승인 Workflow 수정", () => {
+  function mount() {
+    // The mocks are module-level: without this, a call another test made is
+    // still in the list this one reads.
+    vi.clearAllMocks();
+    call.mockImplementation((path: string) => {
+      if (path === "/api/v1/workflows") {
+        return Promise.resolve({
+          items: [
+            {
+              id: "w1",
+              name: "지급 승인",
+              objectType: "payment",
+              enabled: true,
+              conditions: { minAmount: 100, securityLevel: "CONFIDENTIAL" },
+              steps: [
+                { name: "구매 관리자 승인", role: "procurement_manager" },
+                { name: "재무 승인", role: "finance" },
+              ],
+              version: 3,
+              updatedAt: "2026-09-06T00:00:00Z",
+            },
+          ],
+        }) as ReturnType<typeof api>;
+      }
+      return Promise.resolve({ items: [] }) as ReturnType<typeof api>;
+    });
+    edit.mockResolvedValue({} as never);
+    return render(<WorkflowPanel notify={() => {}} />);
+  }
+
+  it("opens the rule as it stands", async () => {
+    mount();
+    fireEvent.click(await screen.findByLabelText("지급 승인 수정"));
+
+    expect(
+      (await screen.findByLabelText(/Workflow 이름/)) as HTMLInputElement,
+    ).toHaveProperty("value", "지급 승인");
+    expect(screen.getByLabelText("최소 금액")).toHaveProperty("value", "100");
+    // The type is what the rule was filed under and PATCH does not take it, so
+    // it is shown rather than offered.
+    const type = screen.getByLabelText("업무 유형") as HTMLSelectElement;
+    expect(type.value).toBe("payment");
+    expect(type.disabled).toBe(true);
+  });
+
+  it("corrects the amount without dropping the rest of the rule", async () => {
+    mount();
+    fireEvent.click(await screen.findByLabelText("지급 승인 수정"));
+    fireEvent.change(await screen.findByLabelText("최소 금액"), {
+      target: { value: "1000000" },
+    });
+    fireEvent.submit(screen.getByLabelText(/Workflow 이름/).closest("form")!);
+
+    await waitFor(() => expect(edit).toHaveBeenCalled());
+    expect(edit.mock.calls[0][0]).toBe("/api/v1/workflows/w1");
+    const body = edit.mock.calls[0][1] as {
+      conditions: Record<string, unknown>;
+      steps: { name: string }[];
+      enabled: boolean;
+    };
+    expect(body.conditions.minAmount).toBe(1000000);
+    // A PATCH replaces the whole conditions object, so a condition this screen
+    // never shows has to be carried through.
+    expect(body.conditions.securityLevel).toBe("CONFIDENTIAL");
+    expect(body.steps.map((s) => s.name)).toEqual([
+      "구매 관리자 승인",
+      "재무 승인",
+    ]);
+    expect(body.enabled).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("switches a rule off", async () => {
+    mount();
+    fireEvent.click(await screen.findByLabelText("지급 승인 수정"));
+    fireEvent.click(await screen.findByLabelText("활성"));
+    fireEvent.submit(screen.getByLabelText(/Workflow 이름/).closest("form")!);
+
+    await waitFor(() => expect(edit).toHaveBeenCalled());
+    expect((edit.mock.calls[0][1] as { enabled: boolean }).enabled).toBe(false);
+  });
+
+  it("does not send a rule with no steps left", async () => {
+    mount();
+    fireEvent.click(await screen.findByLabelText("지급 승인 수정"));
+    fireEvent.click(await screen.findByLabelText("2단계 삭제"));
+    // One step remains, and the control that would empty the list is gone: an
+    // approval routed by no steps reaches nobody's 승인함 and can never be
+    // closed.
+    expect(screen.queryByLabelText("1단계 삭제")).toBeNull();
+
+    fireEvent.submit(screen.getByLabelText(/Workflow 이름/).closest("form")!);
+    await waitFor(() => expect(edit).toHaveBeenCalled());
+    expect(
+      (edit.mock.calls[0][1] as { steps: { name: string }[] }).steps,
+    ).toHaveLength(1);
   });
 });

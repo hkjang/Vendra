@@ -124,6 +124,46 @@ func workflowObjectTypes() []string {
 	return append(types, "supplier_bank_change")
 }
 
+// validWorkflowSteps checks the steps an approval rule routes by, and numbers
+// them, on the way in rather than at submit time.
+//
+// A rule's steps are not a caption either: submitObject copies them into
+// workflow_instances.context, and from then on the list is the request. An
+// approver only sees a request whose current step exists — listApprovals drops
+// any instance whose current_step is past the end of the list — and
+// workflowAction refuses to act on one, answering 409 invalid_workflow. So a
+// rule saved with no steps, or with steps that are not a list of objects at
+// all, does not fail when it is saved. It fails when the next submission
+// matches it: the object is moved to 결재중, the approval is opened, and the
+// request is then in nobody's inbox and cannot be approved, rejected or
+// returned. It cannot be sent again either, because the open instance is what
+// blocks a second submit. Nothing in the application can move that object
+// again.
+//
+// createWorkflow checked all of this. updateWorkflow, the only other statement
+// that writes the column, checked none of it and stored whatever arrived —
+// which is the shape of edit this whole panel is for.
+func validWorkflowSteps(w http.ResponseWriter, steps any) ([]map[string]any, bool) {
+	var list []map[string]any
+	encoded, err := json.Marshal(steps)
+	if err != nil || json.Unmarshal(encoded, &list) != nil {
+		writeError(w, 400, "validation_error", "승인 단계 형식이 올바르지 않습니다")
+		return nil, false
+	}
+	if len(list) == 0 {
+		writeError(w, 400, "validation_error", "승인 단계는 하나 이상이어야 합니다")
+		return nil, false
+	}
+	for i, step := range list {
+		if strings.TrimSpace(stringValue(step, "name")) == "" {
+			writeError(w, 400, "validation_error", "각 승인 단계에는 이름이 필요합니다")
+			return nil, false
+		}
+		step["order"] = i
+	}
+	return list, true
+}
+
 // workflowObjectTypeField describes the field an approval rule names its
 // target type in.
 func workflowObjectTypeField() enumField {
@@ -150,13 +190,11 @@ func (a *App) createWorkflow(w http.ResponseWriter, r *http.Request) {
 	if !validEnum(w, in.ObjectType, workflowObjectTypeField()) {
 		return
 	}
-	for i, step := range in.Steps {
-		if strings.TrimSpace(stringValue(step, "name")) == "" {
-			writeError(w, 400, "validation_error", "각 승인 단계에는 이름이 필요합니다")
-			return
-		}
-		step["order"] = i
+	steps, ok := validWorkflowSteps(w, in.Steps)
+	if !ok {
+		return
 	}
+	in.Steps = steps
 	if !validWorkflowConditions(w, in.Conditions) {
 		return
 	}
@@ -199,7 +237,11 @@ func (a *App) updateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	steps := json.RawMessage(currentSteps)
 	if in.Steps != nil {
-		steps = raw(in.Steps)
+		validated, ok := validWorkflowSteps(w, in.Steps)
+		if !ok {
+			return
+		}
+		steps = raw(validated)
 	}
 	_, err := a.db.Exec(r.Context(), `UPDATE workflow_definitions SET name=COALESCE(NULLIF($2,''),name),enabled=$3,conditions=$4,steps=$5,version=version+1,updated_at=now() WHERE id=$1`, r.PathValue("id"), in.Name, *in.Enabled, conditions, steps)
 	if err != nil {
