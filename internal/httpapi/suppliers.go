@@ -658,3 +658,14 @@ func (a *App) createContact(w http.ResponseWriter, r *http.Request) {
 func duplicateBusinessNumber(err error) bool {
 	return err != nil && strings.Contains(fmt.Sprint(err), "business_number")
 }
+
+// duplicateUserEmail reads the unique violation raised by the key every account
+// is looked up under. Every door that creates an account needs it: the address
+// is what the person will sign in with, so "already taken" is the one outcome
+// they can act on — by signing in — and the only one they can never reach by
+// correcting anything on the form in front of them. Reported as a save failure
+// it reads as a fault in the request, and the invited supplier retypes the same
+// form forever.
+func duplicateUserEmail(err error) bool {
+	return err != nil && strings.Contains(fmt.Sprint(err), "users_email_key")
+}

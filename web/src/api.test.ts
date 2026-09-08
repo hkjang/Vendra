@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { date, dateTime, isoDate, logTime, todayISO } from "./api";
+import { describe, expect, it, vi } from "vitest";
+import { api, date, dateTime, isoDate, logTime, todayISO } from "./api";
 
 describe("date", () => {
   it("reads a bare YYYY-MM-DD as a day, not an instant", () => {
@@ -63,5 +63,46 @@ describe("isoDate", () => {
 
   it("agrees with todayISO", () => {
     expect(todayISO()).toBe(isoDate(new Date()));
+  });
+});
+
+describe("APIError", () => {
+  it("carries the envelope's code, so a screen can branch on the refusal", async () => {
+    // Only the message used to survive the fetch wrapper. A page that wants to
+    // offer the way out — sign in, rather than retype the form — had nothing to
+    // branch on but the Korean sentence, which is not a contract.
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: { code: "email_registered", message: "이미 가입된 이메일입니다" },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await expect(api("/api/auth/register")).rejects.toMatchObject({
+        status: 409,
+        code: "email_registered",
+        message: "이미 가입된 이메일입니다",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leaves the code empty when the server sent no envelope", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: async () => {
+        throw new Error("not json");
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await expect(api("/api/version")).rejects.toMatchObject({ code: "" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

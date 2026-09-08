@@ -187,6 +187,15 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 		_, err = tx.Exec(r.Context(), `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code=ANY($2) ON CONFLICT DO NOTHING`, id, in.RoleCodes)
 	}
 	if err != nil {
+		// The other door onto the address every account signs in with. An
+		// admin adding someone who already has an account — a returning
+		// employee, a second try after a typo elsewhere — was told the save
+		// failed, which names no box and suggests trying again.
+		if duplicateUserEmail(err) {
+			writeError(w, 409, "email_registered", "이미 등록된 이메일입니다")
+			return
+		}
+		logDB(err)
 		writeError(w, 400, "save_failed", "사용자를 저장하지 못했습니다")
 		return
 	}
