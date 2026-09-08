@@ -130,8 +130,23 @@ var supplierTextFields = []textField{
 	{"businessNumber", "사업자번호"}, {"corporateNumber", "법인번호"},
 	{"country", "국가"}, {"supplierType", "업체 구분"}, {"supplierNumber", "업체 코드"},
 	{"grade", "등급"}, {"status", "상태"}, {"riskLevel", "리스크 등급"},
-	{"industry", "업종"}, {"phone", "전화번호"},
-	{"website", "웹사이트"}, {"erpVendorId", "ERP 코드"}, {"bankAccount", "계좌정보"},
+	{"industry", "업종"}, {"erpVendorId", "ERP 코드"}, {"bankAccount", "계좌정보"},
+}
+
+// supplierPhoneFields and supplierWebsiteFields are the contact details on a
+// supplier record. They used to sit in the list above, which measured them and
+// nothing else, so a length was the whole of what "전화번호" and "웹사이트"
+// had to be. Both are listed once here for the same reason the addresses are:
+// the register, the edit form and the portal write the same two columns, and
+// none of them may drift from the others about what they hold.
+var supplierPhoneFields = []phoneField{{"phone", "전화번호"}}
+
+var supplierWebsiteFields = []websiteField{{"website", "웹사이트"}}
+
+// validSupplierContactDetails checks the pair on whichever door is writing.
+func validSupplierContactDetails(w http.ResponseWriter, in map[string]any) bool {
+	return validPhoneFields(w, in, supplierPhoneFields...) &&
+		validWebsiteFields(w, in, supplierWebsiteFields...)
 }
 
 // supplierEmailFields names the addresses on a supplier record. The
@@ -170,6 +185,9 @@ func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validSupplierEmails(w, in) {
+		return
+	}
+	if !validSupplierContactDetails(w, in) {
 		return
 	}
 	if !validDateFields(w, in, dateField{"tradingSince", "거래 시작일"}) {
@@ -372,6 +390,9 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 	if !validSupplierEmails(w, in) {
 		return
 	}
+	if !validSupplierContactDetails(w, in) {
+		return
+	}
 	if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급"), supplierStatusField("status", "거래 상태")) {
 		return
 	}
@@ -557,8 +578,12 @@ func (a *App) listContacts(w http.ResponseWriter, r *http.Request) {
 // on every RFQ and delivery renders.
 var contactTextFields = []textField{
 	{"name", "담당자 이름"}, {"title", "직위"}, {"department", "부서"},
-	{"phone", "전화번호"},
 }
+
+// contactPhoneFields is the same pair of doors onto the contact's number. It is
+// what a buyer dials when a delivery is late, and it was measured rather than
+// read: 부서 typed one box too low saved as the number to call.
+var contactPhoneFields = []phoneField{{"phone", "전화번호"}}
 
 // contactEmailFields is the same pair of doors onto the contact's address. It
 // is the one an RFQ, a delivery notice and a verification link are sent to, and
@@ -580,7 +605,8 @@ func (a *App) createContact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "담당자 이름은 필수입니다")
 		return
 	}
-	if !validTextFields(w, in, contactTextFields...) || !validEmailFields(w, in, contactEmailFields...) {
+	if !validTextFields(w, in, contactTextFields...) || !validEmailFields(w, in, contactEmailFields...) ||
+		!validPhoneFields(w, in, contactPhoneFields...) {
 		return
 	}
 	// primary_contact is NOT NULL, and this passed in["primary"] through
