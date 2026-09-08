@@ -257,7 +257,7 @@ func (a *App) createSupplier(w http.ResponseWriter, r *http.Request) {
 	err = a.db.QueryRow(r.Context(), `INSERT INTO suppliers(supplier_number,name,legal_name,business_number,corporate_number,representative,status,grade,risk_level,supplier_type,industry,categories,addresses,phone,email,website,financials,bank_account_encrypted,tax_info,erp_vendor_id,owner_id,organization_id,trading_since,annual_spend,metadata,created_by)
 	 VALUES($1,$2,NULLIF($3,''),$4,NULLIF($5,''),NULLIF($6,''),COALESCE(NULLIF($7,''),'candidate'),NULLIF($8,''),COALESCE(NULLIF($9,''),'LOW'),NULLIF($10,''),NULLIF($11,''),$12,$13,NULLIF($14,''),NULLIF($15,''),NULLIF($16,''),$17,$18,$19,NULLIF($20,''),COALESCE(NULLIF($21,''),$26)::uuid,NULLIF($22,'')::uuid,NULLIF($23,'')::date,COALESCE($24,0),$25,$26::uuid) RETURNING id`, number, name, stringValue(in, "legalName"), businessNumber, stringValue(in, "corporateNumber"), stringValue(in, "representative"), stringValue(in, "status"), stringValue(in, "grade"), stringValue(in, "riskLevel"), stringValue(in, "supplierType"), stringValue(in, "industry"), raw(cats), raw(addresses), stringValue(in, "phone"), stringValue(in, "email"), stringValue(in, "website"), raw(financials), bankCipher, raw(tax), stringValue(in, "erpVendorId"), stringValue(in, "ownerId"), stringValue(in, "organizationId"), stringValue(in, "tradingSince"), numberValue(in, "annualSpend"), raw(metadata), p.ID).Scan(&id)
 	if err != nil {
-		if strings.Contains(err.Error(), "business_number") {
+		if duplicateBusinessNumber(err) {
 			writeError(w, 409, "duplicate_business_number", "이미 등록된 사업자번호입니다")
 			return
 		}
@@ -396,6 +396,15 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 	if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급"), supplierStatusField("status", "거래 상태")) {
 		return
 	}
+	// The same two checks the registration passes. They were not here because
+	// the statement below did not carry the two values; now that a correction
+	// can reach them, a correction can be wrong in the same ways.
+	if !validDateFields(w, in, dateField{"tradingSince", "거래 시작일"}) {
+		return
+	}
+	if !validNumberFields(w, in, amountField("annualSpend", "연간 거래금액")) {
+		return
+	}
 	metadata := before.Metadata
 	if v, ok := in["metadata"].(map[string]any); ok {
 		metadata = v
@@ -470,8 +479,24 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 		}
 		bankCipher = nil
 	}
-	_, err = a.db.Exec(r.Context(), `UPDATE suppliers SET name=COALESCE(NULLIF($2,''),name),legal_name=COALESCE(NULLIF($3,''),legal_name),representative=COALESCE(NULLIF($4,''),representative),status=COALESCE(NULLIF($5,''),status),grade=COALESCE(NULLIF($6,''),grade),risk_level=COALESCE(NULLIF($7,''),risk_level),supplier_type=COALESCE(NULLIF($8,''),supplier_type),industry=COALESCE(NULLIF($9,''),industry),categories=$10,addresses=$11,phone=COALESCE(NULLIF($12,''),phone),email=COALESCE(NULLIF($13,''),email),website=COALESCE(NULLIF($14,''),website),bank_account_encrypted=COALESCE($15,bank_account_encrypted),metadata=$16,financials=$17,tax_info=$18,erp_vendor_id=COALESCE(NULLIF($19,''),erp_vendor_id),updated_at=now() WHERE id=$1`, id, stringValue(in, "name"), stringValue(in, "legalName"), stringValue(in, "representative"), stringValue(in, "status"), stringValue(in, "grade"), stringValue(in, "riskLevel"), stringValue(in, "supplierType"), stringValue(in, "industry"), raw(cats), raw(addresses), stringValue(in, "phone"), stringValue(in, "email"), stringValue(in, "website"), bankCipher, raw(metadata), raw(financials), raw(taxInfo), stringValue(in, "erpVendorId"))
+	// business_number, corporate_number, trading_since and annual_spend used to
+	// be absent from this list, so the registration was the only chance to get
+	// them right. The 사업자번호 is the worst of the four to be write-once: the
+	// register is keyed on it, the search box looks records up by it, and one
+	// wrong digit could only be undone by deleting the company — and with it
+	// every contract, order and evaluation hanging off the record. The portal
+	// even tells the supplier that a change to it is applied after internal
+	// approval, and there was no box on the internal side to apply it in.
+	_, err = a.db.Exec(r.Context(), `UPDATE suppliers SET name=COALESCE(NULLIF($2,''),name),legal_name=COALESCE(NULLIF($3,''),legal_name),representative=COALESCE(NULLIF($4,''),representative),status=COALESCE(NULLIF($5,''),status),grade=COALESCE(NULLIF($6,''),grade),risk_level=COALESCE(NULLIF($7,''),risk_level),supplier_type=COALESCE(NULLIF($8,''),supplier_type),industry=COALESCE(NULLIF($9,''),industry),categories=$10,addresses=$11,phone=COALESCE(NULLIF($12,''),phone),email=COALESCE(NULLIF($13,''),email),website=COALESCE(NULLIF($14,''),website),bank_account_encrypted=COALESCE($15,bank_account_encrypted),metadata=$16,financials=$17,tax_info=$18,erp_vendor_id=COALESCE(NULLIF($19,''),erp_vendor_id),business_number=COALESCE(NULLIF($20,''),business_number),corporate_number=COALESCE(NULLIF($21,''),corporate_number),trading_since=COALESCE(NULLIF($22,'')::date,trading_since),annual_spend=COALESCE($23,annual_spend),updated_at=now() WHERE id=$1`, id, stringValue(in, "name"), stringValue(in, "legalName"), stringValue(in, "representative"), stringValue(in, "status"), stringValue(in, "grade"), stringValue(in, "riskLevel"), stringValue(in, "supplierType"), stringValue(in, "industry"), raw(cats), raw(addresses), stringValue(in, "phone"), stringValue(in, "email"), stringValue(in, "website"), bankCipher, raw(metadata), raw(financials), raw(taxInfo), stringValue(in, "erpVendorId"), stringValue(in, "businessNumber"), stringValue(in, "corporateNumber"), stringValue(in, "tradingSince"), numberValue(in, "annualSpend"))
 	if err != nil {
+		// The register's own key, reached from the other door. Told as a
+		// database error, the correction would read as "저장하지 못했습니다"
+		// against a number that is perfectly well formed — the thing to say is
+		// that another company already holds it.
+		if duplicateBusinessNumber(err) {
+			writeError(w, 409, "duplicate_business_number", "이미 등록된 사업자번호입니다")
+			return
+		}
 		logDB(err)
 		writeError(w, 400, "save_failed", "공급업체를 저장하지 못했습니다")
 		return
@@ -626,6 +651,10 @@ func (a *App) createContact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]any{"id": id})
 }
 
-func supplierNumberConflict(err error) bool {
+// duplicateBusinessNumber reads the unique violation raised by the key the
+// register is built on. Both doors onto business_number need it: the
+// registration that finds the company already on file, and the correction that
+// types a number a different company is already on file under.
+func duplicateBusinessNumber(err error) bool {
 	return err != nil && strings.Contains(fmt.Sprint(err), "business_number")
 }

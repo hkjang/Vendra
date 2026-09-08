@@ -429,7 +429,10 @@ export function SupplierEdit({
       await patch(`/api/v1/suppliers/${supplier.id}`, {
         name: d.get("name"),
         legalName: d.get("legalName"),
+        businessNumber: d.get("businessNumber"),
+        corporateNumber: d.get("corporateNumber"),
         representative: d.get("representative"),
+        tradingSince: d.get("tradingSince"),
         status: d.get("status"),
         supplierType: d.get("supplierType"),
         industry: d.get("industry"),
@@ -479,6 +482,28 @@ export function SupplierEdit({
           <Field label="법인명">
             <input name="legalName" defaultValue={supplier.legalName} />
           </Field>
+          {/* The register is keyed on the 사업자번호 and the search box looks
+              records up by it, so a wrong digit hides the company from the
+              people looking for it. Registration was the only place it could
+              be typed, and nothing could retype it. */}
+          <Field
+            label="사업자번호"
+            required
+            hint="다른 업체가 쓰고 있는 번호는 저장되지 않습니다."
+          >
+            <input
+              name="businessNumber"
+              required
+              defaultValue={supplier.businessNumber}
+              placeholder="000-00-00000"
+            />
+          </Field>
+          <Field label="법인번호">
+            <input
+              name="corporateNumber"
+              defaultValue={supplier.corporateNumber}
+            />
+          </Field>
           <Field label="대표자">
             <input
               name="representative"
@@ -508,6 +533,13 @@ export function SupplierEdit({
           </Field>
           <Field label="ERP Vendor ID">
             <input name="erpVendorId" defaultValue={supplier.erpVendorId} />
+          </Field>
+          <Field label="거래 시작일">
+            <input
+              name="tradingSince"
+              type="date"
+              defaultValue={supplier.tradingSince}
+            />
           </Field>
           <Field label="대표 이메일">
             <input name="email" type="email" defaultValue={supplier.email} />
