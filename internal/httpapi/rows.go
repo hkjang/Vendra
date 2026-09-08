@@ -315,6 +315,224 @@ func isEmailAddress(address string) bool {
 	return true
 }
 
+// maxPhoneLen bounds a telephone number at more than any of them needs. E.164
+// caps a number at fifteen digits; the country code, the separators somebody
+// types and a trailing 내선 all fit inside forty characters.
+const maxPhoneLen = 40
+
+// minPhoneDigits is what makes a number dialable. The shortest one a Korean
+// supplier prints on a card is the eight of a 1588-0000 representative line; a
+// local number is nine or ten and a mobile is eleven. Below that there is no
+// number, only a fragment of one — "내선 3번" carries a single digit.
+const minPhoneDigits = 8
+
+// phoneField names a request-body field holding a telephone number, with the
+// label to use when telling the caller it is not one.
+type phoneField struct{ key, label string }
+
+// validPhoneFields checks the telephone numbers a request body carries.
+//
+// The register's phone column is the one a buyer reads off Supplier 360 when a
+// delivery is late, and the only door onto it measured a length. So "내선 3번",
+// "본사에 문의", the department name from the box above — all of them saved,
+// and the value looks like a phone number's neighbour on the screen: a dash
+// where the number would be says the field is empty, but a sentence there says
+// somebody filled it in. Nobody discovers it until the call has to be made.
+//
+// Only a field the caller actually sent is measured, the same way the date,
+// number, label and address checks beside it leave an absent one to the
+// statement's own default.
+func validPhoneFields(w http.ResponseWriter, in map[string]any, fields ...phoneField) bool {
+	for _, f := range fields {
+		number, ok := validPhone(w, stringValue(in, f.key), f.label)
+		if !ok {
+			return false
+		}
+		if _, sent := in[f.key].(string); sent {
+			in[f.key] = number
+		}
+	}
+	return true
+}
+
+// validPhone checks one number a typed handler has already decoded and answers
+// the form to store.
+//
+// The shape is held to what can be dialled rather than to a national format.
+// Vendra registers overseas suppliers, and 02-1234-5678, +82 2 1234 5678,
+// (031) 123-4567 and 1588-0000 are all the same kind of thing: digits, and the
+// punctuation somebody separates them with. A pattern per country would refuse
+// half of them; counting the digits refuses only what has none.
+func validPhone(w http.ResponseWriter, value, label string) (string, bool) {
+	number := strings.TrimSpace(value)
+	if number == "" {
+		return "", true
+	}
+	if utf8.RuneCountInString(number) > maxPhoneLen {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("%s%s %d자를 넘을 수 없습니다", label, topicParticle(label), maxPhoneLen))
+		return "", false
+	}
+	if !isPhoneNumber(number) {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			label+topicParticle(label)+" 올바른 전화번호 형식이 아닙니다")
+		return "", false
+	}
+	return number, true
+}
+
+// isPhoneNumber reports whether number is one: enough digits to reach somebody,
+// and nothing between them that is not how a number is written down. A plus for
+// the country code, and the spaces, dashes, dots, brackets and slash a card
+// prints — the slash because 02-1234-5678/9 is how a pair of lines is listed.
+func isPhoneNumber(number string) bool {
+	digits := 0
+	for _, c := range number {
+		switch {
+		case c >= '0' && c <= '9':
+			digits++
+		case strings.ContainsRune("+-. ()/", c):
+		default:
+			return false
+		}
+	}
+	return digits >= minPhoneDigits
+}
+
+// websiteField names a request-body field holding a company's web address,
+// with the label to use when telling the caller it is not one.
+type websiteField struct{ key, label string }
+
+// validWebsiteFields checks the web addresses a request body carries and
+// rewrites each one into the form both doors onto the column store it in.
+//
+// Two surfaces write suppliers.website and they disagreed about what it holds.
+// The buyer's edit form takes any text, so "www.acme.co.kr" — the way anybody
+// writes an address down — is what the register is full of. The portal's own
+// form declares type="url", which the browser reads as requiring a scheme. So a
+// supplier who opens 회사 연락정보 수정 to correct their phone number cannot
+// save it: the website box is pre-filled with what the buyer typed, the browser
+// refuses to submit, and it objects about a field they never touched. There is
+// no way through except to edit somebody else's value, and nothing on the
+// screen says so.
+//
+// The check answers both halves. A bare host is accepted, because that is what
+// people type, and it is stored with the scheme it implies, so the column holds
+// one shape from here on. Anything that is not an address — the internal wiki
+// title, the note to look it up later — is refused by the field the form shows
+// it in, rather than saved as a link nobody can follow.
+func validWebsiteFields(w http.ResponseWriter, in map[string]any, fields ...websiteField) bool {
+	for _, f := range fields {
+		address, ok := validWebsite(w, stringValue(in, f.key), f.label)
+		if !ok {
+			return false
+		}
+		if _, sent := in[f.key].(string); sent {
+			in[f.key] = address
+		}
+	}
+	return true
+}
+
+// validWebsite checks one web address a typed handler has already decoded and
+// answers the form to store it in.
+func validWebsite(w http.ResponseWriter, value, label string) (string, bool) {
+	address := strings.TrimSpace(value)
+	if address == "" {
+		return "", true
+	}
+	if utf8.RuneCountInString(address) > maxIdentifierLen {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("%s%s %d자를 넘을 수 없습니다", label, topicParticle(label), maxIdentifierLen))
+		return "", false
+	}
+	normalised, ok := websiteAddress(address)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			label+topicParticle(label)+" 올바른 주소 형식이 아닙니다")
+		return "", false
+	}
+	return normalised, true
+}
+
+// websiteAddress answers address in the form the column stores, and whether it
+// is one at all.
+//
+// The scheme is supplied when it is missing rather than demanded, and held to
+// http and https when it is there: the value is rendered as a company's site,
+// and every other scheme reaching that column is either a mistake or a link
+// somebody wants followed for reasons of their own. The host is lower-cased
+// because hostnames are, and the rest of the address is left exactly as typed —
+// paths are case-sensitive, and re-encoding a Korean one would show the
+// supplier percent escapes where their own page name was.
+func websiteAddress(address string) (string, bool) {
+	scheme, rest, hasScheme := strings.Cut(address, "://")
+	if !hasScheme {
+		scheme, rest = "https", address
+	}
+	scheme = strings.ToLower(scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	authority := rest
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		authority = rest[:i]
+	}
+	// Credentials in front of the host are the shape a phishing link is written
+	// in, and no supplier's own site is addressed that way.
+	if authority == "" || strings.Contains(authority, "@") {
+		return "", false
+	}
+	host, port, hasPort := strings.Cut(authority, ":")
+	if hasPort {
+		if port == "" {
+			return "", false
+		}
+		for _, c := range port {
+			if c < '0' || c > '9' {
+				return "", false
+			}
+		}
+	}
+	if !isHostname(host) {
+		return "", false
+	}
+	return scheme + "://" + strings.ToLower(authority) + rest[len(authority):], true
+}
+
+// isHostname reports whether host is one that resolves anywhere outside the
+// machine it is typed on: labels of ASCII letters, digits and hyphens, at least
+// two of them, and a last one that is letters. "사내 위키 - 자재부" and
+// "확인 후 입력" are notes, not addresses; "localhost" and "intranet" are
+// somebody's own machine.
+func isHostname(host string) bool {
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, c := range label {
+			alphanumeric := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+			if !alphanumeric && c != '-' {
+				return false
+			}
+		}
+	}
+	tld := labels[len(labels)-1]
+	if len(tld) < 2 {
+		return false
+	}
+	for _, c := range tld {
+		if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
 // uuidField names a request-body field holding the id of another record, with
 // the label to use when telling the caller it is not one.
 type uuidField struct{ key, label string }

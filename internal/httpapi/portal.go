@@ -37,8 +37,9 @@ func (a *App) portalUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	// The three fields the portal lets a supplier write onto their own record.
 	// They are the contact block the buyer's register and Supplier 360 show, and
-	// the internal door onto the same columns has always been bounded.
-	if !validTextFields(w, in, textField{"phone", "전화번호"}, textField{"website", "웹사이트"}) ||
+	// the internal door onto the same columns reads them the same way — which is
+	// the point of sharing the lists rather than spelling the pair out here.
+	if !validSupplierContactDetails(w, in) ||
 		!validEmailFields(w, in, supplierEmailFields...) {
 		return
 	}
@@ -87,7 +88,8 @@ func (a *App) portalCreateContact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "담당자 이름은 필수입니다")
 		return
 	}
-	if !validTextFields(w, in, contactTextFields...) || !validEmailFields(w, in, contactEmailFields...) {
+	if !validTextFields(w, in, contactTextFields...) || !validEmailFields(w, in, contactEmailFields...) ||
+		!validPhoneFields(w, in, contactPhoneFields...) {
 		return
 	}
 	primary, _ := in["primary"].(bool)

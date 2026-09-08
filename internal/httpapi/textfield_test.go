@@ -27,6 +27,14 @@ var unboundedByDesign = map[string]string{
 	// TestEveryStoredEmailIsAnAddress watches these, and watches them by the
 	// column they are written to rather than by the name the request gives them.
 	"email": "이메일",
+	// Held to the shape of a number and of a web address by the contact-detail
+	// sweep, which is a stricter check than a length and bounds each of them on
+	// the way past — a phone number at maxPhoneLen, which is tighter than a
+	// label, and a website at the same maxIdentifierLen it used to sit under.
+	// TestEveryStoredContactDetailIsOne watches these, by the column they are
+	// written to rather than by the name the request gives them.
+	"phone":   "전화번호",
+	"website": "웹사이트",
 }
 
 // TestEveryRequestLabelIsBounded keeps this sweep from having to be redone, the

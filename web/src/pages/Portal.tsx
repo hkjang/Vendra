@@ -1277,6 +1277,7 @@ function CompanyProfile({
   onSaved: () => void;
 }) {
   const [edit, setEdit] = useState(false);
+  const [error, setError] = useState<string>();
   return (
     <div className="portal-page">
       <div className="portal-page-head">
@@ -1285,7 +1286,13 @@ function CompanyProfile({
           <h1>회사정보</h1>
           <p>연락처와 인증 정보를 최신 상태로 유지하세요.</p>
         </div>
-        <button className="button" onClick={() => setEdit(true)}>
+        <button
+          className="button"
+          onClick={() => {
+            setError(undefined);
+            setEdit(true);
+          }}
+        >
           <Settings />
           수정
         </button>
@@ -1329,11 +1336,21 @@ function CompanyProfile({
             onSubmit={async (e) => {
               e.preventDefault();
               const d = new FormData(e.currentTarget);
-              await patch("/api/v1/portal/profile", {
-                email: d.get("email"),
-                phone: d.get("phone"),
-                website: d.get("website"),
-              });
+              try {
+                await patch("/api/v1/portal/profile", {
+                  email: d.get("email"),
+                  phone: d.get("phone"),
+                  website: d.get("website"),
+                });
+              } catch (err) {
+                // Without this the rejection threw out of the handler: the
+                // modal stayed open with the values still in it and nothing
+                // anywhere said why the save had not happened.
+                setError(
+                  err instanceof Error ? err.message : "저장하지 못했습니다",
+                );
+                return;
+              }
               setEdit(false);
               onSaved();
             }}
@@ -1344,9 +1361,18 @@ function CompanyProfile({
             <Field label="대표 전화">
               <input name="phone" defaultValue={s.phone} />
             </Field>
+            {/*
+              No type="url". The buyer's register writes this same column
+              through a form that takes any text, so it is full of bare hosts
+              — and the browser then refused to submit this form over a box
+              the supplier had not touched, which took the telephone number
+              beside it down with it. The API takes the host and stores the
+              scheme it implies, so it is the one that answers here.
+            */}
             <Field label="웹사이트">
-              <input name="website" type="url" defaultValue={s.website} />
+              <input name="website" defaultValue={s.website} />
             </Field>
+            {error && <div className="form-error">{error}</div>}
             <div className="form-actions">
               <button
                 type="button"

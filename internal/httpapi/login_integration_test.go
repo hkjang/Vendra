@@ -6024,3 +6024,176 @@ func TestEveryEmailOnAWriteIsAnAddress(t *testing.T) {
 		t.Errorf("an update carrying no address returned %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestEveryContactDetailOnAWriteIsOne is the date, amount, label, grade, id and
+// address sweep run over the seventh kind of value a request body carries: the
+// two ways of reaching a supplier.
+//
+// A telephone number and a web address are not free text. Only one thing was
+// ever done to them — a length — and the wrong thing typed into these boxes is
+// short: "내선 3번" is a note about a number rather than one, and the internal
+// wiki's title is a page nobody outside can open. Both saved on all five doors,
+// and both then sit on Supplier 360 looking like the value that belongs there.
+// An empty field says nobody filled it in; a sentence says somebody did.
+//
+// The second half is the one a supplier actually hit. The buyer's edit form
+// takes any text, so the register is full of "www.acme.co.kr" — how anybody
+// writes an address down — while the portal's own form declared type="url",
+// which the browser reads as requiring a scheme. A supplier opening 회사
+// 연락정보 수정 to correct their telephone number was refused by the box above
+// it, over a value the buyer had typed. So the check takes the bare host and
+// stores the scheme it implies: one shape in the column, and the same one
+// offered at both doors.
+func TestEveryContactDetailOnAWriteIsOne(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+
+	var supplierID string
+	if err := pool.QueryRow(ctx, `INSERT INTO suppliers(supplier_number,name,business_number,status,risk_level,phone,website) VALUES('SUP-REACHSWEEP','연락처 검증 업체','SUP-REACHSWEEP','active','LOW','02-1234-5678','www.reachsweep.example')
+		ON CONFLICT(supplier_number) DO UPDATE SET phone=excluded.phone,website=excluded.website RETURNING id`).Scan(&supplierID); err != nil {
+		t.Fatalf("seed supplier: %v", err)
+	}
+	const email = "reachsweep-supplier@vendra.test"
+	const password = "ReachSweepPassphrase!2026"
+	hash, err := app.hashPassword(ctx, password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(email,display_name,password_hash,user_type,status,supplier_id) VALUES($1,'연락처 담당자',$2,'supplier','active',$3)
+		ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,supplier_id=excluded.supplier_id,user_type='supplier',status='active' RETURNING id`, email, hash, supplierID).Scan(&userID); err != nil {
+		t.Fatalf("seed portal user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user' ON CONFLICT DO NOTHING`, userID); err != nil {
+		t.Fatalf("assign the portal role: %v", err)
+	}
+	t.Cleanup(func() {
+		// context.Background(), not t.Context(): the test context is already
+		// cancelled by the time cleanup runs and these would silently no-op.
+		_, _ = pool.Exec(ctx, `DELETE FROM supplier_contacts WHERE supplier_id=$1`, supplierID)
+		// audit_logs holds a foreign key on the actor, so the portal user
+		// survives without this — and then so does the supplier that
+		// references it, leaving the next run to fail on a duplicate business
+		// number.
+		_, _ = pool.Exec(ctx, `DELETE FROM audit_logs WHERE actor_id=$1`, userID)
+		_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
+		_, _ = pool.Exec(ctx, `DELETE FROM suppliers WHERE business_number IN('SUP-REACHSWEEP','SUP-REACHSWEEP-NEW')`)
+	})
+
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email IN($1,$2)`, testAdminEmail, email)
+	admin := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.221:5000"))
+	portal := sessionCookieFrom(t, postLogin(t, handler, email, password, "203.0.113.222:5000"))
+
+	send := func(method, path, session, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	// Every one of these is a value a client actually sends where a way of
+	// reaching the supplier belongs.
+	for _, tc := range []struct {
+		what, method, path, session, body, names string
+	}{
+		{"a supplier registered with a note instead of a number", http.MethodPost, "/api/v1/suppliers", admin,
+			`{"name":"Ridgeway Tooling","businessNumber":"SUP-REACHSWEEP-NEW","phone":"내선 3번"}`, "전화번호"},
+		{"a register entry moved onto the department name", http.MethodPatch, "/api/v1/suppliers/" + supplierID, admin,
+			`{"phone":"구매팀"}`, "전화번호"},
+		{"a website that is a page only the buyer can open", http.MethodPatch, "/api/v1/suppliers/" + supplierID, admin,
+			`{"website":"사내 위키 - 자재부"}`, "웹사이트"},
+		{"a link the column is not there to hold", http.MethodPatch, "/api/v1/suppliers/" + supplierID, admin,
+			`{"website":"javascript:alert(1)"}`, "웹사이트"},
+		{"a contact reached at the answer somebody gave", http.MethodPost, "/api/v1/suppliers/" + supplierID + "/contacts", admin,
+			`{"name":"김담당","phone":"본사에 문의"}`, "전화번호"},
+		{"a number the portal writes onto its own record", http.MethodPatch, "/api/v1/portal/profile", portal,
+			`{"phone":"확인 후 회신"}`, "전화번호"},
+		{"a website the portal writes onto its own record", http.MethodPatch, "/api/v1/portal/profile", portal,
+			`{"website":"확인 후 입력"}`, "웹사이트"},
+		{"a portal contact reached at a fragment of a number", http.MethodPost, "/api/v1/portal/contacts", portal,
+			`{"name":"김담당","phone":"1234"}`, "전화번호"},
+	} {
+		w := send(tc.method, tc.path, tc.session, tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: returned %d, want 400: %s", tc.what, w.Code, w.Body.String())
+			continue
+		}
+		code, msg := errorCodeAndMessage(t, w)
+		if code != "validation_error" {
+			t.Errorf("%s: answered %q, want validation_error: %s", tc.what, code, msg)
+		}
+		if !strings.Contains(msg, tc.names) {
+			t.Errorf("%s: the rejection does not name the box to fix: %s", tc.what, msg)
+		}
+	}
+
+	// None of them reached a table, and the record they aimed at is untouched.
+	var phone, website string
+	if err := pool.QueryRow(ctx, `SELECT phone,website FROM suppliers WHERE id=$1`, supplierID).Scan(&phone, &website); err != nil {
+		t.Fatalf("read the supplier: %v", err)
+	}
+	if phone != "02-1234-5678" || website != "www.reachsweep.example" {
+		t.Errorf("a rejected update left the supplier reachable at %q / %q", phone, website)
+	}
+	for _, check := range []struct {
+		what, query string
+		args        []any
+	}{
+		{"suppliers", `SELECT count(*) FROM suppliers WHERE business_number='SUP-REACHSWEEP-NEW'`, nil},
+		{"supplier contacts", `SELECT count(*) FROM supplier_contacts WHERE supplier_id=$1`, []any{supplierID}},
+	} {
+		var n int
+		if err := pool.QueryRow(ctx, check.query, check.args...).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", check.what, err)
+		}
+		if n != 0 {
+			t.Errorf("a rejected write left %d rows in %s", n, check.what)
+		}
+	}
+
+	// The other half, and the one a supplier hit. The buyer types the host the
+	// way it is printed on the card; it is an address, so it is taken, and the
+	// column gets the one shape both doors read it in.
+	if w := send(http.MethodPatch, "/api/v1/suppliers/"+supplierID, admin,
+		`{"website":"WWW.Reachsweep.Example/제품"}`); w.Code != http.StatusOK {
+		t.Fatalf("a bare host was refused: %d %s", w.Code, w.Body.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT website FROM suppliers WHERE id=$1`, supplierID).Scan(&website); err != nil {
+		t.Fatalf("read the supplier website: %v", err)
+	}
+	if website != "https://www.reachsweep.example/제품" {
+		t.Errorf("the register stored %q, which is not the shape the column holds", website)
+	}
+
+	// And the supplier, whose form used to refuse to submit over that box,
+	// corrects the telephone number it was standing in front of — sending the
+	// website back exactly as the buyer wrote it, which is what a pre-filled
+	// form does.
+	if w := send(http.MethodPatch, "/api/v1/portal/profile", portal,
+		`{"phone":"031-987-6543","website":"www.reachsweep.example"}`); w.Code != http.StatusOK {
+		t.Fatalf("the portal could not correct its own number: %d %s", w.Code, w.Body.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT phone,website FROM suppliers WHERE id=$1`, supplierID).Scan(&phone, &website); err != nil {
+		t.Fatalf("read the supplier: %v", err)
+	}
+	if phone != "031-987-6543" {
+		t.Errorf("the corrected number is %q", phone)
+	}
+	if website != "https://www.reachsweep.example" {
+		t.Errorf("the portal stored %q, which is not the shape the column holds", website)
+	}
+
+	// A detail the caller did not send is not a wrong one: the statement's own
+	// default still applies and the write goes through.
+	if w := send(http.MethodPatch, "/api/v1/suppliers/"+supplierID, admin, `{"name":"연락처 검증 업체 v2"}`); w.Code != http.StatusOK {
+		t.Errorf("an update carrying no contact detail returned %d: %s", w.Code, w.Body.String())
+	}
+	if w := send(http.MethodPost, "/api/v1/suppliers/"+supplierID+"/contacts", admin,
+		`{"name":"김담당","phone":"+82 2 1234 5678","email":"reachsweep-contact@vendra.test"}`); w.Code != http.StatusCreated {
+		t.Errorf("a well-formed contact returned %d: %s", w.Code, w.Body.String())
+	}
+}
