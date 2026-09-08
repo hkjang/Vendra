@@ -17,10 +17,17 @@ export type Version = {
 
 export class APIError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /**
+   * The envelope's machine-readable code, when the server sent one. The message
+   * is what a person reads; the code is what a screen branches on, so a refusal
+   * can offer the way out instead of only naming the problem.
+   */
+  code: string;
+  constructor(status: number, message: string, code = "") {
     super(message);
     this.name = "APIError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -39,6 +46,7 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
     throw new APIError(
       response.status,
       body?.error?.message || `요청 실패 (${response.status})`,
+      body?.error?.code || "",
     );
   return body as T;
 }

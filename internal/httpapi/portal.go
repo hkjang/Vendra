@@ -308,20 +308,50 @@ func (a *App) registerSupplierUser(w http.ResponseWriter, r *http.Request) {
 		number := "SUP-" + strings.ToUpper(timeNowID())
 		var id string
 		err = tx.QueryRow(r.Context(), `INSERT INTO suppliers(supplier_number,name,business_number,status,email) VALUES($1,$2,$3,'registration',$4) RETURNING id`, number, in.SupplierName, in.BusinessNumber, email).Scan(&id)
+		if err != nil {
+			// The company is already on file — a colleague self-registered it,
+			// or the buyer typed it into the register first. Told as "가입을
+			// 완료하지 못했습니다" this is unescapable: the number is correct,
+			// so retrying repeats it, and the only way through the form is to
+			// mistype the 사업자번호 until it is a number nobody holds, which
+			// puts the company in the register twice under a wrong one.
+			//
+			// The company is named but not joined: an invitation is only an
+			// email, and attaching this stranger to the existing record would
+			// hand them its contracts, orders and evaluations. The way in is a
+			// new invitation bound to that supplier, which only the buyer can
+			// issue and which lands here with supplier_id already set.
+			if duplicateBusinessNumber(err) {
+				writeError(w, 409, "duplicate_business_number", "이미 등록된 사업자번호입니다. 담당 구매 담당자에게 기존 업체 계정으로 초대를 요청하세요")
+				return
+			}
+			logDB(err)
+			writeError(w, 400, "registration_failed", "회사 정보를 등록하지 못했습니다")
+			return
+		}
 		supplierID = &id
 	}
 	var userID string
-	if err == nil {
-		var hash string
-		if hash, err = a.hashPassword(r.Context(), in.Password); err != nil {
-			writePasswordError(w, err)
+	var hash string
+	if hash, err = a.hashPassword(r.Context(), in.Password); err != nil {
+		writePasswordError(w, err)
+		return
+	}
+	err = tx.QueryRow(r.Context(), `INSERT INTO users(email,display_name,password_hash,user_type,supplier_id,status) VALUES($1,$2,$3,'supplier',$4,'active') RETURNING id`, email, in.DisplayName, hash, *supplierID).Scan(&userID)
+	if err != nil {
+		// The address on the invitation already has an account. The person
+		// holding the link has nothing to fix — the box the clash is in is not
+		// on this form, the invitation carries it — so the only useful thing to
+		// say is that they already have the account and should sign in.
+		if duplicateUserEmail(err) {
+			writeError(w, 409, "email_registered", "이미 가입된 이메일입니다. 기존 계정으로 로그인하세요")
 			return
 		}
-		err = tx.QueryRow(r.Context(), `INSERT INTO users(email,display_name,password_hash,user_type,supplier_id,status) VALUES($1,$2,$3,'supplier',$4,'active') RETURNING id`, email, in.DisplayName, hash, *supplierID).Scan(&userID)
+		logDB(err)
+		writeError(w, 400, "registration_failed", "가입을 완료하지 못했습니다")
+		return
 	}
-	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user'`, userID)
-	}
+	_, err = tx.Exec(r.Context(), `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code='supplier_user'`, userID)
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `UPDATE invitations SET accepted_at=now(),supplier_id=$2 WHERE id=$1`, invitationID, *supplierID)
 	}
@@ -329,6 +359,9 @@ func (a *App) registerSupplierUser(w http.ResponseWriter, r *http.Request) {
 		_, err = tx.Exec(r.Context(), `INSERT INTO email_verifications(user_id,email,token_hash,expires_at,verified_at) VALUES($1,lower($2),$3,now(),now()) ON CONFLICT(token_hash) DO UPDATE SET user_id=excluded.user_id,email=excluded.email,verified_at=now()`, userID, email, security.TokenHash(in.Token))
 	}
 	if err != nil {
+		// Nothing left here is a value the registrant typed, so this is the
+		// tail the caller cannot act on. It goes to the log so somebody can.
+		logDB(err)
 		writeError(w, 400, "registration_failed", "가입을 완료하지 못했습니다")
 		return
 	}

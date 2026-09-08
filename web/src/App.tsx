@@ -45,7 +45,15 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { api, can, post, Principal, sessionUnavailable, Version } from "./api";
+import {
+  api,
+  APIError,
+  can,
+  post,
+  Principal,
+  sessionUnavailable,
+  Version,
+} from "./api";
 import { BootSplash, Loading, Logo, PageErrorBoundary } from "./components";
 import { ToastProvider } from "./feedback";
 import { useNotify } from "./toast-context";
@@ -174,10 +182,11 @@ function PageFallback() {
   return <BootSplash />;
 }
 
-function SupplierRegistration() {
+export function SupplierRegistration() {
   const token = new URLSearchParams(window.location.search).get("token") || "";
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
+  const [errorCode, setErrorCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState<Version>();
   useEffect(() => {
@@ -188,6 +197,7 @@ function SupplierRegistration() {
     e.preventDefault();
     setBusy(true);
     setError("");
+    setErrorCode("");
     const d = new FormData(e.currentTarget);
     try {
       await post("/api/auth/register", {
@@ -200,6 +210,7 @@ function SupplierRegistration() {
       setDone(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "가입을 완료하지 못했습니다");
+      setErrorCode(e instanceof APIError ? e.code : "");
     } finally {
       setBusy(false);
     }
@@ -251,6 +262,12 @@ function SupplierRegistration() {
                 <div className="form-error">
                   <AlertCircle />
                   {error}
+                  {/* The address comes off the invitation, so there is nothing
+                      on this form to correct — the way out is the sign-in the
+                      account already has, and the page had no link to it. */}
+                  {errorCode === "email_registered" && (
+                    <a href="/">Vendra 로그인</a>
+                  )}
                 </div>
               )}
               <form onSubmit={submit}>
