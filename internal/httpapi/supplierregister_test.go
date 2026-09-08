@@ -35,9 +35,7 @@ func TestEverySupplierColumnTheRegisterWritesCanBeCorrected(t *testing.T) {
 	writeOnce := map[string]string{
 		"supplier_number": "등록이 붙이는 코드이고 어떤 폼도 사람에게 입력받지 않는다. " +
 			"외부 시스템의 코드는 erp_vendor_id가 따로 들고 있고 그쪽은 고칠 수 있다",
-		"owner_id":        "담당자 이관은 데이터 접근 범위를 옮기는 조작이라 사용자를 고르는 화면과 함께 다뤄야 한다",
-		"organization_id": "조직 이관도 마찬가지로 접근 범위를 옮긴다",
-		"created_by":      "등록한 사람은 사실이라 고칠 것이 없다",
+		"created_by": "등록한 사람은 사실이라 고칠 것이 없다",
 	}
 
 	create := supplierStatementBody(t, "createSupplier")

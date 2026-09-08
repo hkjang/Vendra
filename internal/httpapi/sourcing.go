@@ -596,29 +596,8 @@ func (a *App) listSourcingCommittee(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) listSourcingCommitteeCandidates(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
-	organizationID := ""
-	if p.OrganizationID != nil {
-		organizationID = *p.OrganizationID
-	}
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',u.id,'displayName',u.display_name,'email',u.email,'organizationId',u.organization_id,'roles',COALESCE(jsonb_agg(DISTINCT ro.name) FILTER(WHERE ro.id IS NOT NULL),'[]')) FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id LEFT JOIN roles ro ON ro.id=ur.role_id WHERE u.user_type='internal' AND u.status='active' AND (`+orgInScope("u.organization_id", "$1", "$2")+` OR ($1='own' AND u.id=$3)) GROUP BY u.id ORDER BY u.display_name LIMIT 500`, p.DataScope, organizationID, p.ID)
+	items, err := a.internalUserCandidates(r.Context(), p)
 	if err != nil {
-		writeError(w, 500, "database_error", "평가위원 후보를 조회하지 못했습니다")
-		return
-	}
-	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var encoded []byte
-		if err := rows.Scan(&encoded); err != nil {
-			logDB(err)
-			writeError(w, 500, "database_error", "평가위원 후보를 조회하지 못했습니다")
-			return
-		}
-		var item any
-		_ = json.Unmarshal(encoded, &item)
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
 		logDB(err)
 		writeError(w, 500, "database_error", "평가위원 후보를 조회하지 못했습니다")
 		return

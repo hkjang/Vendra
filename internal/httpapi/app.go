@@ -183,6 +183,7 @@ func (a *App) registerAPI(m routeRegistrar) {
 	m.HandleFunc("POST /api/v1/suppliers", require("supplier.create", a.createSupplier))
 	m.HandleFunc("GET /api/v1/suppliers/{id}", require("supplier.read", a.getSupplier))
 	m.HandleFunc("PATCH /api/v1/suppliers/{id}", require("supplier.update", a.updateSupplier))
+	m.HandleFunc("GET /api/v1/user-candidates", require("supplier.update", a.listUserCandidates))
 	m.HandleFunc("GET /api/v1/suppliers/{id}/activity", require("supplier.read", a.supplierActivity))
 	m.HandleFunc("GET /api/v1/suppliers/{id}/contacts", require("supplier.read", a.listContacts))
 	m.HandleFunc("POST /api/v1/suppliers/{id}/contacts", require("supplier.update", a.createContact))

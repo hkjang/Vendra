@@ -367,6 +367,78 @@ func (a *App) supplierScopeAllowed(r *http.Request, id string) bool {
 	return a.canAccessSupplier(r.Context(), p, s) || grantAuthorized(r.Context())
 }
 
+// internalUserCandidates lists the colleagues the caller may hand work to,
+// inside the caller's own data scope. Two screens pick a person out of it: the
+// RFQ 평가위원 and the supplier's 담당자.
+func (a *App) internalUserCandidates(ctx context.Context, p Principal) ([]any, error) {
+	organizationID := ""
+	if p.OrganizationID != nil {
+		organizationID = *p.OrganizationID
+	}
+	rows, err := a.db.Query(ctx, `SELECT jsonb_build_object('id',u.id,'displayName',u.display_name,'email',u.email,'organizationId',u.organization_id,'organizationName',og.name,'roles',COALESCE(jsonb_agg(DISTINCT ro.name) FILTER(WHERE ro.id IS NOT NULL),'[]')) FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id LEFT JOIN roles ro ON ro.id=ur.role_id LEFT JOIN organizations og ON og.id=u.organization_id WHERE `+internalUserInScope("u", "$1", "$2", "$3")+` GROUP BY u.id,og.name ORDER BY u.display_name LIMIT 500`, p.DataScope, organizationID, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []any{}
+	for rows.Next() {
+		var encoded []byte
+		if err := rows.Scan(&encoded); err != nil {
+			return nil, err
+		}
+		var item any
+		_ = json.Unmarshal(encoded, &item)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (a *App) listUserCandidates(w http.ResponseWriter, r *http.Request) {
+	p, _ := principalFrom(r.Context())
+	items, err := a.internalUserCandidates(r.Context(), p)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "담당자 후보를 조회하지 못했습니다")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+// ownerCandidateInScope answers whether one id out of that list may be written
+// to suppliers.owner_id — the same predicate the list is drawn with, so the
+// transfer accepts exactly the people the picker offered.
+func (a *App) ownerCandidateInScope(ctx context.Context, p Principal, userID string) bool {
+	organizationID := ""
+	if p.OrganizationID != nil {
+		organizationID = *p.OrganizationID
+	}
+	var ok bool
+	if err := a.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users u WHERE u.id=$1::uuid AND `+internalUserInScope("u", "$2", "$3", "$4")+`)`,
+		userID, p.DataScope, organizationID, p.ID).Scan(&ok); err != nil {
+		logDB(err)
+		return false
+	}
+	return ok
+}
+
+// organizationInScope answers the same question for suppliers.organization_id.
+// A department the caller cannot see is not a department they may hand the
+// record to: the record would leave their scope and land somewhere they cannot
+// follow it.
+func (a *App) organizationInScope(ctx context.Context, p Principal, organizationID string) bool {
+	own := ""
+	if p.OrganizationID != nil {
+		own = *p.OrganizationID
+	}
+	var ok bool
+	if err := a.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM organizations o WHERE o.id=$1::uuid AND `+orgInScope("o.id", "$2", "$3")+`)`,
+		organizationID, p.DataScope, own).Scan(&ok); err != nil {
+		logDB(err)
+		return false
+	}
+	return ok
+}
+
 func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	before, err := scanSupplier(a.db.QueryRow(r.Context(), supplierSelect+` WHERE id=$1 AND deleted_at IS NULL`, id))
@@ -403,6 +475,24 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validNumberFields(w, in, amountField("annualSpend", "연간 거래금액")) {
+		return
+	}
+	// Handing the record on. owner_id and organization_id used to be settled at
+	// registration and never again, so a supplier whose 담당자 has left the
+	// company — and one the portal registered itself, which arrives with no
+	// 담당자 at all — could not be handed to anybody: nothing in the
+	// application wrote either column after the INSERT. They are not ordinary
+	// text, though. They decide who can see the record at all, so a transfer
+	// only goes to somebody the caller can already see.
+	if !validUUIDFields(w, in, uuidField{"ownerId", "담당자"}, uuidField{"organizationId", "조직"}) {
+		return
+	}
+	if owner := strings.TrimSpace(stringValue(in, "ownerId")); owner != "" && !a.ownerCandidateInScope(r.Context(), p, owner) {
+		writeError(w, 400, "validation_error", "담당자는 조직 범위 안의 활성 내부 사용자만 지정할 수 있습니다")
+		return
+	}
+	if organization := strings.TrimSpace(stringValue(in, "organizationId")); organization != "" && !a.organizationInScope(r.Context(), p, organization) {
+		writeError(w, 400, "validation_error", "조직은 조직 범위 안에서만 지정할 수 있습니다")
 		return
 	}
 	metadata := before.Metadata
@@ -487,7 +577,7 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 	// every contract, order and evaluation hanging off the record. The portal
 	// even tells the supplier that a change to it is applied after internal
 	// approval, and there was no box on the internal side to apply it in.
-	_, err = a.db.Exec(r.Context(), `UPDATE suppliers SET name=COALESCE(NULLIF($2,''),name),legal_name=COALESCE(NULLIF($3,''),legal_name),representative=COALESCE(NULLIF($4,''),representative),status=COALESCE(NULLIF($5,''),status),grade=COALESCE(NULLIF($6,''),grade),risk_level=COALESCE(NULLIF($7,''),risk_level),supplier_type=COALESCE(NULLIF($8,''),supplier_type),industry=COALESCE(NULLIF($9,''),industry),categories=$10,addresses=$11,phone=COALESCE(NULLIF($12,''),phone),email=COALESCE(NULLIF($13,''),email),website=COALESCE(NULLIF($14,''),website),bank_account_encrypted=COALESCE($15,bank_account_encrypted),metadata=$16,financials=$17,tax_info=$18,erp_vendor_id=COALESCE(NULLIF($19,''),erp_vendor_id),business_number=COALESCE(NULLIF($20,''),business_number),corporate_number=COALESCE(NULLIF($21,''),corporate_number),trading_since=COALESCE(NULLIF($22,'')::date,trading_since),annual_spend=COALESCE($23,annual_spend),updated_at=now() WHERE id=$1`, id, stringValue(in, "name"), stringValue(in, "legalName"), stringValue(in, "representative"), stringValue(in, "status"), stringValue(in, "grade"), stringValue(in, "riskLevel"), stringValue(in, "supplierType"), stringValue(in, "industry"), raw(cats), raw(addresses), stringValue(in, "phone"), stringValue(in, "email"), stringValue(in, "website"), bankCipher, raw(metadata), raw(financials), raw(taxInfo), stringValue(in, "erpVendorId"), stringValue(in, "businessNumber"), stringValue(in, "corporateNumber"), stringValue(in, "tradingSince"), numberValue(in, "annualSpend"))
+	_, err = a.db.Exec(r.Context(), `UPDATE suppliers SET name=COALESCE(NULLIF($2,''),name),legal_name=COALESCE(NULLIF($3,''),legal_name),representative=COALESCE(NULLIF($4,''),representative),status=COALESCE(NULLIF($5,''),status),grade=COALESCE(NULLIF($6,''),grade),risk_level=COALESCE(NULLIF($7,''),risk_level),supplier_type=COALESCE(NULLIF($8,''),supplier_type),industry=COALESCE(NULLIF($9,''),industry),categories=$10,addresses=$11,phone=COALESCE(NULLIF($12,''),phone),email=COALESCE(NULLIF($13,''),email),website=COALESCE(NULLIF($14,''),website),bank_account_encrypted=COALESCE($15,bank_account_encrypted),metadata=$16,financials=$17,tax_info=$18,erp_vendor_id=COALESCE(NULLIF($19,''),erp_vendor_id),business_number=COALESCE(NULLIF($20,''),business_number),corporate_number=COALESCE(NULLIF($21,''),corporate_number),trading_since=COALESCE(NULLIF($22,'')::date,trading_since),annual_spend=COALESCE($23,annual_spend),owner_id=COALESCE(NULLIF($24,'')::uuid,owner_id),organization_id=COALESCE(NULLIF($25,'')::uuid,organization_id),updated_at=now() WHERE id=$1`, id, stringValue(in, "name"), stringValue(in, "legalName"), stringValue(in, "representative"), stringValue(in, "status"), stringValue(in, "grade"), stringValue(in, "riskLevel"), stringValue(in, "supplierType"), stringValue(in, "industry"), raw(cats), raw(addresses), stringValue(in, "phone"), stringValue(in, "email"), stringValue(in, "website"), bankCipher, raw(metadata), raw(financials), raw(taxInfo), stringValue(in, "erpVendorId"), stringValue(in, "businessNumber"), stringValue(in, "corporateNumber"), stringValue(in, "tradingSince"), numberValue(in, "annualSpend"), stringValue(in, "ownerId"), stringValue(in, "organizationId"))
 	if err != nil {
 		// The register's own key, reached from the other door. Told as a
 		// database error, the correction would read as "저장하지 못했습니다"

@@ -5,8 +5,11 @@ import { SupplierEdit } from "./Suppliers";
 import { APIError, patch } from "../api";
 import { Supplier } from "../types";
 
+// api as well as patch: the form asks for the 담당자 candidates as it opens,
+// and the real one would reach for fetch.
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
+  api: vi.fn().mockResolvedValue({ items: [] }),
   patch: vi.fn(),
 }));
 

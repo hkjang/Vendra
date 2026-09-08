@@ -21,6 +21,8 @@ export type Supplier = {
   bankAccountUnreadable?: boolean;
   taxInfo: Record<string, unknown>;
   erpVendorId?: string;
+  ownerId?: string;
+  organizationId?: string;
   tradingSince?: string;
   annualSpend: number;
   score?: number;

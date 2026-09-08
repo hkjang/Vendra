@@ -11,6 +11,7 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) {
 		"/api/v1/me/sessions/{id}":                    oneID("delete", "Identity", "특정 세션 종료"),
 		"/api/v1/suppliers":                           crudPath("Supplier", "공급업체 목록과 등록"),
 		"/api/v1/suppliers/{id}":                      itemPath("Supplier", "Supplier 360 기본정보"),
+		"/api/v1/user-candidates":                     map[string]any{"get": operation("Supplier", "담당자 지정 대상 조회")},
 		"/api/v1/suppliers/{id}/activity":             oneID("get", "Supplier", "공급업체 활동 및 감사 이력"),
 		"/api/v1/suppliers/{id}/contacts":             map[string]any{"parameters": []any{idParameter()}, "get": operation("Supplier", "공급업체 담당자 조회"), "post": operation("Supplier", "공급업체 담당자 등록")},
 		"/api/v1/suppliers/{id}/objects":              oneID("get", "Supplier", "Supplier 360 업무 객체 조회"),

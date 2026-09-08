@@ -3042,6 +3042,11 @@ kbd {
   display: flex;
   gap: 7px;
 }
+.inline-check {
+  width: 16px;
+  height: 16px;
+  margin: 9px 0;
+}
 .workflow-list > div {
   display: flex;
   gap: 13px;

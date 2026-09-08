@@ -844,3 +844,18 @@ func orgInScope(column, scopeParam, orgParam string) string {
 		" OR (" + scopeParam + "='division' AND " + column + " IN (SELECT vo.id FROM organizations vo, organizations vp" +
 		" WHERE vp.id=NULLIF(" + orgParam + ",'')::uuid AND (vo.path||vo.id||'/') LIKE (vp.path||vp.id||'/')||'%')))"
 }
+
+// internalUserInScope names the colleagues the caller may hand work to: an
+// internal account, still active, inside the caller's own data scope — plus the
+// caller themselves, who is in scope of every setting including 'own'.
+//
+// Two things read it and they must agree. The picker offers a list and the
+// write checks the one id that comes back; if they were written twice, a name
+// the screen offered could be refused on save, or worse, an id nobody was
+// offered could be accepted. Written once, the check accepts exactly the
+// people the picker showed.
+func internalUserInScope(alias, scopeParam, orgParam, selfParam string) string {
+	return alias + ".user_type='internal' AND " + alias + ".status='active' AND (" +
+		orgInScope(alias+".organization_id", scopeParam, orgParam) +
+		" OR (" + scopeParam + "='own' AND " + alias + ".id=NULLIF(" + selfParam + ",'')::uuid))"
+}

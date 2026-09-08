@@ -292,7 +292,9 @@ function SupplierCards({ items }: { items: Supplier[] }) {
             </div>
           </div>
           <footer>
-            <Badge tone={statusTone(s.status)}>{supplierStatusLabel(s.status)}</Badge>
+            <Badge tone={statusTone(s.status)}>
+              {supplierStatusLabel(s.status)}
+            </Badge>
             <span>{s.industry || "업종 미지정"}</span>
             <ArrowRight />
           </footer>
@@ -412,6 +414,14 @@ function NewSupplier({
   );
 }
 
+type OwnerCandidate = {
+  id: string;
+  displayName: string;
+  email: string;
+  organizationId?: string;
+  organizationName?: string;
+};
+
 export function SupplierEdit({
   supplier,
   onClose,
@@ -422,11 +432,42 @@ export function SupplierEdit({
   onSaved: () => void;
 }) {
   const [error, setError] = useState("");
+  // Who the record belongs to. It used to be settled at registration and never
+  // again, so a supplier whose 담당자 left — and one the portal registered
+  // itself, which arrives with nobody on it — could not be handed to anyone.
+  const [candidates, setCandidates] = useState<OwnerCandidate[]>([]);
+  const [ownerId, setOwnerId] = useState(supplier.ownerId || "");
+  const [moveOrganization, setMoveOrganization] = useState(true);
+  useEffect(() => {
+    let live = true;
+    api<{ items: OwnerCandidate[] }>("/api/v1/user-candidates")
+      .then((x) => {
+        if (live) setCandidates(x.items);
+      })
+      .catch(() => {
+        if (live) setCandidates([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const currentOwner = candidates.find((c) => c.id === supplier.ownerId);
+  const newOwner = candidates.find((c) => c.id === ownerId);
+  // The 담당자 and the 조직 are two different scopes: handing the record to
+  // somebody one department over leaves it in the old department, where their
+  // colleagues can still see it and the new owner's cannot. Moving it is
+  // offered rather than assumed, and only when it would actually move.
+  const organizationMoves =
+    !!newOwner?.organizationId &&
+    newOwner.organizationId !== supplier.organizationId;
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const d = new FormData(e.currentTarget);
     try {
       await patch(`/api/v1/suppliers/${supplier.id}`, {
+        ownerId,
+        organizationId:
+          organizationMoves && moveOrganization ? newOwner?.organizationId : "",
         name: d.get("name"),
         legalName: d.get("legalName"),
         businessNumber: d.get("businessNumber"),
@@ -534,6 +575,45 @@ export function SupplierEdit({
           <Field label="ERP Vendor ID">
             <input name="erpVendorId" defaultValue={supplier.erpVendorId} />
           </Field>
+          <Field
+            label="담당자"
+            hint={
+              supplier.ownerId
+                ? currentOwner
+                  ? `현재 담당자 ${currentOwner.displayName}`
+                  : "현재 담당자는 조직 범위 밖이거나 비활성 계정입니다."
+                : "담당자가 지정되어 있지 않습니다."
+            }
+          >
+            <select
+              name="ownerId"
+              value={ownerId}
+              onChange={(e) => setOwnerId(e.target.value)}
+            >
+              <option value="">
+                {supplier.ownerId ? "현재 담당자 유지" : "미지정"}
+              </option>
+              {candidates.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.displayName}
+                  {c.organizationName ? ` · ${c.organizationName}` : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {organizationMoves && (
+            <Field
+              label={`${newOwner?.organizationName || "새 담당자의 조직"}(으)로 조직 이관`}
+              hint="이관하지 않으면 새 담당자의 부서에서는 이 업체가 보이지 않습니다."
+            >
+              <input
+                className="inline-check"
+                type="checkbox"
+                checked={moveOrganization}
+                onChange={(e) => setMoveOrganization(e.target.checked)}
+              />
+            </Field>
+          )}
           <Field label="거래 시작일">
             <input
               name="tradingSince"
@@ -777,7 +857,9 @@ export function SupplierDetail() {
             <p>{s.legalName || s.industry || "공급업체 상세정보"}</p>
           </div>
           <div className="supplier-badges">
-            <Badge tone={statusTone(s.status)}>{supplierStatusLabel(s.status)}</Badge>
+            <Badge tone={statusTone(s.status)}>
+              {supplierStatusLabel(s.status)}
+            </Badge>
             <RiskBadge level={s.riskLevel} />
           </div>
         </div>
@@ -999,7 +1081,9 @@ function SupplierTab({
             </dd>
             <dt>거래 상태</dt>
             <dd>
-              <Badge tone={statusTone(s.status)}>{supplierStatusLabel(s.status)}</Badge>
+              <Badge tone={statusTone(s.status)}>
+                {supplierStatusLabel(s.status)}
+              </Badge>
             </dd>
           </dl>
         </div>
