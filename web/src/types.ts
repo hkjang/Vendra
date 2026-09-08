@@ -4,6 +4,7 @@ export type Supplier = {
   name: string;
   legalName?: string;
   businessNumber: string;
+  corporateNumber?: string;
   representative?: string;
   status: string;
   grade?: string;
@@ -20,6 +21,7 @@ export type Supplier = {
   bankAccountUnreadable?: boolean;
   taxInfo: Record<string, unknown>;
   erpVendorId?: string;
+  tradingSince?: string;
   annualSpend: number;
   score?: number;
   metadata: Record<string, unknown>;
