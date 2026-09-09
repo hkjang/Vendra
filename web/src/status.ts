@@ -177,6 +177,21 @@ export function sourcingBiddingClosed(status?: string): boolean {
   return status === "selected" || status === "not_selected";
 }
 
+// invitationStatusLabels is what a Self Registration 초대 is at the moment the
+// list is read — the same four the API computes in invitationStanding. Only
+// 유효 is a live link: the other three are the ways one stops working, and the
+// difference between them is the whole reason the list exists.
+const invitationStatusLabels: Record<string, string> = {
+  pending: "유효",
+  accepted: "가입 완료",
+  revoked: "회수됨",
+  expired: "기간 만료",
+};
+
+export function invitationStatusLabel(status: string): string {
+  return invitationStatusLabels[status] || status;
+}
+
 export function statusTone(status?: string): StatusTone {
   const value = (status || "").toLowerCase();
   if (
@@ -222,6 +237,16 @@ export function statusTone(status?: string): StatusTone {
     ].includes(value)
   )
     return "warning";
-  if (["draft", "candidate"].includes(value)) return "neutral";
+  if (
+    [
+      "draft",
+      "candidate",
+      // An invitation that has been called back or has run out is not news
+      // and not a problem: it is a link that no longer works.
+      "revoked",
+      "expired",
+    ].includes(value)
+  )
+    return "neutral";
   return "info";
 }

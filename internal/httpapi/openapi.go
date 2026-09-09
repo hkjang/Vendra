@@ -101,7 +101,8 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) {
 		"/api/v1/portal/contracts/{id}/confirm":       oneID("post", "Portal", "계약 확인"),
 		"/api/v1/portal/deliveries":                   map[string]any{"post": operation("Portal", "납품 등록")},
 		"/api/v1/portal/invoices":                     map[string]any{"post": operation("Portal", "Invoice 등록")},
-		"/api/v1/invitations":                         map[string]any{"post": operation("Supplier", "Self Registration 초대 발급")},
+		"/api/v1/invitations":                         map[string]any{"post": operation("Supplier", "Self Registration 초대 발급"), "get": operation("Supplier", "발급한 초대 목록 조회")},
+		"/api/v1/invitations/{id}":                    oneID("delete", "Supplier", "초대 회수"),
 		"/api/v1/openapi.json":                        map[string]any{"get": operation("Integration", "OpenAPI 3.1 명세 조회")},
 	}
 	for _, route := range objectRoutes {

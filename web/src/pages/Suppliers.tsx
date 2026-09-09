@@ -25,7 +25,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { api, date, money, patch, post } from "../api";
+import { api, date, del, money, patch, post } from "../api";
 import {
   Badge,
   Empty,
@@ -36,7 +36,12 @@ import {
   RiskBadge,
   ScoreRing,
 } from "../components";
-import { statusTone, supplierStatuses, supplierStatusLabel } from "../status";
+import {
+  invitationStatusLabel,
+  statusTone,
+  supplierStatuses,
+  supplierStatusLabel,
+} from "../status";
 import { BusinessObject, Supplier } from "../types";
 
 export default function Suppliers() {
@@ -621,7 +626,15 @@ export function SupplierEdit({
   );
 }
 
-function SupplierInvitation({
+type Invitation = {
+  id: string;
+  email: string;
+  expiresAt: string;
+  createdAt: string;
+  status: string;
+};
+
+export function SupplierInvitation({
   supplier,
   onClose,
 }: {
@@ -630,6 +643,17 @@ function SupplierInvitation({
 }) {
   const [url, setURL] = useState("");
   const [error, setError] = useState("");
+  const [issued, setIssued] = useState<Invitation[] | null>(null);
+  const load = useCallback(() => {
+    api<{ items: Invitation[] }>(
+      `/api/v1/invitations?supplierId=${supplier.id}`,
+    )
+      .then((r) => setIssued(r.items))
+      // The list is context for the form, not the point of the modal: a
+      // failure here must not take the 초대 발급 button down with it.
+      .catch(() => setIssued([]));
+  }, [supplier.id]);
+  useEffect(load, [load]);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const d = new FormData(e.currentTarget);
@@ -643,8 +667,26 @@ function SupplierInvitation({
         },
       );
       setURL(`${window.location.origin}${result.invitationUrl}`);
+      setError("");
+      load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "초대를 만들지 못했습니다");
+    }
+  }
+  async function revoke(invitation: Invitation) {
+    if (
+      !window.confirm(
+        `${invitation.email} 앞으로 발급한 초대 링크를 회수합니다. 이 링크로는 더 이상 가입할 수 없습니다.`,
+      )
+    )
+      return;
+    try {
+      await del(`/api/v1/invitations/${invitation.id}`);
+      setError("");
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "초대를 회수하지 못했습니다");
+      load();
     }
   }
   return (
@@ -687,6 +729,50 @@ function SupplierInvitation({
           <div className="form-error">
             <AlertCircle />
             {error}
+          </div>
+        )}
+        {/* Every link ever issued for this supplier. A link is a bearer
+            credential — whoever holds it signs up as this company and reads its
+            contracts, orders and evaluations — and until this list existed
+            there was nowhere that said one was outstanding, let alone a way to
+            call it back before its 기간 만료. */}
+        {issued && issued.length > 0 && (
+          <div className="invitation-history">
+            <h4>발급 이력</h4>
+            <table>
+              <thead>
+                <tr>
+                  <th>담당자 이메일</th>
+                  <th>상태</th>
+                  <th>만료</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {issued.map((i) => (
+                  <tr key={i.id}>
+                    <td>{i.email}</td>
+                    <td>
+                      <Badge tone={statusTone(i.status)}>
+                        {invitationStatusLabel(i.status)}
+                      </Badge>
+                    </td>
+                    <td>{date(i.expiresAt)}</td>
+                    <td>
+                      {i.status === "pending" && (
+                        <button
+                          type="button"
+                          className="button secondary"
+                          onClick={() => revoke(i)}
+                        >
+                          회수
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
         <div className="form-actions">
@@ -777,7 +863,9 @@ export function SupplierDetail() {
             <p>{s.legalName || s.industry || "공급업체 상세정보"}</p>
           </div>
           <div className="supplier-badges">
-            <Badge tone={statusTone(s.status)}>{supplierStatusLabel(s.status)}</Badge>
+            <Badge tone={statusTone(s.status)}>
+              {supplierStatusLabel(s.status)}
+            </Badge>
             <RiskBadge level={s.riskLevel} />
           </div>
         </div>
@@ -999,7 +1087,9 @@ function SupplierTab({
             </dd>
             <dt>거래 상태</dt>
             <dd>
-              <Badge tone={statusTone(s.status)}>{supplierStatusLabel(s.status)}</Badge>
+              <Badge tone={statusTone(s.status)}>
+                {supplierStatusLabel(s.status)}
+              </Badge>
             </dd>
           </dl>
         </div>

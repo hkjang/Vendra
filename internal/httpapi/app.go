@@ -280,6 +280,8 @@ func (a *App) registerAPI(m routeRegistrar) {
 	m.HandleFunc("POST /api/v1/portal/invoices", require("portal.*", a.portalCreateBusinessObject("invoice")))
 
 	m.HandleFunc("POST /api/v1/invitations", require("supplier.update", a.createInvitation))
+	m.HandleFunc("GET /api/v1/invitations", require("supplier.update", a.listInvitations))
+	m.HandleFunc("DELETE /api/v1/invitations/{id}", require("supplier.update", a.revokeInvitation))
 	m.HandleFunc("POST /api/v1/ai/analyze", require("ai.use", a.aiAnalyze))
 	m.HandleFunc("POST /api/v1/ai/contracts/{id}/analyze", require("ai.use", a.aiAnalyzeContract))
 	m.HandleFunc("GET /api/v1/openapi.json", a.openapi)

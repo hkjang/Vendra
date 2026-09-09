@@ -262,6 +262,124 @@ func (a *App) createInvitation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]any{"id": id, "invitationUrl": "/register?token=" + token, "expiresAt": time.Now().Add(time.Duration(expiresInDays) * 24 * time.Hour), "notice": "오프라인 환경에서는 이 링크를 사내 메일 또는 메신저로 전달하세요"})
 }
 
+// invitationStanding is what an invitation is at the moment it is read, written
+// once so the list and the recall agree on which ones are still live. The order
+// matters: an accepted invitation is spent whatever else is true of it, and a
+// recalled one stays recalled after its time would have run out anyway.
+const invitationStanding = `CASE WHEN accepted_at IS NOT NULL THEN 'accepted'
+	 WHEN revoked_at IS NOT NULL THEN 'revoked'
+	 WHEN expires_at<=now() THEN 'expired' ELSE 'pending' END`
+
+// listInvitations says what is outstanding. Issuing a link was the whole of the
+// feature: it was handed over as a one-time URL, and after the modal closed
+// there was nowhere in the application that said who had been invited, when it
+// runs out, or whether they ever used it — so "did that invitation go to the
+// old address?" had no answer, and neither did "is it still open?".
+func (a *App) listInvitations(w http.ResponseWriter, r *http.Request) {
+	p, _ := principalFrom(r.Context())
+	supplierID := strings.TrimSpace(r.URL.Query().Get("supplierId"))
+	if !validRecordID(w, supplierID, "공급업체 ID") {
+		return
+	}
+	// Two ways to ask, and each is in scope by construction. Naming a supplier
+	// makes the same check the issue endpoint makes, so the list holds exactly
+	// the invitations the caller could have written. Naming none answers with
+	// the ones this caller issued, which is the only way an invitation with no
+	// supplier bound to it is ever visible.
+	where, arg := `supplier_id=$1`, any(supplierID)
+	if supplierID == "" {
+		where, arg = `invited_by=$1`, any(p.ID)
+	} else if !a.supplierScopeAllowed(r, supplierID) {
+		writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어난 공급업체입니다")
+		return
+	}
+	rows, err := a.db.Query(r.Context(), `SELECT id,email,supplier_id,expires_at,created_at,accepted_at,revoked_at,`+invitationStanding+
+		` FROM invitations WHERE `+where+` ORDER BY created_at DESC LIMIT 100`, arg)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "초대 목록을 조회하지 못했습니다")
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var id, email, standing string
+		var supplier *string
+		var expires, created, accepted, revoked any
+		if err := rows.Scan(&id, &email, &supplier, &expires, &created, &accepted, &revoked, &standing); err != nil {
+			logDB(err)
+			writeError(w, 500, "database_error", "초대 목록을 조회하지 못했습니다")
+			return
+		}
+		items = append(items, map[string]any{"id": id, "email": email, "supplierId": supplier, "expiresAt": expires,
+			"createdAt": created, "acceptedAt": accepted, "revokedAt": revoked, "status": standing})
+	}
+	if err := rows.Err(); err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "초대 목록을 조회하지 못했습니다")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+// revokeInvitation calls a link back. The link is a bearer credential — whoever
+// holds it registers a portal account bound to the supplier, and that account
+// then reads the supplier's contracts, orders, deliveries and evaluations — and
+// nothing but expires_at, up to 14 days out, ever ended one. An invitation sent
+// to a mistyped address, or to the person who has since left that supplier,
+// stayed live for those two weeks with no way to stop it.
+func (a *App) revokeInvitation(w http.ResponseWriter, r *http.Request) {
+	p, _ := principalFrom(r.Context())
+	id := r.PathValue("id")
+	if !validRecordID(w, id, "초대 ID") {
+		return
+	}
+	var email string
+	var supplierID, invitedBy *string
+	var accepted, revoked any
+	err := a.db.QueryRow(r.Context(), `SELECT email,supplier_id,invited_by,accepted_at,revoked_at FROM invitations WHERE id=$1`, id).
+		Scan(&email, &supplierID, &invitedBy, &accepted, &revoked)
+	if err != nil {
+		writeError(w, 404, "not_found", "초대를 찾을 수 없습니다")
+		return
+	}
+	// The same reach the list has: an invitation bound to a supplier belongs to
+	// whoever can see that supplier, and an unbound one to whoever issued it.
+	if supplierID != nil {
+		if !a.supplierScopeAllowed(r, *supplierID) {
+			writeError(w, 403, "data_scope", "데이터 접근 범위를 벗어난 공급업체입니다")
+			return
+		}
+	} else if invitedBy == nil || *invitedBy != p.ID {
+		writeError(w, 403, "data_scope", "직접 발급한 초대만 회수할 수 있습니다")
+		return
+	}
+	if accepted != nil {
+		// The account exists, so there is no link left to call back and saying
+		// "회수되었습니다" would be a lie about what happened to it.
+		writeError(w, 409, "invitation_accepted", "이미 가입에 사용된 초대입니다. 계정 자체를 막으려면 사용자 관리에서 비활성화하세요")
+		return
+	}
+	if revoked != nil {
+		// Already where the caller is asking for it to be.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	tag, err := a.db.Exec(r.Context(), `UPDATE invitations SET revoked_at=now() WHERE id=$1 AND accepted_at IS NULL AND revoked_at IS NULL`, id)
+	if err != nil {
+		logDB(err)
+		writeError(w, 500, "database_error", "초대를 회수하지 못했습니다")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		// It was redeemed between the read above and this statement.
+		writeError(w, 409, "invitation_accepted", "이미 가입에 사용된 초대입니다. 계정 자체를 막으려면 사용자 관리에서 비활성화하세요")
+		return
+	}
+	a.audit.record(r, "revoke", "invitation", id, nil, map[string]any{"email": email, "supplierId": supplierID})
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *App) registerSupplierUser(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Token          string `json:"token"`
@@ -295,7 +413,10 @@ func (a *App) registerSupplierUser(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var invitationID, email string
 	var supplierID *string
-	err = tx.QueryRow(r.Context(), `SELECT id,email,supplier_id FROM invitations WHERE token_hash=$1 AND expires_at>now() AND accepted_at IS NULL FOR UPDATE`, security.TokenHash(in.Token)).Scan(&invitationID, &email, &supplierID)
+	// revoked_at alongside the other two ways an invitation stops working. A
+	// recall that this statement did not read would be a button that reports
+	// success and changes nothing about who can still sign up with the link.
+	err = tx.QueryRow(r.Context(), `SELECT id,email,supplier_id FROM invitations WHERE token_hash=$1 AND expires_at>now() AND accepted_at IS NULL AND revoked_at IS NULL FOR UPDATE`, security.TokenHash(in.Token)).Scan(&invitationID, &email, &supplierID)
 	if err != nil {
 		writeError(w, 400, "invalid_invitation", "초대가 유효하지 않거나 만료되었습니다")
 		return

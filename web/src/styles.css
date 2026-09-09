@@ -2890,6 +2890,39 @@ kbd {
   word-break: break-all;
   font-size: 12px;
 }
+.invitation-history {
+  margin: 16px 0 4px;
+}
+.invitation-history h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.invitation-history table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.invitation-history th,
+.invitation-history td {
+  text-align: left;
+  padding: 7px 8px 7px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.invitation-history th {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.invitation-history td:first-child {
+  white-space: normal;
+  word-break: break-all;
+}
+.invitation-history .button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
 .session-row {
   display: flex;
   align-items: center;
