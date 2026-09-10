@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { api, date, dateTime, isoDate, logTime, todayISO } from "./api";
+import { api, date, dateTime, isoDate, logTime, money, todayISO } from "./api";
 
 describe("date", () => {
   it("reads a bare YYYY-MM-DD as a day, not an instant", () => {
@@ -104,5 +104,46 @@ describe("APIError", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("money", () => {
+  /**
+   * Every amount used to be rendered as won whatever it was stored under.
+   *
+   * That is not a formatting detail. The portal's quote form offered four
+   * currencies, so a bid of 50,000 USD reached the buyer's comparison table as
+   * ₩50,000 and sat at the top of it beside quotes of ₩68,000,000 — the amount
+   * the committee reads and the amount the bidder wrote were different numbers
+   * of different things, with nothing on the screen to say so.
+   */
+  it("says which currency the number is in", () => {
+    expect(money(50000, "USD")).not.toContain("₩");
+    expect(money(50000, "USD")).toContain("50,000");
+    expect(money(50000, "JPY")).not.toContain("₩");
+    expect(money(50000, "KRW")).toContain("₩");
+  });
+
+  it("defaults to the currency the columns default to", () => {
+    // Every amount column is NOT NULL DEFAULT 'KRW', so an absent code is won
+    // rather than nothing.
+    expect(money(1000)).toBe(money(1000, "KRW"));
+    expect(money(1000, "")).toBe(money(1000, "KRW"));
+    expect(money(1000, "krw")).toBe(money(1000, "KRW"));
+  });
+
+  it("answers an em dash rather than a number that is not one", () => {
+    for (const value of [undefined, null, NaN, Infinity]) {
+      expect(money(value)).toBe("—");
+    }
+  });
+
+  it("keeps the amount readable when the code is one Intl does not know", () => {
+    // Intl.NumberFormat raises RangeError on an unknown currency rather than
+    // returning anything, and rows written before the code was checked are
+    // still in the database. Taking the panel down over one of them helps
+    // nobody read it.
+    expect(money(1000, "쓰레기")).toContain("1,000");
+    expect(money(1000, "XXXX")).toContain("1,000");
   });
 });

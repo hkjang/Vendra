@@ -509,7 +509,7 @@ function PortalWork({
                   <td>
                     <Badge tone={statusTone(o.status)}>{o.status}</Badge>
                   </td>
-                  <td>{money(o.amount)}</td>
+                  <td>{money(o.amount, o.currency)}</td>
                   <td>{date(o.dueDate || o.endDate)}</td>
                   <td>
                     {type === "purchase_order" &&
@@ -634,7 +634,7 @@ function PortalSourcing({
               <dt>제출 마감</dt>
               <dd>{date(item.dueDate)}</dd>
               <dt>제출 금액</dt>
-              <dd>{money(item.response?.totalAmount)}</dd>
+              <dd>{money(item.response?.totalAmount, item.response?.currency || item.currency)}</dd>
               <dt>요청 개요</dt>
               <dd>{String(item.data?.description || "세부 요구조건 참조")}</dd>
             </dl>
@@ -774,6 +774,9 @@ function SourcingResponseForm({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // The currency the request was put out in. A bid is priced in it, and the
+  // API refuses one that is not.
+  const currency = item.currency || "KRW";
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setBusy(true);
@@ -784,7 +787,7 @@ function SourcingResponseForm({
     try {
       await put(`/api/v1/portal/sourcing/${item.id}/response`, {
         submit: submitter?.value === "submit",
-        currency: d.get("currency"),
+        currency,
         totalAmount: Number(d.get("totalAmount")) || undefined,
         deliveryDays: Number(d.get("deliveryDays")) || undefined,
         warranty: d.get("warranty"),
@@ -814,7 +817,7 @@ function SourcingResponseForm({
       <TenderBrief data={item.data} />
       <form onSubmit={submit}>
         <div className="form-grid">
-          <Field label="총 견적금액" required>
+          <Field label={`총 견적금액 (${currency})`} required>
             <input
               name="totalAmount"
               type="number"
@@ -823,13 +826,14 @@ function SourcingResponseForm({
               defaultValue={response?.totalAmount}
             />
           </Field>
+          {/* Not a choice. This box used to offer KRW, USD, EUR and JPY, and
+              nothing downstream read the answer: the buyer's comparison scores
+              price as the smallest number among the bids and renders every one
+              of them as won, so quoting in another currency did not price the
+              bid differently, it moved it to the top of the table. The request
+              is priced in one currency and this says which. */}
           <Field label="통화">
-            <select name="currency" defaultValue={response?.currency || "KRW"}>
-              <option>KRW</option>
-              <option>USD</option>
-              <option>EUR</option>
-              <option>JPY</option>
-            </select>
+            <input name="currency" value={currency} readOnly />
           </Field>
           <Field label="납기 (일)">
             <input

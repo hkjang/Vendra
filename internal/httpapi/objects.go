@@ -241,6 +241,9 @@ func (a *App) createObject(objectType string) http.HandlerFunc {
 		if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급")) {
 			return
 		}
+		if !validCurrencyFields(w, in, currencyField("currency", "통화")) {
+			return
+		}
 		err = a.db.QueryRow(r.Context(), `INSERT INTO business_objects(object_type,number,supplier_id,parent_id,title,status,amount,currency,owner_id,organization_id,start_date,due_date,end_date,risk_level,score,data,created_by)
 	 VALUES($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5,COALESCE(NULLIF($6,''),'draft'),$7,COALESCE(NULLIF($8,''),'KRW'),COALESCE(NULLIF($9,''),$16)::uuid,COALESCE(NULLIF($10,'')::uuid,(SELECT organization_id FROM suppliers WHERE id=NULLIF($3,'')::uuid)),NULLIF($11,'')::date,NULLIF($12,'')::date,NULLIF($13,'')::date,NULLIF($14,''),$15,$17,$16::uuid) RETURNING id`,
 			objectType, number, stringValue(in, "supplierId"), stringValue(in, "parentId"), title, stringValue(in, "status"), numberValue(in, "amount"), stringValue(in, "currency"), stringValue(in, "ownerId"), stringValue(in, "organizationId"), stringValue(in, "startDate"), stringValue(in, "dueDate"), stringValue(in, "endDate"), stringValue(in, "riskLevel"), numberValue(in, "score"), p.ID, raw(data)).Scan(&id)
@@ -397,7 +400,14 @@ func (a *App) updateObject(objectType string) http.HandlerFunc {
 		if !validEnumFields(w, in, riskGradeField("riskLevel", "리스크 등급")) {
 			return
 		}
-		_, err = a.db.Exec(r.Context(), `UPDATE business_objects SET title=COALESCE(NULLIF($3,''),title),status=COALESCE(NULLIF($4,''),status),supplier_id=COALESCE(NULLIF($5,'')::uuid,supplier_id),amount=COALESCE($6,amount),start_date=COALESCE(NULLIF($7,'')::date,start_date),due_date=COALESCE(NULLIF($8,'')::date,due_date),end_date=COALESCE(NULLIF($9,'')::date,end_date),risk_level=COALESCE(NULLIF($10,''),risk_level),score=COALESCE($11,score),data=$12,updated_at=now() WHERE id=$1 AND object_type=$2`, id, objectType, stringValue(in, "title"), stringValue(in, "status"), stringValue(in, "supplierId"), numberValue(in, "amount"), stringValue(in, "startDate"), stringValue(in, "dueDate"), stringValue(in, "endDate"), stringValue(in, "riskLevel"), numberValue(in, "score"), raw(data))
+		// The code the amount beside it is priced in. The create takes one and
+		// nothing here wrote it, so an order entered under the wrong currency
+		// answered 200 to every attempt to correct it and kept quoting the
+		// amount in the first answer.
+		if !validCurrencyFields(w, in, currencyField("currency", "통화")) {
+			return
+		}
+		_, err = a.db.Exec(r.Context(), `UPDATE business_objects SET title=COALESCE(NULLIF($3,''),title),status=COALESCE(NULLIF($4,''),status),supplier_id=COALESCE(NULLIF($5,'')::uuid,supplier_id),amount=COALESCE($6,amount),currency=COALESCE(NULLIF($13,''),currency),start_date=COALESCE(NULLIF($7,'')::date,start_date),due_date=COALESCE(NULLIF($8,'')::date,due_date),end_date=COALESCE(NULLIF($9,'')::date,end_date),risk_level=COALESCE(NULLIF($10,''),risk_level),score=COALESCE($11,score),data=$12,updated_at=now() WHERE id=$1 AND object_type=$2`, id, objectType, stringValue(in, "title"), stringValue(in, "status"), stringValue(in, "supplierId"), numberValue(in, "amount"), stringValue(in, "startDate"), stringValue(in, "dueDate"), stringValue(in, "endDate"), stringValue(in, "riskLevel"), numberValue(in, "score"), raw(data), stringValue(in, "currency"))
 		if err != nil {
 			logDB(err)
 			writeError(w, 400, "save_failed", "데이터를 저장하지 못했습니다")

@@ -35,6 +35,7 @@ type Comparison = {
   supplierId: string;
   supplierName: string;
   status: string;
+  currency?: string;
   totalAmount?: number;
   deliveryDays?: number;
   warranty?: string;
@@ -170,7 +171,7 @@ export default function SourcingWorkspace() {
                           </small>
                         </span>
                       </td>
-                      <td>{money(x.totalAmount)}</td>
+                      <td>{money(x.totalAmount, x.currency)}</td>
                       <td>{x.deliveryDays ? `${x.deliveryDays}일` : "—"}</td>
                       <td>{x.warranty || "—"}</td>
                       <Score value={x.priceScore} />

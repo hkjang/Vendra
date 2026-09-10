@@ -631,6 +631,64 @@ func supplierStatusField(key, label string) enumField {
 	return enumField{key: key, label: label, allowed: supplierStatuses}
 }
 
+// currencyCodes is the vocabulary every amount in the application is priced in.
+// Like the grades and the statuses above, this is not a display convention: the
+// code is the unit of a number the queries add up and rank.
+//
+// Nothing anywhere converts between two of them. There is no rate table, no
+// rate setting and no rate service — `spend.currency` records a base and no
+// statement reads it — so two amounts under different codes are two numbers on
+// two scales, and every place that puts them in one column is reporting a total
+// that is not a total. The award calculation is the sharp end:
+// `100*min_amount/total_amount` over the submitted bids gives the whole of the
+// price weight, the largest of the five, to whichever quote has the smallest
+// number in it, which is the one in the currency with the smallest unit.
+//
+// So the codes are held to ones the screens can name, and the tender's code is
+// the code its bids are priced in. What is on the list is what a Korean buyer
+// settles in; adding one is a line here, and it is free the moment a rate has
+// somewhere to live.
+var currencyCodes = []string{
+	"KRW", "USD", "EUR", "JPY", "CNY", "GBP",
+	"HKD", "SGD", "TWD", "VND", "AUD", "CAD", "CHF",
+}
+
+// currencyField describes a request-body field carrying a currency code.
+func currencyField(key, label string) enumField {
+	return enumField{key: key, label: label, allowed: currencyCodes}
+}
+
+// validCurrencyFields checks the codes a request body carries and rewrites each
+// one to the form the column holds, the way the address, number and website
+// checks beside it do. A field the caller left out keeps the statement's own
+// default and is not measured.
+func validCurrencyFields(w http.ResponseWriter, in map[string]any, fields ...enumField) bool {
+	for _, f := range fields {
+		code, ok := validCurrency(w, stringValue(in, f.key), f.label)
+		if !ok {
+			return false
+		}
+		if _, sent := in[f.key].(string); sent {
+			in[f.key] = code
+		}
+	}
+	return true
+}
+
+// validCurrency checks one code a typed handler has already decoded and answers
+// the form to store. Case is not part of the answer — "usd" and "USD" are the
+// same currency and only one of them is what the column holds.
+func validCurrency(w http.ResponseWriter, value, label string) (string, bool) {
+	code := strings.ToUpper(strings.TrimSpace(value))
+	if code == "" {
+		return "", true
+	}
+	if !validEnum(w, code, currencyField("", label)) {
+		return "", false
+	}
+	return code, true
+}
+
 // validEnumFields checks the optional controlled-vocabulary fields of a request
 // body. As with the date, number and text checks beside it, a field the caller
 // left out keeps whatever default the statement applies and is not measured.
