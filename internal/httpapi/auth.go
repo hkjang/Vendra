@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -363,6 +364,125 @@ func require(permission string, next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// permissionCodes is every permission this application actually checks: the
+// wanted side of the comparison require and hasPermission make. A permission
+// written onto a role is only ever read there, so a word that matches nothing
+// on this list is not a smaller permission — it is no permission at all, and
+// the role that holds it opens nothing.
+//
+// Nothing said so before, and the role catalogue the product ships with had
+// drifted off the list in exactly that way. 보안 담당자 carries
+// "risk.security.*" and "evaluation.security.*", 계약 담당자 carries
+// "risk.contract.*" and 준법·법무 carries "contract.review" and
+// "risk.compliance.*" — a granularity the gate does not have, so each of those
+// words sits in the role list beside ones that work and opens nothing. The
+// 보안 담당자 given the security risk permission cannot file a risk, and the
+// 계약 담당자 given the contract risk permission cannot see one.
+//
+// The doors of the eleven routed business object types are read out of
+// objectRoutes rather than written again here: a type added there gets its
+// endpoints registered in the same loop, and a permission a role cannot be
+// given is a screen nobody can reach. Each type has a fourth door beside the
+// three routes — <type>.amount.read, which is what uncovers the money on the
+// list, the detail and the MCP answer.
+func permissionCodes() []string {
+	codes := []string{
+		"*", "*.read",
+		"ai.use",
+		"analytics.read",
+		"audit.read",
+		"dashboard.read",
+		"document.create", "document.read", "document.update",
+		"evaluation.create", "evaluation.read",
+		"portal.*",
+		"risk.create", "risk.read",
+		"spend.create", "spend.read",
+		"supplier.bank_account.read", "supplier.create", "supplier.financial.read",
+		"supplier.read", "supplier.tax.read", "supplier.update",
+		"workflow.approve", "workflow.create", "workflow.read", "workflow.update",
+	}
+	for _, route := range objectRoutes {
+		codes = append(codes, route.objectType+".amount.read", route.objectType+".create",
+			route.objectType+".read", route.objectType+".update")
+	}
+	sort.Strings(codes)
+	return codes
+}
+
+// permissionGrantsSomething reports whether a permission written onto a role
+// reaches any door at all. The written side may be a wildcard — "supplier.*"
+// and "*.read" are how the shipped roles are written — so this asks the
+// question the gate asks, once per door, rather than looking the word up.
+func permissionGrantsSomething(written string) bool {
+	for _, code := range permissionCodes() {
+		if permissionMatches(written, code) {
+			return true
+		}
+	}
+	return false
+}
+
+// validPermissions checks the permission list a role is being written with and
+// answers it cleaned. A permission that opens nothing is the caller's mistake
+// and is answered as one: stored, it is indistinguishable in the role list from
+// one that works, and the person given the role meets a 403 on a screen their
+// role says they own.
+func validPermissions(w http.ResponseWriter, permissions []string, label string) ([]string, bool) {
+	cleaned := make([]string, 0, len(permissions))
+	for _, permission := range permissions {
+		permission = strings.TrimSpace(permission)
+		if permission == "" {
+			writeError(w, http.StatusBadRequest, "validation_error", label+topicParticle(label)+" 빈 값을 담을 수 없습니다")
+			return nil, false
+		}
+		if !permissionGrantsSomething(permission) {
+			writeError(w, http.StatusBadRequest, "validation_error",
+				fmt.Sprintf("%s %q%s 이 시스템이 확인하지 않는 권한입니다. %s",
+					label, permission, topicParticle(permission), permissionSuggestion(permission)))
+			return nil, false
+		}
+		cleaned = append(cleaned, permission)
+	}
+	return cleaned, true
+}
+
+// permissionSuggestion says what the caller could have meant. A permission is
+// typed, not picked from a list, so the rejection has to carry the list — and
+// naming forty codes helps nobody, so a word whose area exists is answered with
+// that area's doors and anything else with the areas there are.
+func permissionSuggestion(written string) string {
+	area, _, _ := strings.Cut(written, ".")
+	near := []string{}
+	areas := []string{}
+	seen := map[string]bool{}
+	for _, code := range permissionCodes() {
+		if codeArea, _, _ := strings.Cut(code, "."); codeArea == area {
+			near = append(near, code)
+		} else if !seen[codeArea] && codeArea != "*" {
+			seen[codeArea] = true
+			areas = append(areas, codeArea)
+		}
+	}
+	if len(near) > 0 {
+		return fmt.Sprintf("%s 권한은 %s입니다", area, strings.Join(near, ", "))
+	}
+	return fmt.Sprintf("사용할 수 있는 권한 영역은 %s입니다", strings.Join(areas, ", "))
+}
+
+// dataScopes is the vocabulary a role's data scope is written in, widest last.
+// Like the risk grades and the supplier statuses, these are not labels: the
+// login query reads the column with
+// `CASE r.data_scope WHEN 'company' THEN 4 ... ELSE 1 END` and
+// vendra_org_in_scope branches on the same four words, so a scope spelled any
+// other way is not a wider or narrower scope but 'own' — silently, at login,
+// long after the role was saved as 전사.
+var dataScopes = []string{"own", "department", "division", "company"}
+
+// dataScopeField describes the field carrying one of those scopes.
+func dataScopeField(key, label string) enumField {
+	return enumField{key: key, label: label, allowed: dataScopes}
 }
 
 func randomToken(n int) (string, error) { return security.RandomToken(n) }

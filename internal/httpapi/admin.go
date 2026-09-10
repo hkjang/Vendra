@@ -299,9 +299,19 @@ func (a *App) createRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validText(w, in.Code, "역할 코드") || !validText(w, in.Name, "역할 이름") ||
-		!validText(w, in.DataScope, "데이터 범위") {
+		!validText(w, in.DataScope, "데이터 범위") ||
+		!validEnum(w, in.DataScope, dataScopeField("dataScope", "데이터 범위")) {
 		return
 	}
+	// The cleaned list is what gets stored, which also settles a role created
+	// with no permissions at all: json.Marshal writes a nil slice as `null`,
+	// and the login query's jsonb_array_elements_text cannot take a scalar, so
+	// that role locked out everyone it was given to. An empty list is empty.
+	cleaned, ok := validPermissions(w, in.Permissions, "권한")
+	if !ok {
+		return
+	}
+	in.Permissions = cleaned
 	if in.DataScope == "" {
 		in.DataScope = "own"
 	}
@@ -325,8 +335,19 @@ func (a *App) updateRole(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request", err.Error())
 		return
 	}
-	if !validText(w, in.Name, "역할 이름") || !validText(w, in.DataScope, "데이터 범위") {
+	if !validText(w, in.Name, "역할 이름") || !validText(w, in.DataScope, "데이터 범위") ||
+		!validEnum(w, in.DataScope, dataScopeField("dataScope", "데이터 범위")) {
 		return
+	}
+	// A nil list is the caller leaving the permissions alone — the statement
+	// keeps the stored ones — so only a list that is actually being written is
+	// measured.
+	if in.Permissions != nil {
+		cleaned, ok := validPermissions(w, in.Permissions, "권한")
+		if !ok {
+			return
+		}
+		in.Permissions = cleaned
 	}
 	_, err := a.db.Exec(r.Context(), `UPDATE roles SET name=COALESCE(NULLIF($2,''),name),permissions=CASE WHEN $3::jsonb='null'::jsonb THEN permissions ELSE $3 END,data_scope=COALESCE(NULLIF($4,''),data_scope) WHERE id=$1 AND system=false`, r.PathValue("id"), in.Name, raw(in.Permissions), in.DataScope)
 	if err != nil {

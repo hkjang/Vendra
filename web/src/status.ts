@@ -130,6 +130,88 @@ export const workflowObjectTypes: { value: string; label: string }[] = [
   { value: "supplier_bank_change", label: "공급업체 계좌정보 변경" },
 ];
 
+// permissionCodes is every permission the API actually checks, in the order it
+// holds them in permissionCodes(). A role's permissions are only read on the
+// wanted side of that check, so a word that is not one of these — or a wildcard
+// that covers none of them — is not a narrower permission but no permission:
+// the role lists it and opens nothing.
+//
+// The 권한 box had no list at all behind it, which is how the catalogue the
+// product ships with came to hold "risk.security.*", "risk.contract.*" and
+// "contract.review", none of which any door asks for.
+export const permissionCodes: string[] = [
+  "*",
+  "*.read",
+  "ai.use",
+  "analytics.read",
+  "audit.read",
+  "contract.amount.read",
+  "contract.create",
+  "contract.read",
+  "contract.update",
+  "dashboard.read",
+  "delivery.amount.read",
+  "delivery.create",
+  "delivery.read",
+  "delivery.update",
+  "document.create",
+  "document.read",
+  "document.update",
+  "evaluation.create",
+  "evaluation.read",
+  "inspection.amount.read",
+  "inspection.create",
+  "inspection.read",
+  "inspection.update",
+  "invoice.amount.read",
+  "invoice.create",
+  "invoice.read",
+  "invoice.update",
+  "issue.amount.read",
+  "issue.create",
+  "issue.read",
+  "issue.update",
+  "payment.amount.read",
+  "payment.create",
+  "payment.read",
+  "payment.update",
+  "portal.*",
+  "purchase_order.amount.read",
+  "purchase_order.create",
+  "purchase_order.read",
+  "purchase_order.update",
+  "purchase_request.amount.read",
+  "purchase_request.create",
+  "purchase_request.read",
+  "purchase_request.update",
+  "quality.amount.read",
+  "quality.create",
+  "quality.read",
+  "quality.update",
+  "rfp.amount.read",
+  "rfp.create",
+  "rfp.read",
+  "rfp.update",
+  "rfq.amount.read",
+  "rfq.create",
+  "rfq.read",
+  "rfq.update",
+  "risk.create",
+  "risk.read",
+  "spend.create",
+  "spend.read",
+  "supplier.bank_account.read",
+  "supplier.create",
+  "supplier.financial.read",
+  "supplier.read",
+  "supplier.tax.read",
+  "supplier.update",
+  "workflow.approve",
+  "workflow.create",
+  "workflow.read",
+  "workflow.update",
+];
+
 export function workflowObjectTypeLabel(objectType: string): string {
   return (
     workflowObjectTypes.find((t) => t.value === objectType)?.label || objectType
