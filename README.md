@@ -127,4 +127,5 @@ docker run --rm -v vendra_vendra_documents:/data -v "$PWD":/backup alpine tar -c
 - 계좌, 계약금액, 평가, Risk, 승인, 권한과 문서 접근 이벤트는 감사로그에서 확인합니다.
 - 공급업체 포털 계정은 자신의 `supplier_id` 데이터만 조회하도록 서버에서 강제됩니다.
 
+화면을 쓰는 사람은 [사용자 가이드](docs/USER_GUIDE.md)([PDF](docs/USER_GUIDE.pdf)), 설치·설정·운영을 맡은 사람은 [관리자 가이드](docs/ADMIN_GUIDE.md)([PDF](docs/ADMIN_GUIDE.pdf))를 보세요 — 실제로 띄운 화면 캡처와 환경 변수·역할·설정 전수 표가 들어 있습니다.
 상세 설계와 운영 점검 항목은 [docs/architecture.md](docs/architecture.md), [docs/security.md](docs/security.md), [docs/operations.md](docs/operations.md), [docs/requirements-traceability.md](docs/requirements-traceability.md)를 참고하세요.
