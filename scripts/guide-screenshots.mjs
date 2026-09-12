@@ -23,7 +23,7 @@
 //
 // 캡처는 headless Chrome 을 CDP 로 몰아 1440x900 으로 찍는다. 추가 의존성은
 // 없다 — Node 22 의 내장 fetch 와 WebSocket 을 쓴다.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -423,9 +423,16 @@ function send(method, params = {}, sessionId) {
 
 async function startChrome() {
   const profile = mkdtempSync(resolve(tmpdir(), 'vendra-guide-chrome-'));
+  // spawnSync, not spawn: a missing binary does not throw from spawn, it emits
+  // an 'error' event on the next tick, so the try/catch never fired and .find
+  // always answered with the first candidate whether it existed or not.
   const binary = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'].find((c) => {
-    try { spawn(c, ['--version']).kill(); return true; } catch { return false; }
-  }) || 'google-chrome';
+    const probe = spawnSync(c, ['--version']);
+    return !probe.error && probe.status === 0;
+  });
+  if (!binary) {
+    throw new Error('Chrome 을 찾지 못했습니다. google-chrome 또는 chromium 을 설치하세요.');
+  }
   chromeProcess = spawn(binary, [
     '--headless=new', '--no-sandbox', '--disable-gpu', '--hide-scrollbars',
     '--force-device-scale-factor=1', '--window-size=1440,900',
