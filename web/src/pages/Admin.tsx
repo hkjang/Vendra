@@ -29,6 +29,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { api, date, del, logTime, patch, post, put, todayISO } from "../api";
 import { Badge, Empty, Field, Loading, Modal, PageHeader } from "../components";
 import {
+  permissionCodes,
   statusTone,
   workflowObjectTypeLabel,
   workflowObjectTypes,
@@ -1071,19 +1072,44 @@ function RoleForm({
   onClose: () => void;
   saved: () => void;
 }) {
+  const [permissions, setPermissions] = useState(
+    role?.permissions.join("\n") || "",
+  );
+  const [error, setError] = useState("");
+  const held = permissions
+    .split(/[\n,]/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  // Clicking a permission adds it, clicking a held one takes it back. The list
+  // is the API's, so a permission can be picked rather than remembered — and a
+  // wildcard already held keeps whatever it covers highlighted.
+  function toggle(code: string) {
+    setPermissions(
+      (held.includes(code)
+        ? held.filter((p) => p !== code)
+        : [...held, code]
+      ).join("\n"),
+    );
+  }
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const d = new FormData(e.currentTarget);
     const common = {
       name: d.get("name"),
       dataScope: d.get("dataScope"),
-      permissions: String(d.get("permissions"))
-        .split(/[\n,]/)
-        .map((x) => x.trim())
-        .filter(Boolean),
+      permissions: held,
     };
-    if (role) await patch(`/api/v1/admin/roles/${role.id}`, common);
-    else await post("/api/v1/admin/roles", { ...common, code: d.get("code") });
+    setError("");
+    try {
+      if (role) await patch(`/api/v1/admin/roles/${role.id}`, common);
+      else await post("/api/v1/admin/roles", { ...common, code: d.get("code") });
+    } catch (e) {
+      // Without this the refusal was thrown out of the submit handler and the
+      // modal simply sat there, so a permission the API declined looked like a
+      // save that had worked.
+      setError(e instanceof Error ? e.message : "역할을 저장하지 못했습니다");
+      return;
+    }
     saved();
   }
   return (
@@ -1116,16 +1142,36 @@ function RoleForm({
         </div>
         <Field
           label="권한"
-          hint="쉼표 또는 줄바꿈으로 구분. wildcard를 지원합니다."
+          hint="쉼표 또는 줄바꿈으로 구분. wildcard를 지원합니다. 아래 목록이 이 시스템이 확인하는 권한 전부입니다."
         >
           <textarea
             name="permissions"
             rows={8}
-            defaultValue={role?.permissions.join("\n")}
+            value={permissions}
+            onChange={(e) => setPermissions(e.target.value)}
             placeholder="supplier.read&#10;contract.*"
             required
           />
         </Field>
+        <div className="permission-picker">
+          {permissionCodes.map((code) => (
+            <button
+              type="button"
+              key={code}
+              className={held.includes(code) ? "chip held" : "chip"}
+              aria-pressed={held.includes(code)}
+              onClick={() => toggle(code)}
+            >
+              {code}
+            </button>
+          ))}
+        </div>
+        {error && (
+          <p className="form-error" role="alert">
+            <AlertCircle />
+            {error}
+          </p>
+        )}
         <div className="form-actions">
           <button type="button" className="button secondary" onClick={onClose}>
             취소
