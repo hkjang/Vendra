@@ -15,6 +15,7 @@ import {
   Pause,
   Play,
   Plus,
+  Radar,
   RefreshCw,
   Save,
   Search,
@@ -52,6 +53,7 @@ const sections = [
   { id: "lifecycle", label: "Lifecycle", icon: GitBranch },
   { id: "integrations", label: "연동 · 알림", icon: Network },
   { id: "ai", label: "AI 모델", icon: Bot },
+  { id: "tracking", label: "방문 추적", icon: Radar },
   { id: "audit", label: "감사로그", icon: Activity },
   { id: "logs", label: "서버 로그", icon: Server },
 ];
@@ -126,11 +128,20 @@ function SettingsPanel({
     return <OIDC settings={settings} notify={notify} reload={load} />;
   if (category === "ai")
     return <AISettings settings={settings} notify={notify} reload={load} />;
+  if (category === "tracking")
+    return (
+      <TrackingSettings settings={settings} notify={notify} reload={load} />
+    );
   const selected = settings.filter((s) =>
     category === "general"
-      ? !["identity", "ai", "integration", "notification", "workflow"].includes(
-          s.category,
-        )
+      ? ![
+          "identity",
+          "ai",
+          "integration",
+          "notification",
+          "workflow",
+          "tracking",
+        ].includes(s.category)
       : category === "integrations"
         ? ["integration", "notification"].includes(s.category)
         : s.category === category,
@@ -479,6 +490,402 @@ function AISettings({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+type TrackingConfig = {
+  enabled: boolean;
+  provider: string;
+  momentoUrl: string;
+  momentoSiteId: string;
+  momentoProxy: boolean;
+  measurementId: string;
+  matomoUrl: string;
+  matomoSiteId: string;
+  customSnippet: string;
+  allowedHosts: string;
+  includeAdmin: boolean;
+  placement: string;
+};
+type TrackingViolation = {
+  origin: string;
+  directive: string;
+  page: string;
+  count: number;
+  lastSeen: string;
+  allowed: boolean;
+};
+/** The byte limit the server holds a pasted snippet to. */
+const trackingSnippetLimit = 8 * 1024;
+/** Momento first: the self-hosted collector is the only one that keeps the data inside. */
+const trackingProviders = [
+  { value: "momento", label: "Momento (사내 수집기)" },
+  { value: "ga4", label: "Google Analytics 4" },
+  { value: "gtm", label: "Google Tag Manager" },
+  { value: "matomo", label: "Matomo" },
+  { value: "custom", label: "직접 붙여넣기" },
+];
+
+/**
+ * TrackingSettings is where an administrator attaches a visit-tracking script
+ * to the pages. The hard part is not the <script> tag but the content
+ * security policy: the pages allow scripts from this origin only, so a pasted
+ * snippet is silently refused. The server puts a per-request nonce on every
+ * script tag and adds the snippet's origins to the policy; what it still
+ * refuses shows up in the list at the bottom, with one click to allow it.
+ */
+export function TrackingSettings({
+  settings,
+  notify,
+  reload,
+}: {
+  settings: Setting[];
+  notify: (s: string) => void;
+  reload: () => void;
+}) {
+  const current = {
+    enabled: false,
+    provider: "momento",
+    momentoUrl: "",
+    momentoSiteId: "",
+    momentoProxy: true,
+    measurementId: "",
+    matomoUrl: "",
+    matomoSiteId: "",
+    customSnippet: "",
+    allowedHosts: "",
+    includeAdmin: false,
+    placement: "head",
+    ...((settings.find((s) => s.key === "tracking")?.value ||
+      {}) as Partial<TrackingConfig>),
+  };
+  const [provider, setProvider] = useState(current.provider);
+  const [proxy, setProxy] = useState(current.momentoProxy);
+  const [snippetBytes, setSnippetBytes] = useState(
+    new TextEncoder().encode(current.customSnippet).length,
+  );
+  const [error, setError] = useState<string>();
+  const [violations, setViolations] = useState<TrackingViolation[]>();
+  const loadViolations = useCallback(
+    () =>
+      api<{ items: TrackingViolation[] }>("/api/v1/admin/tracking/violations")
+        .then((x) => setViolations(x.items))
+        .catch(() => setViolations([])),
+    [],
+  );
+  useEffect(() => {
+    loadViolations();
+  }, [loadViolations]);
+  async function save(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const d = new FormData(e.currentTarget);
+    setError(undefined);
+    try {
+      await put("/api/v1/admin/settings/tracking", {
+        category: "tracking",
+        value: {
+          enabled: d.get("enabled") === "on",
+          provider: d.get("provider"),
+          momentoUrl: d.get("momentoUrl") || "",
+          momentoSiteId: d.get("momentoSiteId") || "",
+          momentoProxy: d.get("momentoProxy") === "on",
+          measurementId: d.get("measurementId") || "",
+          matomoUrl: d.get("matomoUrl") || "",
+          matomoSiteId: d.get("matomoSiteId") || "",
+          customSnippet: d.get("customSnippet") || "",
+          allowedHosts: d.get("allowedHosts") || "",
+          includeAdmin: d.get("includeAdmin") === "on",
+          placement: d.get("placement"),
+        },
+      });
+      notify("방문 추적 설정을 저장했습니다.");
+      reload();
+      loadViolations();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "저장하지 못했습니다");
+    }
+  }
+  async function allow(origin: string) {
+    try {
+      await post("/api/v1/admin/tracking/allowed-hosts", { origin });
+      notify(`${origin} 을(를) 허용 목록에 넣었습니다.`);
+      reload();
+      loadViolations();
+    } catch (err) {
+      notify(err instanceof Error ? err.message : "허용하지 못했습니다");
+    }
+  }
+  async function clearViolations() {
+    await del("/api/v1/admin/tracking/violations").catch(() => undefined);
+    loadViolations();
+  }
+  const snippetTooLong = snippetBytes > trackingSnippetLimit;
+  return (
+    <div className="admin-card">
+      <header>
+        <div>
+          <h2>방문 추적 스크립트</h2>
+          <p>
+            어떤 화면이 실제로 쓰이는지 재는 추적 도구를 화면에 붙입니다. 기본은
+            꺼짐입니다.
+          </p>
+        </div>
+        <Badge tone={current.enabled ? "success" : "neutral"}>
+          {current.enabled ? "사용 중" : "비활성"}
+        </Badge>
+      </header>
+      <div className="security-banner">
+        <ShieldCheck />
+        <div>
+          <b>콘텐츠 보안 정책(CSP)은 그대로 잠겨 있습니다</b>
+          <p>
+            화면은 이 서버의 스크립트만 허용합니다. 스니펫의 모든{" "}
+            <code>&lt;script&gt;</code>에 요청마다 다른 nonce 를 붙이고,
+            스니펫이 부르는 주소를 정책에 더해 정확히 그 스니펫만 실행되게
+            합니다. <code>'unsafe-inline'</code> 으로 정책을 풀지 않습니다.
+            정책이 막은 주소는 아래 목록에 나타납니다.
+          </p>
+        </div>
+      </div>
+      <form onSubmit={save}>
+        <label className="toggle-row">
+          <span>
+            <b>방문 추적 사용</b>
+            <small>켜면 다음 페이지 로드부터 스니펫이 붙습니다.</small>
+          </span>
+          <input
+            type="checkbox"
+            name="enabled"
+            defaultChecked={current.enabled}
+          />
+        </label>
+        <div className="form-grid">
+          <Field
+            label="추적 도구"
+            hint="Momento 는 사내 수집기라 데이터가 밖으로 나가지 않는 유일한 선택지입니다."
+          >
+            <select
+              name="provider"
+              value={provider}
+              onChange={(e) => setProvider(e.target.value)}
+            >
+              {trackingProviders.map((p) => (
+                <option value={p.value} key={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="삽입 위치">
+            <select name="placement" defaultValue={current.placement}>
+              <option value="head">&lt;head&gt; 끝</option>
+              <option value="body">&lt;body&gt; 끝</option>
+            </select>
+          </Field>
+          {provider === "momento" && (
+            <>
+              <Field label="Momento 수집기 주소" required>
+                <input
+                  name="momentoUrl"
+                  defaultValue={current.momentoUrl}
+                  placeholder="https://momento.internal"
+                />
+              </Field>
+              <Field label="사이트 ID" required>
+                <input
+                  name="momentoSiteId"
+                  defaultValue={current.momentoSiteId}
+                  placeholder="vendra-prd"
+                />
+              </Field>
+            </>
+          )}
+          {(provider === "ga4" || provider === "gtm") && (
+            <Field
+              label={provider === "ga4" ? "측정 ID" : "컨테이너 ID"}
+              required
+            >
+              <input
+                name="measurementId"
+                defaultValue={current.measurementId}
+                placeholder={
+                  provider === "ga4" ? "G-XXXXXXXXXX" : "GTM-XXXXXXX"
+                }
+              />
+            </Field>
+          )}
+          {provider === "matomo" && (
+            <>
+              <Field label="Matomo 주소" required>
+                <input
+                  name="matomoUrl"
+                  defaultValue={current.matomoUrl}
+                  placeholder="https://matomo.internal"
+                />
+              </Field>
+              <Field label="사이트 ID" required>
+                <input
+                  name="matomoSiteId"
+                  defaultValue={current.matomoSiteId}
+                  placeholder="1"
+                />
+              </Field>
+            </>
+          )}
+        </div>
+        {provider === "momento" && (
+          <label className="toggle-row">
+            <span>
+              <b>같은 오리진 프록시로 보내기</b>
+              <small>
+                이 서버의 <code>/momento/*</code> 가 수집기로 넘깁니다. 수집기
+                주소가 정책에 등장하지 않아 CSP 를 바꿀 수 없는 설치에서도
+                동작합니다. 끄면 브라우저가 수집기에 직접 연결하고 그 주소가
+                정책에 더해집니다.
+              </small>
+            </span>
+            <input
+              type="checkbox"
+              name="momentoProxy"
+              checked={proxy}
+              onChange={(e) => setProxy(e.target.checked)}
+            />
+          </label>
+        )}
+        {provider === "custom" && (
+          <Field
+            label="추적 코드"
+            hint={`스니펫에 적힌 http(s) 주소를 읽어 정책에 더합니다. ${snippetBytes.toLocaleString()} / ${trackingSnippetLimit.toLocaleString()} 바이트`}
+            required
+          >
+            <textarea
+              name="customSnippet"
+              rows={8}
+              defaultValue={current.customSnippet}
+              placeholder={'<script async src="https://…/tracker.js"></script>'}
+              onChange={(e) =>
+                setSnippetBytes(new TextEncoder().encode(e.target.value).length)
+              }
+            />
+          </Field>
+        )}
+        {provider !== "custom" && (
+          <input
+            type="hidden"
+            name="customSnippet"
+            value={current.customSnippet}
+          />
+        )}
+        {snippetTooLong && (
+          <p className="form-error" role="alert">
+            <AlertCircle />
+            추적 코드는 {trackingSnippetLimit.toLocaleString()} 바이트를 넘을 수
+            없습니다.
+          </p>
+        )}
+        <Field
+          label="추가로 허용할 출처"
+          hint="스니펫에서 자동으로 읽지 못한 주소를 쉼표로 구분해 https://host 모양으로 적습니다."
+        >
+          <input
+            name="allowedHosts"
+            defaultValue={current.allowedHosts}
+            placeholder="https://cdn.example.com, https://collect.example.com"
+          />
+        </Field>
+        <label className="toggle-row">
+          <span>
+            <b>서비스 관리 화면도 추적</b>
+            <small>
+              기본은 아니오 — 관리 화면의 트래픽은 대개 보려는 방문 데이터가
+              아닙니다.
+            </small>
+          </span>
+          <input
+            type="checkbox"
+            name="includeAdmin"
+            defaultChecked={current.includeAdmin}
+          />
+        </label>
+        {error && (
+          <p className="form-error" role="alert">
+            <AlertCircle />
+            {error}
+          </p>
+        )}
+        <div className="form-actions">
+          <button className="button" disabled={snippetTooLong}>
+            <Save />
+            방문 추적 설정 저장
+          </button>
+        </div>
+      </form>
+      <header>
+        <div>
+          <h3>정책이 막은 출처</h3>
+          <p>
+            브라우저가 신고한, 정책에 없어 차단된 주소입니다. 허용을 누르면 위
+            허용 출처에 더해집니다.
+          </p>
+        </div>
+        <button
+          className="button secondary"
+          type="button"
+          onClick={clearViolations}
+          disabled={!violations?.length}
+        >
+          <RefreshCw />
+          기록 비우기
+        </button>
+      </header>
+      {!violations ? (
+        <Loading />
+      ) : violations.length ? (
+        <table>
+          <thead>
+            <tr>
+              <th>출처</th>
+              <th>지시어</th>
+              <th>화면</th>
+              <th>횟수</th>
+              <th>마지막</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {violations.map((v) => (
+              <tr key={v.directive + " " + v.origin}>
+                <td>
+                  <code>{v.origin}</code>
+                </td>
+                <td>{v.directive}</td>
+                <td>{v.page}</td>
+                <td>{v.count}</td>
+                <td>{logTime(v.lastSeen)}</td>
+                <td>
+                  {v.allowed ? (
+                    <Badge tone="success">허용됨</Badge>
+                  ) : (
+                    <button
+                      className="button secondary"
+                      type="button"
+                      onClick={() => allow(v.origin)}
+                    >
+                      허용
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <Empty
+          title="막힌 출처가 없습니다"
+          description="추적이 켜져 있는 동안 정책이 무언가를 막으면 여기에 나타납니다."
+        />
+      )}
     </div>
   );
 }
@@ -1510,7 +1917,11 @@ function WorkflowForm({
       steps,
     };
     if (workflow) await patch(`/api/v1/workflows/${workflow.id}`, body);
-    else await post("/api/v1/workflows", { ...body, objectType: d.get("objectType") });
+    else
+      await post("/api/v1/workflows", {
+        ...body,
+        objectType: d.get("objectType"),
+      });
     saved();
   }
   return (
@@ -1523,7 +1934,12 @@ function WorkflowForm({
       <form onSubmit={submit}>
         <div className="form-grid">
           <Field label="Workflow 이름" required>
-            <input name="name" required autoFocus defaultValue={workflow?.name} />
+            <input
+              name="name"
+              required
+              autoFocus
+              defaultValue={workflow?.name}
+            />
           </Field>
           <Field label="업무 유형">
             <select

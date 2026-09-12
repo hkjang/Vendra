@@ -668,6 +668,7 @@ function Shell({
             group: "관리자",
           },
           { label: "Lifecycle", path: "/admin/lifecycle", group: "관리자" },
+          { label: "방문 추적", path: "/admin/tracking", group: "관리자" },
           { label: "감사로그", path: "/admin/audit", group: "관리자" },
           { label: "서버 로그", path: "/admin/logs", group: "관리자" },
         ]
