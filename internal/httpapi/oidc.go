@@ -32,7 +32,12 @@ type oidcSettings struct {
 	// PublicURL is the address browsers reach this service at, and the
 	// redirect_uri is built from it. See callbackURI for why deriving it from
 	// the request instead is fragile.
-	PublicURL    string `json:"publicUrl"`
+	PublicURL string `json:"publicUrl"`
+	// AutoLogin lets a browser that already holds a provider session sign in
+	// without seeing the login screen (prompt=none). Off unless an administrator
+	// turns it on: the server ignores ?prompt=none while it is off, so nobody
+	// can change the flow by editing an address.
+	AutoLogin    bool   `json:"autoLogin"`
 	ClientSecret string `json:"-"`
 }
 
@@ -73,12 +78,22 @@ func oidcEmailClaimTrusted(s oidcSettings, alreadyLinked, emailVerified bool) bo
 }
 
 type oidcFlow struct {
-	State     string `json:"state"`
-	Nonce     string `json:"nonce"`
-	Verifier  string `json:"verifier"`
-	ReturnTo  string `json:"returnTo"`
-	ExpiresAt int64  `json:"expiresAt"`
+	State    string `json:"state"`
+	Nonce    string `json:"nonce"`
+	Verifier string `json:"verifier"`
+	ReturnTo string `json:"returnTo"`
+	// Silent records that this leg was started with prompt=none, so the
+	// callback knows a provider error is the ordinary "no session" answer and
+	// not a failure to show.
+	Silent    bool  `json:"silent,omitempty"`
+	ExpiresAt int64 `json:"expiresAt"`
 }
+
+// silentRefusalPath is where a prompt=none attempt lands when the provider had
+// no session. The query marker tells the browser not to try again, which holds
+// even when its storage was cleared in between — the last of three guards
+// against bouncing a signed-out visitor between here and the provider forever.
+const silentRefusalPath = "/login?sso=none"
 
 func (a *App) loadOIDC(ctx context.Context) (oidcSettings, error) {
 	var rawValue []byte
@@ -106,7 +121,10 @@ func (a *App) oidcPublicConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"enabled": false})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"enabled": s.Enabled && s.Issuer != "" && s.ClientID != "", "issuer": s.Issuer})
+	enabled := s.Enabled && s.Issuer != "" && s.ClientID != ""
+	// autoLogin is published so the browser knows whether to try a silent
+	// sign-in before it draws the login screen.
+	writeJSON(w, 200, map[string]any{"enabled": enabled, "issuer": s.Issuer, "autoLogin": enabled && s.AutoLogin})
 }
 
 func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +142,13 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 	nonce, _ := randomToken(24)
 	verifier, _ := randomToken(32)
 	returnTo := safeReturnTo(r.URL.Query().Get("returnTo"))
-	flow := oidcFlow{State: state, Nonce: nonce, Verifier: verifier, ReturnTo: returnTo, ExpiresAt: time.Now().Add(10 * time.Minute).Unix()}
+	// prompt=none asks the provider to answer from an existing session only. It
+	// never draws a screen: either a code comes straight back, or an error such
+	// as login_required does. Only an administrator setting can ask for it —
+	// a ?prompt=none somebody pasted into an address is quietly an ordinary
+	// sign-in.
+	silent := r.URL.Query().Get("prompt") == "none" && s.AutoLogin
+	flow := oidcFlow{State: state, Nonce: nonce, Verifier: verifier, ReturnTo: returnTo, Silent: silent, ExpiresAt: time.Now().Add(10 * time.Minute).Unix()}
 	b, _ := json.Marshal(flow)
 	encrypted, err := a.vault.Encrypt(string(b))
 	if err != nil {
@@ -135,8 +159,11 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 	redirectURI := s.callbackURI(r)
 	cfg := oauth2.Config{ClientID: s.ClientID, ClientSecret: s.ClientSecret, Endpoint: provider.Endpoint(), RedirectURL: redirectURI, Scopes: s.Scopes}
 	challenge := sha256.Sum256([]byte(verifier))
-	url := cfg.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.SetAuthURLParam("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:])), oauth2.SetAuthURLParam("code_challenge_method", "S256"))
-	http.Redirect(w, r, url, http.StatusFound)
+	params := []oauth2.AuthCodeOption{oidc.Nonce(nonce), oauth2.SetAuthURLParam("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:])), oauth2.SetAuthURLParam("code_challenge_method", "S256")}
+	if silent {
+		params = append(params, oauth2.SetAuthURLParam("prompt", "none"))
+	}
+	http.Redirect(w, r, cfg.AuthCodeURL(state, params...), http.StatusFound)
 }
 
 func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
@@ -156,6 +183,15 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if providerErr := r.URL.Query().Get("error"); providerErr != "" {
+		if flow.Silent {
+			// The provider reports a refusal as an error parameter rather than a
+			// code, and prompt=none produces login_required whenever no session
+			// exists. That is an ordinary answer, not a failure: land on the
+			// login screen with the marker the browser reads to stop retrying.
+			http.SetCookie(w, &http.Cookie{Name: "vendra_oidc_flow", Value: "", Path: "/api/auth/oidc/callback", HttpOnly: true, MaxAge: -1})
+			http.Redirect(w, r, silentRefusalPath, http.StatusFound)
+			return
+		}
 		writeError(w, 401, "oidc_rejected", providerErr)
 		return
 	}

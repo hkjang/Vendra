@@ -225,6 +225,7 @@ function OIDC({
         publicUrl: d.get("publicUrl"),
         scopes: String(d.get("scopes")).split(" ").filter(Boolean),
         autoCreate: d.get("autoCreate") === "on",
+        autoLogin: d.get("autoLogin") === "on",
         requireVerifiedEmail: d.get("requireVerifiedEmail") === "on",
         defaultRole: d.get("defaultRole"),
       },
@@ -338,6 +339,21 @@ function OIDC({
             type="checkbox"
             name="autoCreate"
             defaultChecked={Boolean(current.autoCreate)}
+          />
+        </label>
+        <label className="toggle-row">
+          <span>
+            <b>Keycloak 세션이 있으면 자동 로그인</b>
+            <small>
+              Keycloak에 이미 로그인한 사람은 로그인 화면 없이 바로 들어옵니다
+              (<code>prompt=none</code>). 세션이 없으면 로그인 화면이 한 번만
+              나오고, 직접 로그아웃한 뒤에는 자동으로 다시 로그인하지 않습니다.
+            </small>
+          </span>
+          <input
+            type="checkbox"
+            name="autoLogin"
+            defaultChecked={Boolean(current.autoLogin)}
           />
         </label>
         <label className="toggle-row">

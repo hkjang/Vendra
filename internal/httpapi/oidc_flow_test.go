@@ -92,7 +92,15 @@ func (f *fakeIdP) idToken(t *testing.T) string {
 // nonce the provider is expected to echo back.
 func startFlow(t *testing.T, handler http.Handler) (cookie *http.Cookie, state, nonce string) {
 	t.Helper()
-	r := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/start", nil)
+	cookie, redirect := startFlowAt(t, handler, "/api/auth/oidc/start")
+	return cookie, redirect.Query().Get("state"), redirect.Query().Get("nonce")
+}
+
+// startFlowAt is startFlow with the caller's query string, and hands back the
+// whole authorization request so a test can read what else was asked for.
+func startFlowAt(t *testing.T, handler http.Handler, path string) (*http.Cookie, *url.URL) {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, path, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
 	if w.Code != http.StatusFound {
@@ -107,16 +115,20 @@ func startFlow(t *testing.T, handler http.Handler) (cookie *http.Cookie, state, 
 	}
 	for _, c := range w.Result().Cookies() {
 		if c.Name == "vendra_oidc_flow" {
-			return c, redirect.Query().Get("state"), redirect.Query().Get("nonce")
+			return c, redirect
 		}
 	}
 	t.Fatal("oidc start set no flow cookie")
-	return nil, "", ""
+	return nil, nil
 }
 
 func configureOIDC(t *testing.T, app *App, issuer, clientID string, requireVerified bool) {
 	t.Helper()
-	value := fmt.Sprintf(`{"enabled":true,"issuer":%q,"clientId":%q,"scopes":["openid","email","profile"],"autoCreate":true,"defaultRole":"business_user","requireVerifiedEmail":%t}`, issuer, clientID, requireVerified)
+	configureOIDCValue(t, app, fmt.Sprintf(`{"enabled":true,"issuer":%q,"clientId":%q,"scopes":["openid","email","profile"],"autoCreate":true,"defaultRole":"business_user","requireVerifiedEmail":%t}`, issuer, clientID, requireVerified))
+}
+
+func configureOIDCValue(t *testing.T, app *App, value string) {
+	t.Helper()
 	if _, err := app.db.Exec(t.Context(), `INSERT INTO settings(key,value,category) VALUES('oidc',$1,'identity')
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, value); err != nil {
 		t.Fatalf("configure oidc: %v", err)
