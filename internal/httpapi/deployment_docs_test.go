@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -74,6 +75,25 @@ func TestAdminGuidePublishesTheRealCallbackPath(t *testing.T) {
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 	if w.Code == http.StatusUnauthorized {
 		t.Errorf("%s answers 401, so it is behind the session middleware and cannot be a callback", path)
+	}
+}
+
+// TestAdminGuideDescribesSilentSignInAsTheCodeDoesIt holds the auto-login
+// section to the two names an administrator will meet: the setting key they
+// look for in the JSON, and the address a refused attempt lands on, which is
+// what they will see in the browser bar when asked "why did I get the login
+// screen".
+func TestAdminGuideDescribesSilentSignInAsTheCodeDoesIt(t *testing.T) {
+	guide := repoFile(t, "docs/ADMIN_GUIDE.md")
+	key, _ := reflect.TypeOf(oidcSettings{}).FieldByName("AutoLogin")
+	setting := strings.Split(key.Tag.Get("json"), ",")[0]
+	for _, name := range []string{"`" + setting + "`", "`" + silentRefusalPath + "`", "`prompt=none`"} {
+		if !strings.Contains(guide, name) {
+			t.Errorf("the admin guide does not mention %s", name)
+		}
+	}
+	if (oidcSettings{}).AutoLogin {
+		t.Error("auto-login is on when the key is absent; the guide promises the opposite")
 	}
 }
 

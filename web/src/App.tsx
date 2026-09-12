@@ -59,6 +59,13 @@ import { ToastProvider } from "./feedback";
 import { useNotify } from "./toast-context";
 import NotificationCenter from "./NotificationCenter";
 import CommandPalette, { QuickNavigationItem } from "./CommandPalette";
+import {
+  beginSilentSso,
+  clearSilentSsoState,
+  markSignedOut,
+  OIDCConfig,
+  silentSsoWanted,
+} from "./silentSso";
 
 // Pages load on demand. A supplier only ever renders Portal, and most internal
 // users never open the administration console, so shipping every screen in the
@@ -112,6 +119,7 @@ function AppRoutes() {
     try {
       setSession(await fetchSession());
       setUnavailable(false);
+      clearSilentSsoState();
     } catch (e) {
       applyFailure(e);
     } finally {
@@ -120,16 +128,28 @@ function AppRoutes() {
   }, [applyFailure]);
   useEffect(() => {
     let active = true;
-    fetchSession()
-      .then((next) => {
-        if (active) setSession(next);
-      })
-      .catch((e) => {
-        if (active) applyFailure(e);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    (async () => {
+      try {
+        const next = await fetchSession();
+        if (!active) return;
+        clearSilentSsoState();
+        setSession(next);
+      } catch (e) {
+        if (!active) return;
+        // No session, and the administrator allows a silent sign-in: go to
+        // the provider before drawing anything. The splash stays up on the
+        // way out — showing the login form for a moment would be the flicker
+        // this exists to avoid. An unanswerable session is not a missing one.
+        const here = window.location;
+        if (!sessionUnavailable(e) && (await silentSsoWanted(here))) {
+          if (active) beginSilentSso(here.pathname + here.search + here.hash);
+          return;
+        }
+        if (!active) return;
+        applyFailure(e);
+      }
+      if (active) setLoading(false);
+    })();
     return () => {
       active = false;
     };
@@ -311,6 +331,9 @@ export function SupplierRegistration() {
 }
 
 async function logout(setSession: (v: null) => void) {
+  // Marked before the request: a person who chose to sign out must not be
+  // signed straight back in by the provider, whatever the request does.
+  markSignedOut();
   try {
     await post("/api/auth/logout", {});
   } finally {
@@ -320,7 +343,7 @@ async function logout(setSession: (v: null) => void) {
 
 function Login({ onLogin }: { onLogin: () => void }) {
   const [version, setVersion] = useState<Version>();
-  const [oidc, setOIDC] = useState<{ enabled: boolean; issuer?: string }>({
+  const [oidc, setOIDC] = useState<OIDCConfig>({
     enabled: false,
   });
   const [error, setError] = useState("");
@@ -330,10 +353,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
     // version line or an SSO button, so a failure here must not raise an alert
     // the visitor cannot act on.
     api<Version>("/api/version").then(setVersion, () => {});
-    api<{ enabled: boolean; issuer?: string }>("/api/auth/oidc/config").then(
-      setOIDC,
-      () => {},
-    );
+    api<OIDCConfig>("/api/auth/oidc/config").then(setOIDC, () => {});
   }, []);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
