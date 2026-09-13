@@ -782,9 +782,6 @@ function SourcingResponseForm({
   // amount saved in a different one is how a figure changes meaning without
   // anybody touching it.
   const tenderCurrency = item.currency || "KRW";
-  const storedCurrency = response?.currency || "";
-  const currency = storedCurrency || tenderCurrency;
-  const currencyDiffers = storedCurrency !== "" && storedCurrency !== tenderCurrency;
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setBusy(true);
@@ -812,6 +809,9 @@ function SourcingResponseForm({
     }
   }
   const response = item.response;
+  const storedCurrency = response?.currency || "";
+  const currency = storedCurrency || tenderCurrency;
+  const currencyDiffers = storedCurrency !== "" && storedCurrency !== tenderCurrency;
   return (
     <Modal
       title={`${item.objectType.toUpperCase()} 응답`}
