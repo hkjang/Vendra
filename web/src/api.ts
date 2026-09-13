@@ -76,13 +76,33 @@ export function can(user: Principal, permission: string) {
   );
 }
 
-export function money(value?: number | null) {
+/**
+ * An amount in the currency the record it came from is priced in.
+ *
+ * Every amount used to be rendered as won whatever it was stored under, which
+ * is not a formatting detail: the portal's quote form offered four currencies,
+ * so a bid of 50,000 USD reached the buyer's comparison table as ₩50,000 and
+ * sat at the top of it next to quotes of ₩68,000,000. Nothing in the
+ * application converts between two currencies, so the only honest thing a
+ * screen can do is say which one the number is in.
+ *
+ * The code is defaulted rather than required because the columns are
+ * `NOT NULL DEFAULT 'KRW'`, and left to `Intl` for the number of decimals: won
+ * and yen are quoted whole, dollars and euros to the cent. An unknown code
+ * makes `Intl` throw, so the amount falls back to a bare number with the code
+ * beside it rather than taking the page down.
+ */
+export function money(value?: number | null, currency?: string | null) {
   if (value == null || !Number.isFinite(value)) return "—";
-  return new Intl.NumberFormat("ko-KR", {
-    style: "currency",
-    currency: "KRW",
-    maximumFractionDigits: 0,
-  }).format(value);
+  const code = (currency || "KRW").toUpperCase();
+  try {
+    return new Intl.NumberFormat("ko-KR", {
+      style: "currency",
+      currency: code,
+    }).format(value);
+  } catch {
+    return `${new Intl.NumberFormat("ko-KR").format(value)} ${code}`;
+  }
 }
 
 /**

@@ -198,7 +198,7 @@ func (a *App) portalSourcing(w http.ResponseWriter, r *http.Request) {
 	// The award outranks the deadline. Reporting 'closed' over a standing the
 	// committee wrote told a bidder the request had shut without telling them
 	// they had won it, which is the one thing this list exists to say.
-	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',o.id,'objectType',o.object_type,'number',o.number,'title',o.title,'status',CASE WHEN p.status IN('preferred','selected','not_selected') THEN p.status WHEN o.due_date<current_date THEN 'closed' ELSE p.status END,'dueDate',o.due_date,'data',`+tenderDetailForBidder("o.data")+`,'response',CASE WHEN sr.id IS NULL THEN NULL ELSE jsonb_build_object('id',sr.id,'status',sr.status,'currency',sr.currency,'totalAmount',sr.total_amount,'deliveryDays',sr.delivery_days,'warranty',sr.warranty,'validityDate',sr.validity_date,'commercialTerms',sr.commercial_terms,'technicalResponse',sr.technical_response,'lineItems',sr.line_items,'submittedAt',sr.submitted_at) END) FROM sourcing_participants p JOIN business_objects o ON o.id=p.sourcing_id LEFT JOIN sourcing_responses sr ON sr.sourcing_id=o.id AND sr.supplier_id=p.supplier_id WHERE p.supplier_id=$1 AND o.deleted_at IS NULL ORDER BY o.due_date NULLS LAST,o.updated_at DESC`, *p.SupplierID)
+	rows, err := a.db.Query(r.Context(), `SELECT jsonb_build_object('id',o.id,'objectType',o.object_type,'number',o.number,'title',o.title,'status',CASE WHEN p.status IN('preferred','selected','not_selected') THEN p.status WHEN o.due_date<current_date THEN 'closed' ELSE p.status END,'dueDate',o.due_date,'currency',o.currency,'data',`+tenderDetailForBidder("o.data")+`,'response',CASE WHEN sr.id IS NULL THEN NULL ELSE jsonb_build_object('id',sr.id,'status',sr.status,'currency',sr.currency,'totalAmount',sr.total_amount,'deliveryDays',sr.delivery_days,'warranty',sr.warranty,'validityDate',sr.validity_date,'commercialTerms',sr.commercial_terms,'technicalResponse',sr.technical_response,'lineItems',sr.line_items,'submittedAt',sr.submitted_at) END) FROM sourcing_participants p JOIN business_objects o ON o.id=p.sourcing_id LEFT JOIN sourcing_responses sr ON sr.sourcing_id=o.id AND sr.supplier_id=p.supplier_id WHERE p.supplier_id=$1 AND o.deleted_at IS NULL ORDER BY o.due_date NULLS LAST,o.updated_at DESC`, *p.SupplierID)
 	if err != nil {
 		writeError(w, 500, "database_error", "견적·입찰 요청을 조회하지 못했습니다")
 		return
@@ -220,8 +220,8 @@ func (a *App) portalSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var dueDate *time.Time
-	var participantStatus string
-	if err := a.db.QueryRow(r.Context(), `SELECT o.due_date,p.status FROM sourcing_participants p JOIN business_objects o ON o.id=p.sourcing_id WHERE p.sourcing_id=$1 AND p.supplier_id=$2`, r.PathValue("id"), *p.SupplierID).Scan(&dueDate, &participantStatus); err != nil {
+	var participantStatus, tenderCurrency string
+	if err := a.db.QueryRow(r.Context(), `SELECT o.due_date,p.status,o.currency FROM sourcing_participants p JOIN business_objects o ON o.id=p.sourcing_id WHERE p.sourcing_id=$1 AND p.supplier_id=$2`, r.PathValue("id"), *p.SupplierID).Scan(&dueDate, &participantStatus, &tenderCurrency); err != nil {
 		writeError(w, 404, "not_invited", "참여 요청을 찾을 수 없습니다")
 		return
 	}
@@ -287,11 +287,36 @@ func (a *App) portalSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		status = "submitted"
 		submitted = time.Now()
 	}
-	if in.Currency == "" {
-		in.Currency = "KRW"
+	// A bid is priced in the currency the tender was put out in, because that is
+	// the only reading under which the comparison it goes into means anything.
+	// recalculateSourcing scores price as 100*min_amount/total_amount across
+	// every submitted bid and there is no rate anywhere in the application to
+	// bring two currencies onto one scale, so a quote of 50,000 USD standing
+	// beside quotes of 68,000,000 KRW is not a cheaper bid, it is the smallest
+	// number: it takes the whole of the price weight — the largest of the five —
+	// and lands at the top of the committee's table, which renders it as
+	// ₩50,000 beside the others. The form offered four currencies and nothing
+	// downstream had ever read the answer.
+	if tenderCurrency == "" {
+		tenderCurrency = "KRW"
 	}
+	quoted, ok := validCurrency(w, in.Currency, "통화")
+	if !ok {
+		return
+	}
+	if quoted != "" && quoted != tenderCurrency {
+		writeError(w, 400, "currency_mismatch", "견적은 "+tenderCurrency+" 기준으로 제출해야 합니다")
+		return
+	}
+	// Only a submitter who named a currency may set one. Without this, updating
+	// any other field on an existing bid rewrote its unit to the tender's while
+	// leaving the number alone — a legacy row holding 50000 USD became 50000 KRW,
+	// and nothing on the screen or in the audit trail said the amount had changed
+	// meaning. A unit is never corrected without the figure beside it.
+	stated := quoted != ""
+	in.Currency = tenderCurrency
 	var id string
-	err := a.db.QueryRow(r.Context(), `INSERT INTO sourcing_responses(sourcing_id,supplier_id,status,currency,total_amount,delivery_days,warranty,validity_date,commercial_terms,technical_response,line_items,attachments,submitted_by,submitted_at) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,'')::date,$9,$10,$11,$12,$13,$14) ON CONFLICT(sourcing_id,supplier_id) DO UPDATE SET status=excluded.status,currency=excluded.currency,total_amount=excluded.total_amount,delivery_days=excluded.delivery_days,warranty=excluded.warranty,validity_date=excluded.validity_date,commercial_terms=excluded.commercial_terms,technical_response=excluded.technical_response,line_items=excluded.line_items,attachments=excluded.attachments,submitted_by=excluded.submitted_by,submitted_at=excluded.submitted_at,updated_at=now() RETURNING id`, r.PathValue("id"), *p.SupplierID, status, in.Currency, in.TotalAmount, in.DeliveryDays, in.Warranty, in.ValidityDate, raw(in.CommercialTerms), raw(in.TechnicalResponse), raw(in.LineItems), raw(in.Attachments), p.ID, submitted).Scan(&id)
+	err := a.db.QueryRow(r.Context(), `INSERT INTO sourcing_responses(sourcing_id,supplier_id,status,currency,total_amount,delivery_days,warranty,validity_date,commercial_terms,technical_response,line_items,attachments,submitted_by,submitted_at) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,'')::date,$9,$10,$11,$12,$13,$14) ON CONFLICT(sourcing_id,supplier_id) DO UPDATE SET status=excluded.status,currency=CASE WHEN $15 THEN excluded.currency ELSE sourcing_responses.currency END,total_amount=excluded.total_amount,delivery_days=excluded.delivery_days,warranty=excluded.warranty,validity_date=excluded.validity_date,commercial_terms=excluded.commercial_terms,technical_response=excluded.technical_response,line_items=excluded.line_items,attachments=excluded.attachments,submitted_by=excluded.submitted_by,submitted_at=excluded.submitted_at,updated_at=now() RETURNING id`, r.PathValue("id"), *p.SupplierID, status, in.Currency, in.TotalAmount, in.DeliveryDays, in.Warranty, in.ValidityDate, raw(in.CommercialTerms), raw(in.TechnicalResponse), raw(in.LineItems), raw(in.Attachments), p.ID, submitted, stated).Scan(&id)
 	if err != nil {
 		writeError(w, 400, "save_failed", "응답을 저장하지 못했습니다")
 		return
@@ -796,6 +821,9 @@ func (a *App) portalCreateBusinessObject(objectType string) http.HandlerFunc {
 			return
 		}
 		if !validTextFields(w, in, textField{"title", "제목"}, textField{"currency", "통화"}) {
+			return
+		}
+		if !validCurrencyFields(w, in, currencyField("currency", "통화")) {
 			return
 		}
 		// The parent is how a supplier files a delivery against the order it

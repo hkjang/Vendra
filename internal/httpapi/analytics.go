@@ -629,6 +629,14 @@ func (a *App) createSpendTransaction(w http.ResponseWriter, r *http.Request) {
 	if in.TransactionNumber == "" {
 		in.TransactionNumber = "SPN-" + timeNowID()
 	}
+	// The unit of the amount above, and the supplier's annual spend is the sum
+	// of these rows. A code the application cannot name is a row nobody can
+	// read the unit of afterwards.
+	currency, ok := validCurrency(w, in.Currency, "통화")
+	if !ok {
+		return
+	}
+	in.Currency = currency
 	if in.Currency == "" {
 		in.Currency = "KRW"
 	}

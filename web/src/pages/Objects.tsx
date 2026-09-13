@@ -565,7 +565,7 @@ export function ObjectTable({
                 {visibleColumns.includes("status") && <td>
                   <Badge tone={statusTone(o.status)}>{objectStatusLabel(o.status)}</Badge>
                 </td>}
-                {visibleColumns.includes("amount") && <td className="number">{money(o.amount)}</td>}
+                {visibleColumns.includes("amount") && <td className="number">{money(o.amount, o.currency)}</td>}
                 {visibleColumns.includes("risk") && <td>
                   {o.riskLevel ? (
                     <RiskBadge level={o.riskLevel} />
