@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/hkjang/Vendra/internal/security"
+	"github.com/hkjang/Vendra/internal/tracking"
 )
 
 func (a *App) listSettings(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +69,17 @@ func (a *App) putSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Value == nil {
 		in.Value = map[string]any{}
+	}
+	if key == tracking.SettingKey {
+		// The tracking row is read on every page load, so what goes in is
+		// held to what the page can use: a known provider, a snippet under
+		// the size limit, allow-list entries that are origins.
+		config := tracking.Parse(raw(in.Value))
+		if err := config.Validate(); err != nil {
+			writeError(w, 400, "validation_error", err.Error())
+			return
+		}
+		in.Value = config
 	}
 	_, err := a.db.Exec(r.Context(), `INSERT INTO settings(key,value,secret_value,secret,category,updated_by,updated_at) VALUES($1,$2,$3,$4,COALESCE(NULLIF($5,''),'general'),$6,now()) ON CONFLICT(key) DO UPDATE SET value=excluded.value,secret_value=COALESCE(excluded.secret_value,settings.secret_value),secret=excluded.secret,category=excluded.category,updated_by=excluded.updated_by,updated_at=now()`, key, raw(in.Value), cipher, in.Secret, in.Category, p.ID)
 	if err != nil {

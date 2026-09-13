@@ -537,6 +537,7 @@ const ADMIN_SCREENS = [
   ['admin-workflow', '/admin/workflow'],
   ['admin-scorecard', '/admin/scorecard'],
   ['admin-lifecycle', '/admin/lifecycle'],
+  ['admin-tracking', '/admin/tracking'],
   ['admin-audit', '/admin/audit'],
   ['admin-logs', '/admin/logs'],
 ];

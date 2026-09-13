@@ -85,6 +85,8 @@ func (a *App) openapi(w http.ResponseWriter, r *http.Request) {
 		"/api/v1/admin/logs":                          map[string]any{"get": operation("Administration", "현재 서버 런타임 로그 조회")},
 		"/api/v1/admin/scorecards":                    crudPath("Administration", "Scorecard 템플릿"),
 		"/api/v1/admin/screening-templates":           crudPath("Administration", "심사 템플릿"),
+		"/api/v1/admin/tracking/violations":           map[string]any{"get": operation("Administration", "방문 추적 스니펫이 정책에 막힌 출처 조회"), "delete": operation("Administration", "막힌 출처 기록 비우기")},
+		"/api/v1/admin/tracking/allowed-hosts":        map[string]any{"post": operation("Administration", "막힌 출처를 방문 추적 허용 목록에 추가")},
 		"/api/v1/portal/profile":                      map[string]any{"get": operation("Portal", "공급업체 회사정보"), "patch": operation("Portal", "공급업체 연락정보 수정")},
 		"/api/v1/portal/contacts":                     map[string]any{"get": operation("Portal", "공급업체 담당자 조회"), "post": operation("Portal", "공급업체 담당자 등록")},
 		"/api/v1/portal/contacts/{id}/verification":   oneID("post", "Portal", "담당자 이메일 인증 요청"),

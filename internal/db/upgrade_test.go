@@ -120,7 +120,7 @@ func TestUpgradeFromAnOlderSchemaWithData(t *testing.T) {
 		t.Errorf("%d documents after the upgrade, want the one that was there", documents)
 	}
 	// Settings introduced along the way must exist without overwriting others.
-	for _, key := range []string{"security.login", "security.password", "maintenance.retention", "workflow.separation_of_duties"} {
+	for _, key := range []string{"security.login", "security.password", "maintenance.retention", "workflow.separation_of_duties", "tracking"} {
 		var present bool
 		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM settings WHERE key=$1)`, key).Scan(&present); err != nil {
 			t.Fatalf("read setting: %v", err)

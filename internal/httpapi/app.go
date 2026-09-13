@@ -19,6 +19,7 @@ import (
 	"github.com/hkjang/Vendra/internal/config"
 	"github.com/hkjang/Vendra/internal/observability"
 	"github.com/hkjang/Vendra/internal/security"
+	"github.com/hkjang/Vendra/internal/tracking"
 )
 
 var (
@@ -34,6 +35,9 @@ type App struct {
 	audit     auditor
 	logs      *observability.Store
 	staticDir string
+	// violations holds what browsers report the content security policy
+	// refused while a tracking snippet is on. In memory and bounded.
+	violations *tracking.Recorder
 }
 
 func New(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, staticDir string) (*App, error) {
@@ -44,7 +48,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, staticDir s
 	if err := bootstrapAdmin(ctx, pool, cfg.BootstrapAdmin, cfg.BootstrapAdminPassword); err != nil {
 		return nil, fmt.Errorf("bootstrap administrator: %w", err)
 	}
-	app := &App{db: pool, vault: vault, auth: authService{db: pool, audit: auditor{db: pool}}, audit: auditor{db: pool}, logs: observability.DefaultStore(), staticDir: staticDir}
+	app := &App{db: pool, vault: vault, auth: authService{db: pool, audit: auditor{db: pool}}, audit: auditor{db: pool}, logs: observability.DefaultStore(), staticDir: staticDir, violations: tracking.NewRecorder()}
 	go app.runBackground(ctx)
 	return app, nil
 }
@@ -62,6 +66,8 @@ func (a *App) Handler() http.Handler {
 	root.HandleFunc("GET /api/auth/oidc/config", a.oidcPublicConfig)
 	root.HandleFunc("GET /api/auth/oidc/start", a.oidcStart)
 	root.HandleFunc("GET /api/auth/oidc/callback", a.oidcCallback)
+	root.HandleFunc("POST "+cspReportPath, a.receiveCSPReport)
+	root.HandleFunc(tracking.ProxyPath+"/", a.momentoProxy)
 
 	api := http.NewServeMux()
 	a.registerAPI(&guardedMux{mux: api})
@@ -258,6 +264,9 @@ func (a *App) registerAPI(m routeRegistrar) {
 	m.HandleFunc("POST /api/v1/admin/scorecards", require("*", a.createScorecard))
 	m.HandleFunc("GET /api/v1/admin/screening-templates", require("*", a.listScreeningTemplates))
 	m.HandleFunc("POST /api/v1/admin/screening-templates", require("*", a.createScreeningTemplate))
+	m.HandleFunc("GET /api/v1/admin/tracking/violations", require("*", a.listTrackingViolations))
+	m.HandleFunc("DELETE /api/v1/admin/tracking/violations", require("*", a.clearTrackingViolations))
+	m.HandleFunc("POST /api/v1/admin/tracking/allowed-hosts", require("*", a.allowTrackingHost))
 
 	m.HandleFunc("GET /api/v1/portal/profile", require("portal.*", a.portalProfile))
 	m.HandleFunc("PATCH /api/v1/portal/profile", require("portal.*", a.portalUpdateProfile))
@@ -375,6 +384,16 @@ func (a *App) serveSPA(w http.ResponseWriter, r *http.Request) {
 	}
 	if filepath.Base(target) == "index.html" {
 		w.Header().Set("Cache-Control", "no-store")
+		// The entry document is where a tracking snippet goes, under a policy
+		// that names this response's nonce. Both are decided here so the two
+		// cannot disagree.
+		page, policy, err := decoratePage(a.trackingConfig(r.Context()), r.URL.Path, data)
+		if err != nil {
+			http.Error(w, "UI unavailable", 503)
+			return
+		}
+		data = page
+		w.Header().Set("Content-Security-Policy", policy)
 	} else {
 		w.Header().Set("Cache-Control", "public,max-age=31536000,immutable")
 	}

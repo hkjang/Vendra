@@ -259,7 +259,14 @@ func requestMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'")
+		// Pages get the strict policy; the entry document may widen it for a
+		// tracking snippet (tracking.go). Anything that is not a page gets one
+		// under which nothing loads at all.
+		policy := pagePolicy
+		if !isPagePath(r.URL.Path) {
+			policy = nonPagePolicy
+		}
+		w.Header().Set("Content-Security-Policy", policy)
 		start := time.Now()
 		runtimeHTTPMetrics.inFlight.Add(1)
 		observer := &responseObserver{ResponseWriter: w, status: http.StatusOK}
