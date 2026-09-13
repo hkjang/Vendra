@@ -308,9 +308,15 @@ func (a *App) portalSourcingResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "currency_mismatch", "견적은 "+tenderCurrency+" 기준으로 제출해야 합니다")
 		return
 	}
+	// Only a submitter who named a currency may set one. Without this, updating
+	// any other field on an existing bid rewrote its unit to the tender's while
+	// leaving the number alone — a legacy row holding 50000 USD became 50000 KRW,
+	// and nothing on the screen or in the audit trail said the amount had changed
+	// meaning. A unit is never corrected without the figure beside it.
+	stated := quoted != ""
 	in.Currency = tenderCurrency
 	var id string
-	err := a.db.QueryRow(r.Context(), `INSERT INTO sourcing_responses(sourcing_id,supplier_id,status,currency,total_amount,delivery_days,warranty,validity_date,commercial_terms,technical_response,line_items,attachments,submitted_by,submitted_at) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,'')::date,$9,$10,$11,$12,$13,$14) ON CONFLICT(sourcing_id,supplier_id) DO UPDATE SET status=excluded.status,currency=excluded.currency,total_amount=excluded.total_amount,delivery_days=excluded.delivery_days,warranty=excluded.warranty,validity_date=excluded.validity_date,commercial_terms=excluded.commercial_terms,technical_response=excluded.technical_response,line_items=excluded.line_items,attachments=excluded.attachments,submitted_by=excluded.submitted_by,submitted_at=excluded.submitted_at,updated_at=now() RETURNING id`, r.PathValue("id"), *p.SupplierID, status, in.Currency, in.TotalAmount, in.DeliveryDays, in.Warranty, in.ValidityDate, raw(in.CommercialTerms), raw(in.TechnicalResponse), raw(in.LineItems), raw(in.Attachments), p.ID, submitted).Scan(&id)
+	err := a.db.QueryRow(r.Context(), `INSERT INTO sourcing_responses(sourcing_id,supplier_id,status,currency,total_amount,delivery_days,warranty,validity_date,commercial_terms,technical_response,line_items,attachments,submitted_by,submitted_at) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,'')::date,$9,$10,$11,$12,$13,$14) ON CONFLICT(sourcing_id,supplier_id) DO UPDATE SET status=excluded.status,currency=CASE WHEN $15 THEN excluded.currency ELSE sourcing_responses.currency END,total_amount=excluded.total_amount,delivery_days=excluded.delivery_days,warranty=excluded.warranty,validity_date=excluded.validity_date,commercial_terms=excluded.commercial_terms,technical_response=excluded.technical_response,line_items=excluded.line_items,attachments=excluded.attachments,submitted_by=excluded.submitted_by,submitted_at=excluded.submitted_at,updated_at=now() RETURNING id`, r.PathValue("id"), *p.SupplierID, status, in.Currency, in.TotalAmount, in.DeliveryDays, in.Warranty, in.ValidityDate, raw(in.CommercialTerms), raw(in.TechnicalResponse), raw(in.LineItems), raw(in.Attachments), p.ID, submitted, stated).Scan(&id)
 	if err != nil {
 		writeError(w, 400, "save_failed", "응답을 저장하지 못했습니다")
 		return

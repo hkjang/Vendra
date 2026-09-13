@@ -776,7 +776,15 @@ function SourcingResponseForm({
   const [error, setError] = useState("");
   // The currency the request was put out in. A bid is priced in it, and the
   // API refuses one that is not.
-  const currency = item.currency || "KRW";
+  //
+  // A bid already stored in another currency keeps it: the label has to name the
+  // unit the amount below is actually in. Showing the tender's currency over an
+  // amount saved in a different one is how a figure changes meaning without
+  // anybody touching it.
+  const tenderCurrency = item.currency || "KRW";
+  const storedCurrency = response?.currency || "";
+  const currency = storedCurrency || tenderCurrency;
+  const currencyDiffers = storedCurrency !== "" && storedCurrency !== tenderCurrency;
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setBusy(true);
@@ -817,7 +825,15 @@ function SourcingResponseForm({
       <TenderBrief data={item.data} />
       <form onSubmit={submit}>
         <div className="form-grid">
-          <Field label={`총 견적금액 (${currency})`} required>
+          <Field
+            label={`총 견적금액 (${currency})`}
+            required
+            hint={
+              currencyDiffers
+                ? `이 견적은 ${storedCurrency} 로 저장돼 있습니다. 이 입찰은 ${tenderCurrency} 기준이므로, 금액을 ${tenderCurrency} 로 고쳐 다시 제출해 주세요.`
+                : undefined
+            }
+          >
             <input
               name="totalAmount"
               type="number"
