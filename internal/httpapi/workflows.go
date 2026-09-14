@@ -30,6 +30,16 @@ func instanceSteps(snapshot, definition []byte) []map[string]any {
 	return steps
 }
 
+// firstStep is the step a request opens at, read from the list submitObject
+// snapshots into the instance.
+func firstStep(steps []byte) map[string]any {
+	var list []map[string]any
+	if json.Unmarshal(steps, &list) == nil && len(list) > 0 {
+		return list[0]
+	}
+	return map[string]any{}
+}
+
 // separationOfDuties is the `workflow.separation_of_duties` setting. It defaults
 // to off so that upgrading cannot stall an approval an organisation already
 // routes back to its requester, but procurement controls usually want it on.
@@ -446,5 +456,13 @@ func (a *App) workflowAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit.record(r, in.Action, objectType, objectID, nil, map[string]any{"workflowInstanceId": id, "step": current, "comment": in.Comment})
+	// After the commit, so a mail never announces a decision that was rolled
+	// back. The requester hears how it ended; when it merely advanced, the
+	// people at the next step hear that it is their turn.
+	if completed {
+		a.notifyApprovalDecided(r.Context(), id, in.Action, in.Comment, p.ID)
+	} else {
+		a.notifyApprovalRequested(r.Context(), id, stepList[current+1], p.ID)
+	}
 	writeJSON(w, 200, map[string]any{"status": nextStatus, "currentStep": current})
 }

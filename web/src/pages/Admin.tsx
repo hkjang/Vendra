@@ -11,6 +11,7 @@ import {
   KeyRound,
   Layers3,
   LockKeyhole,
+  Mail,
   Network,
   Pause,
   Play,
@@ -54,6 +55,7 @@ const sections = [
   { id: "integrations", label: "연동 · 알림", icon: Network },
   { id: "ai", label: "AI 모델", icon: Bot },
   { id: "tracking", label: "방문 추적", icon: Radar },
+  { id: "mail", label: "메일 알림", icon: Mail },
   { id: "audit", label: "감사로그", icon: Activity },
   { id: "logs", label: "서버 로그", icon: Server },
 ];
@@ -132,6 +134,8 @@ function SettingsPanel({
     return (
       <TrackingSettings settings={settings} notify={notify} reload={load} />
     );
+  if (category === "mail")
+    return <MailSettings settings={settings} notify={notify} reload={load} />;
   const selected = settings.filter((s) =>
     category === "general"
       ? ![
@@ -141,6 +145,7 @@ function SettingsPanel({
           "notification",
           "workflow",
           "tracking",
+          "mail",
         ].includes(s.category)
       : category === "integrations"
         ? ["integration", "notification"].includes(s.category)
@@ -357,8 +362,8 @@ function OIDC({
           <span>
             <b>Keycloak 세션이 있으면 자동 로그인</b>
             <small>
-              Keycloak에 이미 로그인한 사람은 로그인 화면 없이 바로 들어옵니다
-              (<code>prompt=none</code>). 세션이 없으면 로그인 화면이 한 번만
+              Keycloak에 이미 로그인한 사람은 로그인 화면 없이 바로 들어옵니다 (
+              <code>prompt=none</code>). 세션이 없으면 로그인 화면이 한 번만
               나오고, 직접 로그아웃한 뒤에는 자동으로 다시 로그인하지 않습니다.
             </small>
           </span>
@@ -884,6 +889,481 @@ export function TrackingSettings({
         <Empty
           title="막힌 출처가 없습니다"
           description="추적이 켜져 있는 동안 정책이 무언가를 막으면 여기에 나타납니다."
+        />
+      )}
+    </div>
+  );
+}
+
+type MailDelivery = {
+  id: string;
+  event: string;
+  recipient: string;
+  subject: string;
+  status: string;
+  attempts: number;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+type MailPage = {
+  items: MailDelivery[];
+  total: number;
+  status: Record<string, number>;
+  truncated: boolean;
+};
+
+// The mail.* rows in the order the screen shows them. The names are the ones
+// every service on the network uses, so an operator learns them once.
+const mailKeys = {
+  enabled: "mail.enabled",
+  host: "mail.smtp_host",
+  port: "mail.smtp_port",
+  security: "mail.security",
+  skipVerify: "mail.skip_tls_verify",
+  username: "mail.username",
+  password: "mail.password",
+  fromAddress: "mail.from_address",
+  fromName: "mail.from_name",
+  baseUrl: "mail.base_url",
+  timeout: "mail.timeout_seconds",
+  notifyApprovalRequest: "mail.notify_approval_request",
+  notifyApprovalDecision: "mail.notify_approval_decision",
+  notifyExpiry: "mail.notify_expiry",
+  notifyAlert: "mail.notify_alert",
+} as const;
+type MailEventKey =
+  | "notifyApprovalRequest"
+  | "notifyApprovalDecision"
+  | "notifyExpiry"
+  | "notifyAlert";
+const mailEvents: { key: MailEventKey; label: string; hint: string }[] = [
+  {
+    key: "notifyApprovalRequest",
+    label: "결재 요청이 내 차례에 도착",
+    hint: "상신되거나 다음 단계로 넘어오면 그 단계의 결재자에게 보냅니다.",
+  },
+  {
+    key: "notifyApprovalDecision",
+    label: "상신한 건의 승인 · 반려 · 반송",
+    hint: "기안자에게 보냅니다. 결재자 본인에게는 가지 않습니다.",
+  },
+  {
+    key: "notifyExpiry",
+    label: "계약 · 문서 만료 임박, 평가 기간 도래",
+    hint: "매시간 백그라운드 작업이 새로 찾은 것만 사람마다 한 통으로 묶어 보냅니다.",
+  },
+  {
+    key: "notifyAlert",
+    label: "SLA 위반 · 계약금액 초과",
+    hint: "즉시 조치가 필요한 알림. 위와 같이 사람마다 한 통으로 묶습니다.",
+  },
+];
+const mailStatusTone = (status: string) =>
+  status === "sent" ? "success" : status === "failed" ? "danger" : "neutral";
+
+/**
+ * MailSettings is where an administrator points Vendra at the company SMTP
+ * relay, proves it with a test send, and sees what went out. The rows are
+ * saved one by one under their standard names; only the ones that changed
+ * are written, and the password only when a new one is typed.
+ */
+export function MailSettings({
+  settings,
+  notify,
+  reload,
+}: {
+  settings: Setting[];
+  notify: (s: string) => void;
+  reload: () => void;
+}) {
+  const row = (key: string) => settings.find((s) => s.key === key);
+  const value = <T,>(key: string, fallback: T): T => {
+    const v = row(key)?.value;
+    return v === undefined || v === null || v === "" ? fallback : (v as T);
+  };
+  const current = {
+    enabled: value(mailKeys.enabled, false),
+    host: value(mailKeys.host, ""),
+    port: value(mailKeys.port, 25),
+    security: value(mailKeys.security, "auto"),
+    skipVerify: value(mailKeys.skipVerify, false),
+    username: value(mailKeys.username, ""),
+    fromAddress: value(mailKeys.fromAddress, ""),
+    fromName: value(mailKeys.fromName, "Vendra"),
+    baseUrl: value(mailKeys.baseUrl, ""),
+    timeout: value(mailKeys.timeout, 10),
+    notifyApprovalRequest: value(mailKeys.notifyApprovalRequest, true),
+    notifyApprovalDecision: value(mailKeys.notifyApprovalDecision, true),
+    notifyExpiry: value(mailKeys.notifyExpiry, true),
+    notifyAlert: value(mailKeys.notifyAlert, true),
+  };
+  const passwordConfigured = Boolean(row(mailKeys.password)?.secretConfigured);
+  const [error, setError] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    message: string;
+  }>();
+  const [testing, setTesting] = useState(false);
+  const [recipient, setRecipient] = useState("");
+  const [deliveries, setDeliveries] = useState<MailPage>();
+  const loadDeliveries = useCallback(
+    () =>
+      api<MailPage>("/api/v1/admin/mail/deliveries?limit=50")
+        .then(setDeliveries)
+        .catch(() =>
+          setDeliveries({ items: [], total: 0, status: {}, truncated: false }),
+        ),
+    [],
+  );
+  useEffect(() => {
+    loadDeliveries();
+  }, [loadDeliveries]);
+
+  async function save(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const d = new FormData(e.currentTarget);
+    const next: Record<string, unknown> = {
+      [mailKeys.enabled]: d.get("enabled") === "on",
+      [mailKeys.host]: String(d.get("host") || "").trim(),
+      [mailKeys.port]: Number(d.get("port") || 25),
+      [mailKeys.security]: String(d.get("security") || "auto"),
+      [mailKeys.skipVerify]: d.get("skipVerify") === "on",
+      [mailKeys.username]: String(d.get("username") || "").trim(),
+      [mailKeys.fromAddress]: String(d.get("fromAddress") || "").trim(),
+      [mailKeys.fromName]: String(d.get("fromName") || "").trim(),
+      [mailKeys.baseUrl]: String(d.get("baseUrl") || "").trim(),
+      [mailKeys.timeout]: Number(d.get("timeout") || 10),
+    };
+    for (const event of mailEvents) {
+      next[mailKeys[event.key]] = d.get(event.key) === "on";
+    }
+    const password = String(d.get("password") || "");
+    setError(undefined);
+    setSaving(true);
+    try {
+      for (const [key, v] of Object.entries(next)) {
+        const stored = row(key);
+        if (stored && JSON.stringify(stored.value) === JSON.stringify(v))
+          continue;
+        await put(`/api/v1/admin/settings/${key}`, {
+          value: v,
+          category: "mail",
+        });
+      }
+      if (password) {
+        await put(`/api/v1/admin/settings/${mailKeys.password}`, {
+          value: "",
+          category: "mail",
+          secret: true,
+          secretValue: password,
+        });
+      }
+      notify("메일 알림 설정을 저장했습니다.");
+      reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "저장하지 못했습니다");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function sendTest() {
+    setTesting(true);
+    setTestResult(undefined);
+    try {
+      const answer = await post<{ sent: boolean; recipient: string }>(
+        "/api/v1/admin/mail/test",
+        { recipient },
+      );
+      setTestResult({
+        ok: true,
+        message: `${answer.recipient} 으로 시험 메일을 보냈습니다. 받은 편지함을 확인하세요.`,
+      });
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : "보내지 못했습니다",
+      });
+    } finally {
+      setTesting(false);
+      loadDeliveries();
+    }
+  }
+  return (
+    <div className="admin-card">
+      <header>
+        <div>
+          <h2>메일 알림 · SMTP 릴레이</h2>
+          <p>
+            결재 요청, 결재 결과, 만료 임박, 즉시 조치 알림을 사내 SMTP 릴레이로
+            보냅니다. 기본은 꺼짐입니다.
+          </p>
+        </div>
+        <Badge tone={current.enabled ? "success" : "neutral"}>
+          {current.enabled ? "사용 중" : "비활성"}
+        </Badge>
+      </header>
+      <div className="security-banner">
+        <ShieldCheck />
+        <div>
+          <b>요청을 막지 않고, 나간 것은 기록합니다</b>
+          <p>
+            메일은 배경에서 보내므로 릴레이가 느리거나 죽어 있어도 화면의 작업은
+            평소처럼 끝납니다. 시도마다 아래 발송 기록에 남고, 본문은 기록하지
+            않습니다. 자기가 한 일은 자기에게 보내지 않으며, 한 번의 작업이 만든
+            여러 알림은 한 통으로 묶습니다.
+          </p>
+        </div>
+      </div>
+      <form onSubmit={save}>
+        <label className="toggle-row">
+          <span>
+            <b>메일 알림 사용</b>
+            <small>
+              켜면 아래 이벤트가 메일로 나갑니다. 시험 발송은 꺼져 있어도
+              됩니다.
+            </small>
+          </span>
+          <input
+            type="checkbox"
+            name="enabled"
+            defaultChecked={current.enabled}
+          />
+        </label>
+        <div className="form-grid">
+          <Field
+            label="SMTP 릴레이 주소"
+            required
+            hint="사내 릴레이 호스트명. 폐쇄망에서는 postra 를 가리키면 알림이 밖으로 나가지 않습니다."
+          >
+            <input
+              name="host"
+              defaultValue={current.host}
+              placeholder="relay.internal"
+            />
+          </Field>
+          <Field label="포트" hint="사내 릴레이는 대개 25 입니다.">
+            <input
+              name="port"
+              type="number"
+              min={1}
+              max={65535}
+              defaultValue={current.port}
+            />
+          </Field>
+          <Field
+            label="보안"
+            hint="auto 는 서버가 STARTTLS 를 알리면 쓰고 아니면 평문으로 보냅니다."
+          >
+            <select name="security" defaultValue={current.security}>
+              <option value="auto">auto · 서버가 알리는 대로</option>
+              <option value="none">none · 암호화 없음</option>
+              <option value="starttls">starttls · STARTTLS 필수</option>
+              <option value="tls">tls · 처음부터 TLS (465)</option>
+            </select>
+          </Field>
+          <Field label="제한 시간(초)">
+            <input
+              name="timeout"
+              type="number"
+              min={1}
+              max={300}
+              defaultValue={current.timeout}
+            />
+          </Field>
+          <Field
+            label="사용자 이름"
+            hint="인증 없는 릴레이가 흔하므로 선택 사항입니다. 비우면 AUTH 를 시도하지 않습니다."
+          >
+            <input
+              name="username"
+              defaultValue={current.username}
+              autoComplete="off"
+            />
+          </Field>
+          <Field
+            label="비밀번호"
+            hint="비워두면 기존 비밀번호를 유지합니다. 저장된 값은 화면과 API 로 되읽히지 않습니다."
+          >
+            <input
+              name="password"
+              type="password"
+              autoComplete="new-password"
+              placeholder={
+                passwordConfigured
+                  ? "설정됨 · 변경하려면 입력"
+                  : "비밀번호 입력"
+              }
+            />
+          </Field>
+          <Field
+            label="보내는 주소"
+            hint="비우면 vendra@<릴레이 주소> 로 보냅니다."
+          >
+            <input
+              name="fromAddress"
+              defaultValue={current.fromAddress}
+              placeholder="vendra@corp.example"
+            />
+          </Field>
+          <Field label="보내는 이름">
+            <input name="fromName" defaultValue={current.fromName} />
+          </Field>
+          <Field
+            label="서비스 주소"
+            hint="메일 속 '바로 열기' 링크가 가리킬 이 서비스의 주소. 비우면 링크 없이 보냅니다."
+          >
+            <input
+              name="baseUrl"
+              defaultValue={current.baseUrl}
+              placeholder="https://vendra.corp.example"
+            />
+          </Field>
+        </div>
+        <label className="toggle-row">
+          <span>
+            <b>인증서 검증 건너뛰기</b>
+            <small>사내 릴레이가 사설 인증서를 쓸 때만 켜세요.</small>
+          </span>
+          <input
+            type="checkbox"
+            name="skipVerify"
+            defaultChecked={current.skipVerify}
+          />
+        </label>
+        <h3>보낼 이벤트</h3>
+        {mailEvents.map((event) => (
+          <label className="toggle-row" key={event.key}>
+            <span>
+              <b>{event.label}</b>
+              <small>{event.hint}</small>
+            </span>
+            <input
+              type="checkbox"
+              name={event.key}
+              defaultChecked={current[event.key]}
+            />
+          </label>
+        ))}
+        {error && (
+          <p className="form-error" role="alert">
+            <AlertCircle />
+            {error}
+          </p>
+        )}
+        <div className="form-actions">
+          <button className="button" disabled={saving}>
+            <Save />
+            메일 알림 설정 저장
+          </button>
+        </div>
+      </form>
+      <header>
+        <div>
+          <h3>시험 발송</h3>
+          <p>
+            저장된 설정으로 실제 한 통을 보내고 릴레이의 대답을 그 자리에서 보여
+            줍니다. 비우면 내 주소로 보냅니다.
+          </p>
+        </div>
+      </header>
+      <div className="form-grid">
+        <Field label="받는 사람">
+          <input
+            name="recipient"
+            value={recipient}
+            onChange={(e) => setRecipient(e.target.value)}
+            placeholder="ops@corp.example"
+          />
+        </Field>
+        <div className="form-actions">
+          <button
+            className="button secondary"
+            type="button"
+            onClick={sendTest}
+            disabled={testing}
+          >
+            <Mail />
+            시험 메일 보내기
+          </button>
+        </div>
+      </div>
+      {testResult && (
+        <p
+          className={testResult.ok ? "form-hint" : "form-error"}
+          role={testResult.ok ? "status" : "alert"}
+        >
+          {testResult.ok ? null : <AlertCircle />}
+          {testResult.message}
+        </p>
+      )}
+      <header>
+        <div>
+          <h3>발송 기록</h3>
+          <p>
+            무엇이 건물 밖으로 나갔는지. 언제, 어떤 이벤트로, 누구에게, 제목이
+            무엇이었고, 되었는지 안 되었는지. 본문은 담지 않습니다.
+          </p>
+        </div>
+        <button
+          className="button secondary"
+          type="button"
+          onClick={loadDeliveries}
+        >
+          <RefreshCw />
+          새로 고침
+        </button>
+      </header>
+      {!deliveries ? (
+        <Loading />
+      ) : deliveries.items.length ? (
+        <>
+          <p className="form-hint">
+            전체 {deliveries.total.toLocaleString()}건 · 성공{" "}
+            {(deliveries.status.sent || 0).toLocaleString()} · 실패{" "}
+            {(deliveries.status.failed || 0).toLocaleString()} · 대기{" "}
+            {(deliveries.status.queued || 0).toLocaleString()}
+            {deliveries.truncated ? " · 최근 50건만 표시" : ""}
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>시각</th>
+                <th>이벤트</th>
+                <th>받는 사람</th>
+                <th>제목</th>
+                <th>결과</th>
+              </tr>
+            </thead>
+            <tbody>
+              {deliveries.items.map((d) => (
+                <tr key={d.id}>
+                  <td>{logTime(d.createdAt)}</td>
+                  <td>
+                    <code>{d.event}</code>
+                  </td>
+                  <td>{d.recipient}</td>
+                  <td>{d.subject}</td>
+                  <td>
+                    <Badge tone={mailStatusTone(d.status)}>
+                      {d.status === "sent"
+                        ? "발송됨"
+                        : d.status === "failed"
+                          ? "실패"
+                          : "대기"}
+                    </Badge>
+                    {d.errorMessage && <small> {d.errorMessage}</small>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : (
+        <Empty
+          title="발송 기록이 없습니다"
+          description="메일이 나가면 성공과 실패가 모두 여기에 남습니다."
         />
       )}
     </div>
@@ -1509,7 +1989,8 @@ function RoleForm({
     setError("");
     try {
       if (role) await patch(`/api/v1/admin/roles/${role.id}`, common);
-      else await post("/api/v1/admin/roles", { ...common, code: d.get("code") });
+      else
+        await post("/api/v1/admin/roles", { ...common, code: d.get("code") });
     } catch (e) {
       // Without this the refusal was thrown out of the submit handler and the
       // modal simply sat there, so a permission the API declined looked like a

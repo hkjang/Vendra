@@ -32,7 +32,7 @@
 - Integration: REST/OpenAPI 3.1, 조회 전용 MCP 도구, PostgreSQL Job/Notification Adapter
 - 로그인 보호: 계정·발신지 단위 실패 임계값과 잠금, 계정 열거 방지, 실패·잠금 감사로그와 지표
 - UX: 라우트 단위 지연 로딩, 업무 관제탑, `Ctrl/⌘ K` 빠른 이동, 필터·정렬·열 저장 보기, 일괄 처리, 입력 자동 저장, 반응형 탐색, 키보드 전용 조작과 WCAG AA 명암비
-- 운영: 다중 인스턴스 안전 자동 DB migration, JSON log, 관리자 실시간 로그 뷰어, 알림 센터, liveness/readiness, 비-root/read-only Docker 실행
+- 운영: 다중 인스턴스 안전 자동 DB migration, JSON log, 관리자 실시간 로그 뷰어, 알림 센터, 사내 SMTP 릴레이 메일 알림(결재 요청·결과, 만료 임박, 즉시 조치 — 기본 꺼짐), liveness/readiness, 비-root/read-only Docker 실행
 
 ## 빠른 시작
 
