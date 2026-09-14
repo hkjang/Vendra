@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/hkjang/Vendra/internal/mail"
 	"github.com/hkjang/Vendra/internal/security"
 	"github.com/hkjang/Vendra/internal/tracking"
 )
@@ -80,6 +81,19 @@ func (a *App) putSetting(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in.Value = config
+	}
+	if mail.IsSettingKey(key) {
+		// A relay setting the transport could never use is refused here,
+		// with the row named, rather than stored and failing every send.
+		if err := mail.ValidateSetting(key, raw(in.Value)); err != nil {
+			writeError(w, 400, "validation_error", err.Error())
+			return
+		}
+		if key == mail.KeyPassword {
+			// The password is a secret row: the value column stays empty
+			// so nothing readable is ever written beside the cipher.
+			in.Value, in.Secret = "", true
+		}
 	}
 	_, err := a.db.Exec(r.Context(), `INSERT INTO settings(key,value,secret_value,secret,category,updated_by,updated_at) VALUES($1,$2,$3,$4,COALESCE(NULLIF($5,''),'general'),$6,now()) ON CONFLICT(key) DO UPDATE SET value=excluded.value,secret_value=COALESCE(excluded.secret_value,settings.secret_value),secret=excluded.secret,category=excluded.category,updated_by=excluded.updated_by,updated_at=now()`, key, raw(in.Value), cipher, in.Secret, in.Category, p.ID)
 	if err != nil {

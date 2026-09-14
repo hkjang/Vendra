@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/hkjang/Vendra/internal/mail"
 )
 
 // repoFile reads a file from the repository root, which is two directories up
@@ -94,6 +96,34 @@ func TestAdminGuideDescribesSilentSignInAsTheCodeDoesIt(t *testing.T) {
 	}
 	if (oidcSettings{}).AutoLogin {
 		t.Error("auto-login is on when the key is absent; the guide promises the opposite")
+	}
+}
+
+// TestAdminGuideNamesEveryMailSettingAndTheDefaultIsOff holds the guide's
+// 3.6 table to the rows the migration installs: a mail key added to the code
+// without a line in the table is one an operator cannot find, and the whole
+// point of standard names is that they are written down. The "off by default"
+// promise is checked against the parsed defaults, not the prose.
+func TestAdminGuideNamesEveryMailSettingAndTheDefaultIsOff(t *testing.T) {
+	guide := repoFile(t, "docs/ADMIN_GUIDE.md")
+	for _, setting := range mail.Settings {
+		if !strings.Contains(guide, "`"+setting.Key+"`") {
+			t.Errorf("the admin guide does not list %s", setting.Key)
+		}
+	}
+	migration := repoFile(t, "internal/db/migrations/018_mail.sql")
+	for _, setting := range mail.Settings {
+		if !strings.Contains(migration, "('"+setting.Key+"',") {
+			t.Errorf("the migration does not install %s", setting.Key)
+		}
+	}
+	if config := mail.Parse(nil); config.Enabled || config.Port != mail.DefaultPort || config.Username != "" || config.Security != mail.SecurityAuto {
+		t.Errorf("the defaults are %+v; the guide promises off, port 25, no credentials, auto", config)
+	}
+	for _, route := range []string{"/api/v1/admin/mail/test", "/api/v1/admin/mail/deliveries"} {
+		if !strings.Contains(guide, route+"`") {
+			t.Errorf("the admin guide does not name %s", route)
+		}
 	}
 }
 

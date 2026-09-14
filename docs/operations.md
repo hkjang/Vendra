@@ -19,6 +19,8 @@ Embedded, ordered SQL migrations run inside a PostgreSQL transaction at startup.
 
 ## Notification adapters
 
+결재 요청·결과, 만료 임박, 즉시 조치 알림을 사내 SMTP 릴레이로 보내는 메일 알림은 `mail.*` 설정 키로 따로 켭니다(기본 꺼짐, 관리자 가이드 3.6). 시도마다 `mail_deliveries` 에 본문 없이 남고, 릴레이가 죽어 있어도 그 요청은 정상으로 끝납니다.
+
 `notification.adapters`는 어댑터 배열입니다. 각 항목은 `name`, `type`(`log`, `slack`, `mattermost`, `webhook`, `email`, `sms`, `internal_messenger`), `url`, `enabled`을 가지며 `timeoutSeconds`로 호출 상한을 정합니다. 생략하면 10초이고 1~120초로 제한됩니다.
 
 ```json
