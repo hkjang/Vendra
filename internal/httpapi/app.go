@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hkjang/Vendra/internal/config"
+	"github.com/hkjang/Vendra/internal/mail"
 	"github.com/hkjang/Vendra/internal/observability"
 	"github.com/hkjang/Vendra/internal/security"
 	"github.com/hkjang/Vendra/internal/tracking"
@@ -38,6 +39,9 @@ type App struct {
 	// violations holds what browsers report the content security policy
 	// refused while a tracking snippet is on. In memory and bounded.
 	violations *tracking.Recorder
+	// mail sends event notifications through the company relay, in the
+	// background. Nil in a unit test with no database; every caller checks.
+	mail *mail.Service
 }
 
 func New(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, staticDir string) (*App, error) {
@@ -49,6 +53,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, staticDir s
 		return nil, fmt.Errorf("bootstrap administrator: %w", err)
 	}
 	app := &App{db: pool, vault: vault, auth: authService{db: pool, audit: auditor{db: pool}}, audit: auditor{db: pool}, logs: observability.DefaultStore(), staticDir: staticDir, violations: tracking.NewRecorder()}
+	app.mail = newMailService(pool, vault)
 	go app.runBackground(ctx)
 	return app, nil
 }
@@ -267,6 +272,8 @@ func (a *App) registerAPI(m routeRegistrar) {
 	m.HandleFunc("GET /api/v1/admin/tracking/violations", require("*", a.listTrackingViolations))
 	m.HandleFunc("DELETE /api/v1/admin/tracking/violations", require("*", a.clearTrackingViolations))
 	m.HandleFunc("POST /api/v1/admin/tracking/allowed-hosts", require("*", a.allowTrackingHost))
+	m.HandleFunc("GET /api/v1/admin/mail/deliveries", require("*", a.adminMailDeliveries))
+	m.HandleFunc("POST /api/v1/admin/mail/test", require("*", a.adminSendTestMail))
 
 	m.HandleFunc("GET /api/v1/portal/profile", require("portal.*", a.portalProfile))
 	m.HandleFunc("PATCH /api/v1/portal/profile", require("portal.*", a.portalUpdateProfile))

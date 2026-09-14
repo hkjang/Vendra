@@ -501,6 +501,7 @@ func (a *App) submitObject(objectType string) http.HandlerFunc {
 			return
 		}
 		a.audit.record(r, "submit", objectType, id, nil, map[string]any{"workflowInstanceId": instanceID})
+		a.notifyApprovalRequested(r.Context(), instanceID, firstStep(steps), p.ID)
 		writeJSON(w, 200, map[string]any{"status": "pending_approval", "workflowApplied": true, "instanceId": instanceID})
 	}
 }
