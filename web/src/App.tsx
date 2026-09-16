@@ -62,6 +62,7 @@ import CommandPalette, { QuickNavigationItem } from "./CommandPalette";
 import {
   beginSilentSso,
   clearSilentSsoState,
+  loginDestination,
   markSignedOut,
   OIDCConfig,
   silentSsoWanted,
@@ -348,6 +349,12 @@ function Login({ onLogin }: { onLogin: () => void }) {
   });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const location = useLocation();
+  const navigate = useNavigate();
+  // Where either way of signing in ends up. A refused silent attempt lands
+  // here at /login with the deep link it started from; leaving from /login
+  // without it would put a person who opened an approval on the front page.
+  const destination = loginDestination(location);
   useEffect(() => {
     // Both are decoration on this screen: the form still works without a
     // version line or an SSO button, so a failure here must not raise an alert
@@ -365,6 +372,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
         email: data.get("email"),
         password: data.get("password"),
       });
+      if (location.pathname === "/login") navigate(destination, { replace: true });
       onLogin();
     } catch (e) {
       setError(e instanceof Error ? e.message : "로그인에 실패했습니다");
@@ -448,7 +456,10 @@ function Login({ onLogin }: { onLogin: () => void }) {
               <div className="or">
                 <span>또는</span>
               </div>
-              <a className="button oidc-button" href="/api/auth/oidc/start">
+              <a
+                className="button oidc-button"
+                href={`/api/auth/oidc/start?returnTo=${encodeURIComponent(destination)}`}
+              >
                 Keycloak SSO로 계속
               </a>
             </>

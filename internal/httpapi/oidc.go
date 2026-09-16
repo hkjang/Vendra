@@ -95,6 +95,19 @@ type oidcFlow struct {
 // against bouncing a signed-out visitor between here and the provider forever.
 const silentRefusalPath = "/login?sso=none"
 
+// silentRefusalLocation is the refusal path carrying the deep link the attempt
+// started from. The attempt began because somebody opened, say, an approval a
+// colleague linked; without this the login screen they land on has forgotten that,
+// and signing in with a password or the SSO button takes them to the front
+// page instead. The link is held to the same rule as at the start.
+func silentRefusalLocation(returnTo string) string {
+	returnTo = safeReturnTo(returnTo)
+	if returnTo == "/" {
+		return silentRefusalPath
+	}
+	return silentRefusalPath + "&returnTo=" + url.QueryEscape(returnTo)
+}
+
 func (a *App) loadOIDC(ctx context.Context) (oidcSettings, error) {
 	var rawValue []byte
 	var cipher *string
@@ -189,7 +202,7 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 			// exists. That is an ordinary answer, not a failure: land on the
 			// login screen with the marker the browser reads to stop retrying.
 			http.SetCookie(w, &http.Cookie{Name: "vendra_oidc_flow", Value: "", Path: "/api/auth/oidc/callback", HttpOnly: true, MaxAge: -1})
-			http.Redirect(w, r, silentRefusalPath, http.StatusFound)
+			http.Redirect(w, r, silentRefusalLocation(flow.ReturnTo), http.StatusFound)
 			return
 		}
 		writeError(w, 401, "oidc_rejected", providerErr)

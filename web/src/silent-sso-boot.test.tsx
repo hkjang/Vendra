@@ -1,8 +1,8 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { BrowserRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { APIError, api } from "./api";
+import { APIError, api, post } from "./api";
 
 vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./api")>()),
@@ -11,6 +11,7 @@ vi.mock("./api", async (importOriginal) => ({
 }));
 
 const server = vi.mocked(api);
+const submit = vi.mocked(post);
 
 // What the browser does on the first load with no session, which is the only
 // moment a silent sign-in may start. The provider is a full-page move, so the
@@ -26,6 +27,11 @@ describe("booting without a session", () => {
       ...window.location,
       assign,
     } as Location);
+    land();
+  }
+  // Without the snapshot, so the address bar can be read after a move.
+  function land(address?: string) {
+    if (address) window.history.replaceState({}, "", address);
     render(
       <BrowserRouter>
         <App />
@@ -60,6 +66,33 @@ describe("booting without a session", () => {
     boot("/login?sso=none");
     expect(await screen.findByRole("heading", { name: "Vendra에 로그인" })).toBeInTheDocument();
     expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("keeps the deep link a refused attempt arrived with, for both ways of signing in", async () => {
+    // The callback lands here when the provider had no session. The address
+    // the person opened is gone from the bar, so the login screen has to read
+    // it from the query — the SSO button and the password form alike.
+    land("/login?sso=none&returnTo=%2Fapprovals%3Fid%3D7");
+    expect(await screen.findByRole("link", { name: "Keycloak SSO로 계속" })).toHaveAttribute(
+      "href",
+      "/api/auth/oidc/start?returnTo=%2Fapprovals%3Fid%3D7",
+    );
+    submit.mockResolvedValue({});
+    fireEvent.change(screen.getByLabelText("이메일"), { target: { value: "buyer@vendra.test" } });
+    fireEvent.change(screen.getByLabelText("비밀번호"), { target: { value: "correct horse" } });
+    fireEvent.click(screen.getByRole("button", { name: "로그인" }));
+    await waitFor(() => expect(submit).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(window.location.pathname + window.location.search).toBe("/approvals?id=7"),
+    );
+  });
+
+  it("does not follow a returnTo that leaves this site", async () => {
+    land("/login?sso=none&returnTo=%2F%2Fevil.example");
+    expect(await screen.findByRole("link", { name: "Keycloak SSO로 계속" })).toHaveAttribute(
+      "href",
+      "/api/auth/oidc/start?returnTo=%2F",
+    );
   });
 
   it("shows the login screen when the administrator has not turned auto-login on", async () => {
