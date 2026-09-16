@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   beginSilentSso,
   clearSilentSsoState,
+  loginDestination,
   markSignedOut,
   safeReturnTo,
   shouldAttemptSilentSso,
@@ -92,5 +93,33 @@ describe("safeReturnTo", () => {
     expect(safeReturnTo("/\\evil.example")).toBe("/");
     expect(safeReturnTo("https://evil.example")).toBe("/");
     expect(safeReturnTo("")).toBe("/");
+  });
+});
+
+// The login screen is reached two ways: drawn in place of the page that was
+// asked for, or landed on at /login after the provider refused a silent
+// attempt. Signing in must end at the same place either way.
+describe("loginDestination", () => {
+  it("reads the deep link a refused silent attempt carried to /login", () => {
+    expect(
+      loginDestination({
+        pathname: "/login",
+        search: "?sso=none&returnTo=%2Fsuppliers%2F42%3Ftab%3Drisk",
+        hash: "",
+      }),
+    ).toBe("/suppliers/42?tab=risk");
+  });
+
+  it("goes to the front page from /login without one, or with an off-site one", () => {
+    expect(loginDestination({ pathname: "/login", search: "?sso=none", hash: "" })).toBe("/");
+    expect(
+      loginDestination({ pathname: "/login", search: "?returnTo=%2F%2Fevil.example", hash: "" }),
+    ).toBe("/");
+  });
+
+  it("is the address itself anywhere else", () => {
+    expect(
+      loginDestination({ pathname: "/approvals", search: "?id=7", hash: "#step" }),
+    ).toBe("/approvals?id=7#step");
   });
 });

@@ -65,6 +65,23 @@ export function safeReturnTo(raw: string): string {
 }
 
 /**
+ * Where signing in from the login screen should land.
+ *
+ * A refused silent attempt arrives at /login carrying the deep link it started
+ * from, because the address it was opened at has been replaced by the trip to
+ * the provider. Anywhere else the address bar still is the destination: the
+ * login form is drawn in place of the page that was asked for.
+ */
+export function loginDestination(
+  location: Pick<Location, "pathname" | "search" | "hash">,
+): string {
+  if (location.pathname === "/login") {
+    return safeReturnTo(new URLSearchParams(location.search).get("returnTo") ?? "/");
+  }
+  return safeReturnTo(location.pathname + location.search + location.hash);
+}
+
+/**
  * Decides whether to try signing in without showing a login screen.
  *
  * It must never run more than once per browsing session: prompt=none either

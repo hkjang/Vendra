@@ -81,13 +81,20 @@ func TestASilentSignInIsOnlyAttemptedWhenTheAdministratorAllowsIt(t *testing.T) 
 	// No provider session: the ordinary answer, not a failure. The browser is
 	// mid-navigation with nothing on screen, so a JSON 401 would be what the
 	// visitor saw; instead they land on the login screen with the marker that
-	// stops a retry.
+	// stops a retry — and with the deep link the attempt started from, so
+	// signing in from that screen still ends where they were going.
 	w := refuse(cookie, redirect.Query().Get("state"))
-	if w.Code != http.StatusFound || w.Header().Get("Location") != "/login?sso=none" {
-		t.Fatalf("a silent refusal answered %d %q, want 302 /login?sso=none: %s", w.Code, w.Header().Get("Location"), w.Body.String())
+	if w.Code != http.StatusFound || w.Header().Get("Location") != "/login?sso=none&returnTo=%2Fsuppliers%2F42" {
+		t.Fatalf("a silent refusal answered %d %q, want 302 /login?sso=none&returnTo=%%2Fsuppliers%%2F42: %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 	if !strings.Contains(w.Header().Get("Set-Cookie"), "vendra_oidc_flow=;") {
 		t.Errorf("the spent flow cookie was left behind: %q", w.Header().Get("Set-Cookie"))
+	}
+	// An attempt from the front page carries nothing: the marker alone is the
+	// address the guide names.
+	cookie, redirect = startFlowAt(t, handler, "/api/auth/oidc/start?prompt=none")
+	if w := refuse(cookie, redirect.Query().Get("state")); w.Header().Get("Location") != silentRefusalPath {
+		t.Errorf("a refusal from the front page landed on %q, want %s", w.Header().Get("Location"), silentRefusalPath)
 	}
 	// A spent state is not a marker: a forged callback with no flow behind it
 	// gets the same 400 every callback without one gets, and no redirect.
@@ -111,6 +118,22 @@ func TestASilentSignInIsOnlyAttemptedWhenTheAdministratorAllowsIt(t *testing.T) 
 	cookie, _ = startFlowAt(t, handler, "/api/auth/oidc/start?prompt=none&returnTo=%2F%2Fevil.example")
 	if flow := decodeFlow(t, app, cookie); flow.ReturnTo != "/" || !flow.Silent {
 		t.Errorf("flow = %+v, want a silent attempt returning to /", flow)
+	}
+}
+
+// The flow cookie is encrypted, so its returnTo is what the start leg stored;
+// the refusal still holds it to the same rule rather than trusting the cookie.
+func TestASilentRefusalCarriesOnlyAnOnSiteDeepLink(t *testing.T) {
+	for raw, want := range map[string]string{
+		"":                         silentRefusalPath,
+		"/":                        silentRefusalPath,
+		"/suppliers/42?tab=risk#x": silentRefusalPath + "&returnTo=%2Fsuppliers%2F42%3Ftab%3Drisk%23x",
+		"//evil.example":           silentRefusalPath,
+		"https://evil.example/":    silentRefusalPath,
+	} {
+		if got := silentRefusalLocation(raw); got != want {
+			t.Errorf("silentRefusalLocation(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }
 
