@@ -319,7 +319,7 @@ curl -s -X POST https://vendra.internal/mcp -H "Authorization: Bearer $ACCESS_TO
 | `서명 알고리즘을 받지 않습니다` | `HS*`·`none` | Keycloak realm 키(RS256 기본)로 서명된 액세스 토큰이어야 합니다 |
 | `소지자 증명(cnf)이 묶인 토큰` | DPoP·mTLS 바인딩 | 클라이언트에서 바인딩 없는 일반 Bearer 토큰을 쓰게 합니다 |
 | `등록되지 않았거나 비활성입니다. 먼저 웹으로 한 번 로그인하세요` | 계정 없음·비활성 | 그 사람이 웹으로 SSO 로그인을 한 번 하면 계정이 묶입니다. 비활성이면 관리자가 판단합니다 |
-| `로그인이 필요합니다` (헤더 없음) | 스위치 꺼짐 또는 Issuer 비어 있음 | 이 카드를 켜고 OIDC Issuer 를 확인합니다. 서버 로그에 `mcp oauth token refused reason=…` 가 남습니다 |
+| `로그인이 필요합니다` (헤더 없음) | 스위치 꺼짐 또는 Issuer 비어 있음 | 이 카드를 켜고 OIDC Issuer 를 확인합니다. 스위치가 켜져 있는데 Issuer 가 비어 있을 때만 서버 로그에 `mcp oauth token refused reason=…` 가 남고, 스위치가 꺼진 배포는 조용히 평소의 401 로 답합니다 |
 
 ### 3.4 AI 모델 연결
 

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/hmac"
@@ -10,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,7 +36,8 @@ const (
 
 // signJWT signs a token with the fake provider's realm key, or with any
 // header the test names — an HS256 header with the public key as the secret
-// is the classic forgery, and the test wants to present it.
+// is the classic forgery, and the test wants to present it. alg=none is the
+// other classic: the token ends in a dot and carries no signature at all.
 func signJWT(t *testing.T, idp *fakeIdP, header, claims map[string]any) string {
 	t.Helper()
 	segment := func(v any) string {
@@ -47,11 +50,14 @@ func signJWT(t *testing.T, idp *fakeIdP, header, claims map[string]any) string {
 	signing := segment(header) + "." + segment(claims)
 	digest := sha256.Sum256([]byte(signing))
 	var signature []byte
-	if header["alg"] == "HS256" {
+	switch header["alg"] {
+	case "none":
+		return signing + "."
+	case "HS256":
 		mac := hmac.New(sha256.New, idp.key.PublicKey.N.Bytes())
 		mac.Write([]byte(signing))
 		signature = mac.Sum(nil)
-	} else {
+	default:
 		var err error
 		signature, err = rsa.SignPKCS1v15(rand.Reader, idp.key, crypto.SHA256, digest[:])
 		if err != nil {
@@ -186,6 +192,32 @@ func (w *mcpOAuthWorld) toolsListed(rec *httptest.ResponseRecorder) bool {
 	return rec.Code == http.StatusOK && json.Unmarshal(rec.Body.Bytes(), &reply) == nil && len(reply.Result.Tools) == len(mcpTools)
 }
 
+// captureLog routes the default logger into a buffer for the rest of the
+// test. A refusal on /mcp is answered to the client in one sentence and to
+// the operator in the log with the library's own words and the request id;
+// the second half is what this reads.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &logged
+}
+
+// refusalLogged reports whether the log holds one "mcp oauth token refused"
+// line for this response — carrying the given text and the same request id
+// the client was answered with — and if not, what it holds instead.
+func refusalLogged(logged *bytes.Buffer, rec *httptest.ResponseRecorder, text string) (bool, string) {
+	requestID := rec.Header().Get("X-Request-ID")
+	for _, line := range strings.Split(logged.String(), "\n") {
+		if strings.Contains(line, `msg="mcp oauth token refused"`) && strings.Contains(line, text) && requestID != "" && strings.Contains(line, "request_id="+requestID) {
+			return true, line
+		}
+	}
+	return false, fmt.Sprintf("X-Request-ID=%q log=%s", requestID, logged.String())
+}
+
 func errorMessage(rec *httptest.ResponseRecorder) string {
 	var body struct {
 		Error struct {
@@ -212,8 +244,14 @@ func TestARefusedMCPClientIsToldWhereToSignIn(t *testing.T) {
 	if rec := w.mcp("", listTools); rec.Code != http.StatusUnauthorized || rec.Header().Get("WWW-Authenticate") != "" {
 		t.Fatalf("a 401 with SSO off: %d WWW-Authenticate=%q", rec.Code, rec.Header().Get("WWW-Authenticate"))
 	}
+	logged := captureLog(t)
 	if rec := w.mcp(accessToken(t, w.idp, "https://vendra.example.test/mcp", nil), listTools); rec.Code != http.StatusUnauthorized || errorMessage(rec) != "unauthenticated: 로그인이 필요합니다" {
 		t.Fatalf("a token with SSO off was answered %d %s, want the plain refusal", rec.Code, rec.Body.String())
+	}
+	// ... and quietly: a deployment that never turned this on has no token
+	// to explain, so the log says nothing about one.
+	if strings.Contains(logged.String(), "mcp oauth") {
+		t.Errorf("a token with the switch off was logged:\n  %s", logged.String())
 	}
 
 	// The switch cannot be turned on with nothing to verify against.
@@ -273,6 +311,23 @@ func TestARefusedMCPClientIsToldWhereToSignIn(t *testing.T) {
 	if rec := w.get("/api/v1/me", ""); rec.Code != http.StatusUnauthorized || rec.Header().Get("WWW-Authenticate") != "" {
 		t.Errorf("the REST 401 carries a challenge: %d %q", rec.Code, rec.Header().Get("WWW-Authenticate"))
 	}
+
+	// The switch is on but the issuer was cleared afterwards — the one
+	// misconfiguration the setting check cannot stop. Everything is as if off:
+	// no metadata, no challenge, the plain refusal — and this time the log
+	// says why, because an operator who turned it on is owed the reason.
+	configureOIDCValue(t, w.app, `{"enabled":false,"issuer":"","publicUrl":"https://vendra.example.test"}`)
+	if rec := w.get(protectedResourcePath+"/mcp", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("metadata with the issuer cleared: %d %s", rec.Code, rec.Body.String())
+	}
+	logged.Reset()
+	rec = w.mcp(accessToken(t, w.idp, "https://vendra.example.test/mcp", nil), listTools)
+	if rec.Code != http.StatusUnauthorized || rec.Header().Get("WWW-Authenticate") != "" || errorMessage(rec) != "unauthenticated: 로그인이 필요합니다" {
+		t.Errorf("a token with the issuer cleared was answered %d %q %s", rec.Code, rec.Header().Get("WWW-Authenticate"), rec.Body.String())
+	}
+	if ok, got := refusalLogged(logged, rec, `reason="mcp.oauth.enabled is on but oidc.issuer is empty"`); !ok {
+		t.Errorf("the switch on without an issuer left no reason in the log\n  %s", got)
+	}
 }
 
 // guards: fromOAuthToken, limitToRolePermissions, authenticate
@@ -319,25 +374,44 @@ func TestOnlyATokenMintedForThisServerOpensMCP(t *testing.T) {
 	// Each of these is a token the realm key signed, or looks like one, and
 	// none may pass. Another realm's token fails on its signature before its
 	// issuer is read; the issuer check is shown with this realm's key under a
-	// foreign iss.
+	// foreign iss. The client gets one sentence; the operator gets the log
+	// line with the library's own reason and the request id, and the two are
+	// held together here because the sentence alone is what a client shows.
+	// An alg=none token is refused twice over: without a signature segment it
+	// is not even token-shaped, and with one go-jose turns the algorithm away.
 	other := newFakeIdP(t, "vendra-web")
+	logged := captureLog(t)
 	for name, tc := range map[string]struct {
 		token string
 		says  string
+		logs  string
 	}{
-		"an expired token":          {accessToken(t, w.idp, resource, map[string]any{"exp": time.Now().Add(-time.Minute).Unix()}), "만료"},
-		"another realm's key":       {accessToken(t, other, resource, nil), "서명"},
-		"another issuer":            {accessToken(t, w.idp, resource, map[string]any{"iss": other.server.URL}), "발급자"},
-		"an ID token":               {accessToken(t, w.idp, resource, map[string]any{"typ": "ID"}), "ID 토큰"},
-		"a refresh token":           {accessToken(t, w.idp, resource, map[string]any{"typ": "Refresh"}), "typ"},
-		"an HS256 signature":        {accessToken(t, w.idp, resource, map[string]any{"__alg": "HS256"}), "서명"},
-		"a token bound to a key":    {accessToken(t, w.idp, resource, map[string]any{"cnf": map[string]any{"jkt": "abc"}}), "cnf"},
-		"a token not yet valid":     {accessToken(t, w.idp, resource, map[string]any{"nbf": time.Now().Add(time.Hour).Unix()}), "nbf"},
-		"a token without a subject": {accessToken(t, w.idp, resource, map[string]any{"sub": ""}), "sub"},
+		"an expired token":               {accessToken(t, w.idp, resource, map[string]any{"exp": time.Now().Add(-time.Minute).Unix()}), "만료", "token is expired"},
+		"another realm's key":            {accessToken(t, other, resource, nil), "서명", "failed to verify signature"},
+		"another issuer":                 {accessToken(t, w.idp, resource, map[string]any{"iss": other.server.URL}), "발급자", "different provider"},
+		"an ID token":                    {accessToken(t, w.idp, resource, map[string]any{"typ": "ID"}), "ID 토큰", "typ=ID"},
+		"a refresh token":                {accessToken(t, w.idp, resource, map[string]any{"typ": "Refresh"}), "typ", "typ=Refresh"},
+		"an HS256 signature":             {accessToken(t, w.idp, resource, map[string]any{"__alg": "HS256"}), "서명", `unexpected signature algorithm \"HS256\"`},
+		"alg=none with a forged segment": {accessToken(t, w.idp, resource, map[string]any{"__alg": "none"}) + "forged", "서명", `unexpected signature algorithm \"none\"`},
+		"alg=none with no signature":     {accessToken(t, w.idp, resource, map[string]any{"__alg": "none"}), "로그인이 필요합니다", ""},
+		"a token bound to a key":         {accessToken(t, w.idp, resource, map[string]any{"cnf": map[string]any{"jkt": "abc"}}), "cnf", "cnf present"},
+		"a token not yet valid":          {accessToken(t, w.idp, resource, map[string]any{"nbf": time.Now().Add(time.Hour).Unix()}), "nbf", "before the nbf"},
+		"a token without a subject":      {accessToken(t, w.idp, resource, map[string]any{"sub": ""}), "sub", "sub empty"},
 	} {
+		logged.Reset()
 		rec := w.mcp(tc.token, listTools)
 		if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), tc.says) {
 			t.Errorf("%s was answered %d %s, want 401 mentioning %q", name, rec.Code, rec.Body.String(), tc.says)
+		}
+		if tc.logs == "" {
+			// Not token-shaped: the plain refusal, with nothing to explain.
+			if strings.Contains(logged.String(), "mcp oauth token refused") {
+				t.Errorf("%s was logged as a refused token:\n  %s", name, logged.String())
+			}
+			continue
+		}
+		if ok, got := refusalLogged(logged, rec, tc.logs); !ok {
+			t.Errorf("%s left no refusal line saying %q with this request's id\n  %s", name, tc.logs, got)
 		}
 	}
 
