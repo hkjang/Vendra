@@ -620,8 +620,11 @@ func (a *App) putFormDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	// Keep only the most recently touched drafts. Autosave is a convenience, so
 	// dropping the oldest is preferable to refusing to save the current one.
+	// The key just written is ranked first regardless of its timestamp: with a
+	// clock tie or a replica running ahead, another row can look newer and the
+	// draft we just answered ok for would be the one evicted.
 	if _, err := a.db.Exec(r.Context(), `DELETE FROM user_form_drafts WHERE user_id=$1 AND draft_key NOT IN (
-		SELECT draft_key FROM user_form_drafts WHERE user_id=$1 ORDER BY updated_at DESC LIMIT $2)`, p.ID, maxFormDraftsPerUser); err != nil {
+		SELECT draft_key FROM user_form_drafts WHERE user_id=$1 ORDER BY (draft_key=$3) DESC, updated_at DESC LIMIT $2)`, p.ID, maxFormDraftsPerUser, key); err != nil {
 		logDB(err)
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "updatedAt": time.Now()})

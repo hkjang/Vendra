@@ -927,6 +927,79 @@ func TestFormDraftsAreBoundedPerUser(t *testing.T) {
 	}
 }
 
+// The eviction keeps the fifty most recently touched drafts, and the one just
+// written is only among them if its updated_at is the newest. With replicas
+// whose clocks disagree, or a tie at microsecond resolution, another row can
+// look more recent and the save answers {"ok":true} for a draft that is gone.
+func TestTheDraftJustSavedSurvivesEvictionWhateverTheClocksSay(t *testing.T) {
+	app, pool := newTestApp(t)
+	ctx := context.Background()
+	handler := app.Handler()
+	_, _ = pool.Exec(ctx, `DELETE FROM login_attempts WHERE email=$1`, testAdminEmail)
+	token := sessionCookieFrom(t, postLogin(t, handler, testAdminEmail, testAdminPassword, "203.0.113.121:5000"))
+	var adminID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, testAdminEmail).Scan(&adminID); err != nil {
+		t.Fatalf("read admin: %v", err)
+	}
+	_, _ = pool.Exec(ctx, `DELETE FROM user_form_drafts WHERE user_id=$1`, adminID)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM user_form_drafts WHERE user_id=$1`, adminID)
+	})
+
+	put := func(key string, payload map[string]any) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"payload": payload})
+		r := httptest.NewRequest(http.MethodPut, "/api/v1/me/drafts/"+key, strings.NewReader(string(body)))
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	for i := 0; i < maxFormDraftsPerUser; i++ {
+		if w := put(fmt.Sprintf("clock-draft-%03d", i), map[string]any{"title": fmt.Sprintf("초안 %02d", i)}); w.Code != http.StatusOK {
+			t.Fatalf("draft %d returned %d: %s", i, w.Code, w.Body.String())
+		}
+	}
+	// Every existing draft now claims to be from the future, as a row written
+	// by a replica with a fast clock would.
+	if _, err := pool.Exec(ctx, `UPDATE user_form_drafts SET updated_at='2999-01-01' WHERE user_id=$1`, adminID); err != nil {
+		t.Fatalf("age drafts into the future: %v", err)
+	}
+
+	if w := put("clock-draft-new", map[string]any{"title": "방금 저장한 초안"}); w.Code != http.StatusOK {
+		t.Fatalf("saving the new draft returned %d: %s", w.Code, w.Body.String())
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/me/drafts/clock-draft-new", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reading the draft back returned %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Draft *struct {
+			Key     string         `json:"key"`
+			Payload map[string]any `json:"payload"`
+		} `json:"draft"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode draft: %v", err)
+	}
+	if got.Draft == nil {
+		t.Fatal("the draft just saved was evicted: GET answered draft=null right after PUT said ok")
+	}
+	if got.Draft.Key != "clock-draft-new" || got.Draft.Payload["title"] != "방금 저장한 초안" {
+		t.Errorf("GET returned %+v, want the payload just saved", got.Draft)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_form_drafts WHERE user_id=$1`, adminID).Scan(&count); err != nil {
+		t.Fatalf("count drafts: %v", err)
+	}
+	if count != maxFormDraftsPerUser {
+		t.Errorf("%d drafts stored, want exactly %d (one future-dated draft evicted, the new one kept)", count, maxFormDraftsPerUser)
+	}
+}
+
 // A malformed notification key used to fail the uuid cast and roll back every
 // other item in the same batch.
 func TestWorkItemStateBatchSurvivesAMalformedNotificationKey(t *testing.T) {
