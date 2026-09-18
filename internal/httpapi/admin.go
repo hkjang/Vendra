@@ -81,6 +81,17 @@ func (a *App) putSetting(w http.ResponseWriter, r *http.Request) {
 		}
 		in.Value = config
 	}
+	if strings.HasPrefix(key, "mcp.oauth.") {
+		// The four rows behind SSO for MCP are read on every token; a wrong
+		// one is refused here, naming the row, rather than hours later in a
+		// client that shows nothing.
+		value, err := a.validMCPOAuthSetting(r.Context(), key, in.Value)
+		if err != nil {
+			writeError(w, 400, "validation_error", err.Error())
+			return
+		}
+		in.Value = value
+	}
 	_, err := a.db.Exec(r.Context(), `INSERT INTO settings(key,value,secret_value,secret,category,updated_by,updated_at) VALUES($1,$2,$3,$4,COALESCE(NULLIF($5,''),'general'),$6,now()) ON CONFLICT(key) DO UPDATE SET value=excluded.value,secret_value=COALESCE(excluded.secret_value,settings.secret_value),secret=excluded.secret,category=excluded.category,updated_by=excluded.updated_by,updated_at=now()`, key, raw(in.Value), cipher, in.Secret, in.Category, p.ID)
 	if err != nil {
 		writeError(w, 400, "save_failed", "설정을 저장하지 못했습니다")

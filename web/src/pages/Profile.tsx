@@ -214,7 +214,9 @@ function KeyManager({ notify }: { notify: (s: string) => void }) {
           <h2>개인 API 키</h2>
           <p>
             REST API와 MCP 클라이언트 인증에 사용합니다. 키별 최소 권한을
-            적용하세요.
+            적용하세요. 관리자가 MCP · SSO(OAuth)를 켜 둔 배포라면 MCP
+            클라이언트에는 키 없이 <code>/mcp</code> 주소만 넣어도 Keycloak
+            로그인으로 연결됩니다.
           </p>
         </div>
         <button className="button" onClick={() => setCreate(true)}>
@@ -406,7 +408,9 @@ function PasswordForm({ notify }: { notify: (s: string) => void }) {
           : "비밀번호를 변경했습니다.",
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "비밀번호를 변경하지 못했습니다");
+      setError(
+        e instanceof Error ? e.message : "비밀번호를 변경하지 못했습니다",
+      );
     } finally {
       setBusy(false);
     }
@@ -476,20 +480,28 @@ type ActiveSession = {
 // title attribute for anyone who needs to identify a device precisely.
 function describeAgent(userAgent: string) {
   if (!userAgent) return "알 수 없는 클라이언트";
-  const browser =
-    /Edg\//.test(userAgent) ? "Edge"
-    : /OPR\//.test(userAgent) ? "Opera"
-    : /Chrome\//.test(userAgent) ? "Chrome"
-    : /Safari\//.test(userAgent) ? "Safari"
-    : /Firefox\//.test(userAgent) ? "Firefox"
-    : "기타 클라이언트";
-  const platform =
-    /Windows/.test(userAgent) ? "Windows"
-    : /Macintosh|Mac OS/.test(userAgent) ? "macOS"
-    : /Android/.test(userAgent) ? "Android"
-    : /iPhone|iPad/.test(userAgent) ? "iOS"
-    : /Linux/.test(userAgent) ? "Linux"
-    : "";
+  const browser = /Edg\//.test(userAgent)
+    ? "Edge"
+    : /OPR\//.test(userAgent)
+      ? "Opera"
+      : /Chrome\//.test(userAgent)
+        ? "Chrome"
+        : /Safari\//.test(userAgent)
+          ? "Safari"
+          : /Firefox\//.test(userAgent)
+            ? "Firefox"
+            : "기타 클라이언트";
+  const platform = /Windows/.test(userAgent)
+    ? "Windows"
+    : /Macintosh|Mac OS/.test(userAgent)
+      ? "macOS"
+      : /Android/.test(userAgent)
+        ? "Android"
+        : /iPhone|iPad/.test(userAgent)
+          ? "iOS"
+          : /Linux/.test(userAgent)
+            ? "Linux"
+            : "";
   return platform ? `${browser} · ${platform}` : browser;
 }
 
@@ -559,7 +571,9 @@ function Sessions({ notify }: { notify: (s: string) => void }) {
               <Laptop2 />
             </span>
             <div>
-              <b title={session.userAgent}>{describeAgent(session.userAgent)}</b>
+              <b title={session.userAgent}>
+                {describeAgent(session.userAgent)}
+              </b>
               <p>{session.ip || "IP 미기록"}</p>
               <small title={`로그인 ${dateTime(session.createdAt)}`}>
                 <Clock3 />

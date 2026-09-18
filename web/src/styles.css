@@ -2832,6 +2832,28 @@ kbd {
   color: #56786d;
   margin: 4px 0 0;
 }
+.mcp-oauth-addresses {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 14px;
+  align-items: center;
+  margin: 14px 0 4px;
+  font-size: 12px;
+}
+.mcp-oauth-addresses dt {
+  color: #56786d;
+  font-weight: 600;
+}
+.mcp-oauth-addresses dd {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.mcp-oauth-addresses code {
+  overflow-wrap: anywhere;
+}
 .key-list > div {
   min-height: 92px;
   border-top: 1px solid var(--line);

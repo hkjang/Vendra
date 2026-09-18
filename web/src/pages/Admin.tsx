@@ -5,6 +5,7 @@ import {
   Bot,
   ChevronRight,
   ClipboardCheck,
+  Copy,
   Download,
   FileText,
   GitBranch,
@@ -28,6 +29,7 @@ import {
 } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, date, del, logTime, patch, post, put, todayISO } from "../api";
+import { mcpMetadataUrl, mcpResource } from "../mcpOauth";
 import { Badge, Empty, Field, Loading, Modal, PageHeader } from "../components";
 import {
   permissionCodes,
@@ -125,7 +127,12 @@ function SettingsPanel({
   }, [load]);
   if (!settings) return <Loading />;
   if (category === "identity")
-    return <OIDC settings={settings} notify={notify} reload={load} />;
+    return (
+      <>
+        <OIDC settings={settings} notify={notify} reload={load} />
+        <MCPOAuthSettings settings={settings} notify={notify} reload={load} />
+      </>
+    );
   if (category === "ai")
     return <AISettings settings={settings} notify={notify} reload={load} />;
   if (category === "tracking")
@@ -357,8 +364,8 @@ function OIDC({
           <span>
             <b>Keycloak 세션이 있으면 자동 로그인</b>
             <small>
-              Keycloak에 이미 로그인한 사람은 로그인 화면 없이 바로 들어옵니다
-              (<code>prompt=none</code>). 세션이 없으면 로그인 화면이 한 번만
+              Keycloak에 이미 로그인한 사람은 로그인 화면 없이 바로 들어옵니다 (
+              <code>prompt=none</code>). 세션이 없으면 로그인 화면이 한 번만
               나오고, 직접 로그아웃한 뒤에는 자동으로 다시 로그인하지 않습니다.
             </small>
           </span>
@@ -387,6 +394,187 @@ function OIDC({
           <button className="button">
             <Save />
             OIDC 설정 저장
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// mcpOAuthRows are the four settings behind "MCP over SSO", one row each,
+// named as every service in the company names them. The issuer and the public
+// address are the OIDC card's and are read from there, never repeated.
+const mcpOAuthRows = {
+  enabled: "mcp.oauth.enabled",
+  resource: "mcp.oauth.resource",
+  audience: "mcp.oauth.audience",
+  scopes: "mcp.oauth.scopes",
+} as const;
+
+export function MCPOAuthSettings({
+  settings,
+  notify,
+  reload,
+}: {
+  settings: Setting[];
+  notify: (s: string) => void;
+  reload: () => void;
+}) {
+  const row = (key: string) => settings.find((s) => s.key === key)?.value;
+  const oidc = (row("oidc") || {}) as Record<string, unknown>;
+  const enabled = row(mcpOAuthRows.enabled) === true;
+  const [resource, setResource] = useState(
+    String(row(mcpOAuthRows.resource) || ""),
+  );
+  const [error, setError] = useState<string>();
+  const issuerMissing = !String(oidc.issuer || "").trim();
+  const claimed = mcpResource(
+    resource,
+    String(oidc.publicUrl || ""),
+    window.location.origin,
+  );
+  const metadataUrl = mcpMetadataUrl(claimed);
+  async function save(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(undefined);
+    const d = new FormData(e.currentTarget);
+    const rows: [string, unknown][] = [
+      [mcpOAuthRows.resource, String(d.get("resource") || "")],
+      [mcpOAuthRows.audience, String(d.get("audience") || "")],
+      [mcpOAuthRows.scopes, String(d.get("scopes") || "")],
+      // The switch goes last: it is refused while the OIDC issuer is empty,
+      // and the three rows above are still worth keeping when it is.
+      [mcpOAuthRows.enabled, d.get("enabled") === "on"],
+    ];
+    try {
+      for (const [key, value] of rows) {
+        await put("/api/v1/admin/settings/" + key, {
+          category: "identity",
+          value,
+        });
+      }
+      notify("MCP SSO 설정을 저장했습니다.");
+      reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "저장하지 못했습니다");
+    }
+  }
+  const copy = (text: string) => () => {
+    navigator.clipboard?.writeText(text);
+    notify("복사했습니다.");
+  };
+  return (
+    <div className="admin-card">
+      <header>
+        <div>
+          <h2>MCP · SSO(OAuth)로 연결</h2>
+          <p>
+            AI 도구(MCP 클라이언트)가 개인 키 없이 Keycloak 로그인으로 들어오게
+            합니다. 클라이언트에는 MCP 주소 하나만 주면 됩니다.
+          </p>
+        </div>
+        <Badge tone={enabled ? "success" : "neutral"}>
+          {enabled ? "사용 중" : "비활성"}
+        </Badge>
+      </header>
+      <div className="security-banner">
+        <ShieldCheck />
+        <div>
+          <b>이 서버는 리소스 서버입니다</b>
+          <p>
+            로그인과 토큰 발급은 위의 Keycloak(Issuer)이 합니다. 토큰은 서명·
+            발급자·만료·대상을 요청마다 검사하며, 이미 웹으로 로그인한 활성
+            계정만 통과합니다. 계정을 만들거나 권한을 올리지 않으며,{" "}
+            <code>/mcp</code> 밖에서는 받지 않습니다.
+          </p>
+        </div>
+      </div>
+      <form onSubmit={save}>
+        <label className="toggle-row">
+          <span>
+            <b>MCP 를 SSO 토큰으로 열기</b>
+            <small>
+              개인 키(<code>vnd_</code>)는 그대로 동작합니다. 켜려면 OIDC 의
+              Issuer URL 이 먼저 있어야 합니다.
+            </small>
+          </span>
+          <input type="checkbox" name="enabled" defaultChecked={enabled} />
+        </label>
+        <div className="form-grid">
+          <Field
+            label="리소스 식별자"
+            hint="토큰의 aud 가 가리켜야 하는 이 서버의 공개 MCP 주소. 비워 두면 서비스 공개 주소 + /mcp 를 씁니다."
+          >
+            <input
+              name="resource"
+              value={resource}
+              onChange={(e) => setResource(e.target.value)}
+              placeholder="https://vendra.example.co.kr/mcp"
+            />
+          </Field>
+          <Field
+            label="허용 대상 (aud · azp)"
+            hint="공백으로 구분. Audience 매퍼 없이 쓰려면 Keycloak 의 MCP 클라이언트 ID 를 적습니다."
+          >
+            <input
+              name="audience"
+              defaultValue={String(row(mcpOAuthRows.audience) || "")}
+              placeholder="claude-mcp cursor-mcp"
+            />
+          </Field>
+          <Field
+            label="SSO 주체에게 주는 범위"
+            hint="공백으로 구분한 읽기 권한. 사용자의 역할이 주지 않는 권한은 여기 적어도 열리지 않습니다."
+          >
+            <input
+              name="scopes"
+              defaultValue={String(row(mcpOAuthRows.scopes) || "")}
+            />
+          </Field>
+        </div>
+        <dl className="mcp-oauth-addresses">
+          <dt>MCP 주소 (클라이언트에 넣는 값)</dt>
+          <dd>
+            <code>{claimed}</code>
+            <button
+              type="button"
+              className="button ghost"
+              onClick={copy(claimed)}
+              aria-label="MCP 주소 복사"
+            >
+              <Copy />
+            </button>
+          </dd>
+          <dt>메타데이터 주소</dt>
+          <dd>
+            <code>{metadataUrl}</code>
+            <button
+              type="button"
+              className="button ghost"
+              onClick={copy(metadataUrl)}
+              aria-label="메타데이터 주소 복사"
+            >
+              <Copy />
+            </button>
+          </dd>
+        </dl>
+        {issuerMissing && (
+          <p className="form-error warning" role="status">
+            <AlertCircle />
+            OIDC 의 Issuer URL 이 비어 있어 켤 수 없습니다. 위 카드에서 먼저
+            저장하세요.
+          </p>
+        )}
+        {error && (
+          <p className="form-error" role="alert">
+            <AlertCircle />
+            {error}
+          </p>
+        )}
+        <div className="form-actions">
+          <button className="button">
+            <Save />
+            MCP SSO 설정 저장
           </button>
         </div>
       </form>
@@ -1509,7 +1697,8 @@ function RoleForm({
     setError("");
     try {
       if (role) await patch(`/api/v1/admin/roles/${role.id}`, common);
-      else await post("/api/v1/admin/roles", { ...common, code: d.get("code") });
+      else
+        await post("/api/v1/admin/roles", { ...common, code: d.get("code") });
     } catch (e) {
       // Without this the refusal was thrown out of the submit handler and the
       // modal simply sat there, so a permission the API declined looked like a
