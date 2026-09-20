@@ -62,7 +62,7 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "database_error", "승인 업무를 조회하지 못했습니다")
 			return
 		}
-		rows, err := a.db.Query(r.Context(), `SELECT i.id,i.object_type,i.object_id,i.current_step,d.name,d.steps,
+		rows, err := a.db.Query(r.Context(), `SELECT i.id,i.object_type,i.object_id,i.current_step,d.name,d.steps,i.context,
 		 COALESCE(o.number,''),COALESCE(o.title,'승인 요청'),COALESCE(s.name,''),
 		 to_char(COALESCE(o.due_date,(i.created_at + interval '2 days')::date),'YYYY-MM-DD'),
 		 to_char(i.created_at,'YYYY-MM-DD"T"HH24:MI:SSOF')
@@ -80,14 +80,13 @@ func (a *App) workInbox(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var id, objectType, objectID, workflow, number, title, supplier, due, created string
 			var step int
-			var steps []byte
-			if err := rows.Scan(&id, &objectType, &objectID, &step, &workflow, &steps, &number, &title, &supplier, &due, &created); err != nil {
+			var steps, snapshot []byte
+			if err := rows.Scan(&id, &objectType, &objectID, &step, &workflow, &steps, &snapshot, &number, &title, &supplier, &due, &created); err != nil {
 				logDB(err)
 				writeError(w, 500, "database_error", "승인 업무를 조회하지 못했습니다")
 				return
 			}
-			var definitions []map[string]any
-			_ = json.Unmarshal(steps, &definitions)
+			definitions := instanceSteps(snapshot, steps)
 			if step >= len(definitions) {
 				continue
 			}
