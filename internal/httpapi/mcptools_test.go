@@ -80,9 +80,24 @@ func TestExpiringContractsToolReturnsContracts(t *testing.T) {
 	w := newScopeWorld(t)
 	seedContracts(t, w, 5)
 
-	rows := toolRows(t, callMCPTool(t, w, w.deptToken, "get_expiring_contracts", `{}`))
-	if len(rows) == 0 {
-		t.Fatal("the tool found no contracts although several expire inside the default window")
+	if _, err := w.pool.Exec(context.Background(), `UPDATE business_objects SET end_date=current_date+CASE number
+		WHEN 'BULK-1' THEN 30 WHEN 'BULK-2' THEN 180 WHEN 'BULK-3' THEN 181
+		WHEN 'BULK-4' THEN 3650 WHEN 'BULK-5' THEN 3651 END WHERE number LIKE 'BULK-%'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args string
+		want int
+	}{
+		{`{}`, 2}, {`{"days":30}`, 1}, {`{"days":3650}`, 4},
+		{`{"days":3651}`, 4}, {`{"days":0.5}`, 2}, {`{"days":1e100}`, 4},
+	} {
+		t.Run(tc.args, func(t *testing.T) {
+			rows := toolRows(t, callMCPTool(t, w, w.deptToken, "get_expiring_contracts", tc.args))
+			if len(rows) != tc.want {
+				t.Fatalf("got %d contracts, want %d", len(rows), tc.want)
+			}
+		})
 	}
 }
 
@@ -117,6 +132,9 @@ func TestIntNumberStaysInRange(t *testing.T) {
 		{"not a number", "180", 180, 3650, 180},
 		{"zero", float64(0), 180, 3650, 180},
 		{"negative", float64(-5), 180, 3650, 180},
+		{"below one", float64(0.5), 180, 3650, 180},
+		{"huge", float64(1e100), 180, 3650, 3650},
+		{"fraction", float64(30.9), 180, 3650, 30},
 		{"inside the range", float64(30), 180, 3650, 30},
 		{"at the ceiling", float64(3650), 180, 3650, 3650},
 		{"past the ceiling", float64(3650000), 180, 3650, 3650},

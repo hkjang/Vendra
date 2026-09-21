@@ -420,7 +420,7 @@ var mcpTools = []map[string]any{
 	{"name": "analyze_spend", "description": "공급업체별 지출과 의존도를 분석합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}}},
 	{"name": "search_purchase_orders", "description": "발주서를 검색합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "supplierId": map[string]any{"type": "string"}}}},
 	{"name": "get_supplier_issues", "description": "공급업체 이슈를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
-	{"name": "recommend_suppliers", "description": "품목, 최소 점수, 최대 위험 등급으로 공급업체 후보를 추천합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"category": map[string]any{"type": "string"}, "minScore": map[string]any{"type": "number"}, "limit": map[string]any{"type": "integer"}}}},
+	{"name": "recommend_suppliers", "description": "품목, 최소 점수, 최대 위험 등급으로 공급업체 후보를 추천합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"category": map[string]any{"type": "string"}, "minScore": map[string]any{"type": "number"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}}}},
 }
 
 func (a *App) mcp(w http.ResponseWriter, r *http.Request) {
@@ -519,7 +519,7 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 	switch name {
 	case "search_suppliers":
 		q := stringValue(args, "query")
-		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT 100`, q, p.DataScope, organizationID, p.ID, showSpend)
+		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT $6`, q, p.DataScope, organizationID, p.ID, showSpend, intNumber(args["limit"], 100, 100))
 		if err != nil {
 			return nil, err
 		}
@@ -594,11 +594,11 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		days := intNumber(args["days"], 180, 3650)
 		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'supplierId',o.supplier_id,'supplierName',s.name,'endDate',o.end_date,'amount',CASE WHEN $5 THEN o.amount END,'status',o.status) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='contract' AND o.deleted_at IS NULL AND o.end_date BETWEEN current_date AND current_date+($1::int) AND (`+orgInScope("o.organization_id", "$2", "$3")+` OR ($2='own' AND o.owner_id=$4::uuid)) ORDER BY o.end_date LIMIT 100`, days, p.DataScope, organizationID, p.ID, hasPermission(p, "contract.amount.read"))
 	case "analyze_spend":
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'annualSpend',annual_spend,'share',round(100*annual_spend/NULLIF(sum(annual_spend) OVER(),0),2),'riskLevel',risk_level,'score',score) FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT 100`, p.DataScope, organizationID, p.ID)
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'annualSpend',annual_spend,'share',round(100*annual_spend/NULLIF(sum(annual_spend) OVER(),0),2),'riskLevel',risk_level,'score',score) FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT $4`, p.DataScope, organizationID, p.ID, intNumber(args["limit"], 100, 100))
 	case "recommend_suppliers":
 		category := stringValue(args, "category")
 		minScore, _ := args["minScore"].(float64)
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'categories',categories,'score',score,'grade',grade,'riskLevel',risk_level,'annualSpend',CASE WHEN $6 THEN annual_spend END) FROM suppliers WHERE deleted_at IS NULL AND status IN('active','approved') AND ($1='' OR categories ? $1) AND COALESCE(score,0)>=$2 AND risk_level NOT IN('CRITICAL') AND (`+orgInScope("organization_id", "$3", "$4")+` OR ($3='own' AND owner_id=$5::uuid)) ORDER BY score DESC NULLS LAST,risk_level LIMIT 50`, category, minScore, p.DataScope, organizationID, p.ID, showSpend)
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'categories',categories,'score',score,'grade',grade,'riskLevel',risk_level,'annualSpend',CASE WHEN $6 THEN annual_spend END) FROM suppliers WHERE deleted_at IS NULL AND status IN('active','approved') AND ($1='' OR categories ? $1) AND COALESCE(score,0)>=$2 AND risk_level NOT IN('CRITICAL') AND (`+orgInScope("organization_id", "$3", "$4")+` OR ($3='own' AND owner_id=$5::uuid)) ORDER BY score DESC NULLS LAST,risk_level LIMIT $7`, category, minScore, p.DataScope, organizationID, p.ID, showSpend, intNumber(args["limit"], 50, 50))
 	default:
 		return nil, mcpToolError("unknown tool: %s", name)
 	}
@@ -689,11 +689,12 @@ func stringSlice(v any) []string {
 // unbounded response.
 func intNumber(v any, def, max int) int {
 	f, ok := v.(float64)
-	if !ok || f <= 0 {
+	if !ok || f < 1 {
 		return def
 	}
-	if n := int(f); n <= max {
-		return n
+	// Clamp before converting: large JSON numbers can overflow int.
+	if f >= float64(max) {
+		return max
 	}
-	return max
+	return int(f)
 }
