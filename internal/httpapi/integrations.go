@@ -519,7 +519,7 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 	switch name {
 	case "search_suppliers":
 		q := stringValue(args, "query")
-		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT 100`, q, p.DataScope, organizationID, p.ID, showSpend)
+		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT 100`, q, p.DataScope, organizationID, p.ID, showSpend)
 		if err != nil {
 			return nil, err
 		}
