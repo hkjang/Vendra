@@ -565,7 +565,11 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		}
 		return items, nil
 	case "get_supplier_risk":
-		if !a.supplierScopeAllowed(r, stringValue(args, "supplierId")) {
+		supplierID, err := supplierIDArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		if !a.supplierScopeAllowed(r, supplierID) {
 			return nil, mcpToolError("data scope denied")
 		}
 		// Bounded like every other tool. A tool result is dropped whole into a
@@ -573,12 +577,16 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		// holding it: 502 risks on one supplier serialised to 445 KB, where the
 		// capped tools stay under 40 KB against twenty thousand suppliers. The
 		// order already puts the highest-scoring risks first.
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'riskType',risk_type,'probability',probability,'impact',impact,'score',score,'severity',severity,'status',status,'description',description,'mitigation',mitigation) FROM risks WHERE supplier_id=$1 ORDER BY score DESC LIMIT 100`, stringValue(args, "supplierId"))
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'riskType',risk_type,'probability',probability,'impact',impact,'score',score,'severity',severity,'status',status,'description',description,'mitigation',mitigation) FROM risks WHERE supplier_id=$1 ORDER BY score DESC LIMIT 100`, supplierID)
 	case "get_supplier_score":
-		if !a.supplierScopeAllowed(r, stringValue(args, "supplierId")) {
+		supplierID, err := supplierIDArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		if !a.supplierScopeAllowed(r, supplierID) {
 			return nil, mcpToolError("data scope denied")
 		}
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'type',evaluation_type,'status',status,'score',total_score,'grade',grade,'scores',scores,'createdAt',created_at) FROM evaluations WHERE supplier_id=$1 ORDER BY created_at DESC LIMIT 100`, stringValue(args, "supplierId"))
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'type',evaluation_type,'status',status,'score',total_score,'grade',grade,'scores',scores,'createdAt',created_at) FROM evaluations WHERE supplier_id=$1 ORDER BY created_at DESC LIMIT 100`, supplierID)
 	case "search_contracts":
 		return a.mcpObjects(r, "contract", args)
 	case "search_purchase_orders":
@@ -661,6 +669,27 @@ func supplierArg(args map[string]any, names ...string) string {
 		}
 	}
 	return ""
+}
+
+// supplierIDArg reads the supplier id a tool was given, naming whichever
+// mistake the caller made instead of running the query with it.
+//
+// The two tools that hand the id straight to supplierScopeAllowed cannot say
+// this afterwards. A name reaches PostgreSQL as a failed uuid cast, so the
+// lookup errors, and an errored lookup is indistinguishable there from a
+// supplier one department over — both came back as "data scope denied", which
+// a model relays to the person who asked as a permission problem with a record
+// that was never looked for. The object tools and get_supplier already answer
+// in words; these two were missed.
+func supplierIDArg(tool string, args map[string]any) (string, error) {
+	id := stringValue(args, "supplierId")
+	if id == "" {
+		return "", mcpToolError("%s requires supplierId", tool)
+	}
+	if !validUUID(id) {
+		return "", mcpToolError("supplierId must be a record id, not a name: %q", id)
+	}
+	return id, nil
 }
 
 // supplierListArg is supplierArg for the tool that takes several.
