@@ -81,28 +81,31 @@ func runBackgroundStep(name string, step func() error) (err error) {
 }
 
 func (a *App) scheduleNotifications(ctx context.Context) error {
-	_, err := a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
+	// Each statement reports the rows it created, so the mail digest at the
+	// end goes out once, on the pass that raised the row, and never again.
+	var raised []raisedNotification
+	err := a.insertRaised(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
 	 SELECT o.owner_id,o.supplier_id,'contract_expiry',
 	   CASE WHEN o.end_date<=current_date+7 THEN '계약 종료 7일 이내' WHEN o.end_date<=current_date+30 THEN '계약 종료 30일 이내' WHEN o.end_date<=current_date+90 THEN '계약 종료 90일 이내' ELSE '계약 종료 180일 이내' END,
 	   o.title||' ('||o.number||') 계약이 '||to_char(o.end_date,'YYYY-MM-DD')||' 종료됩니다.',
 	   CASE WHEN o.end_date<=current_date+30 THEN 'warning' ELSE 'info' END,'contract',o.id
 	 FROM business_objects o WHERE o.object_type='contract' AND o.deleted_at IS NULL AND o.owner_id IS NOT NULL AND o.status NOT IN('ended','terminated') AND o.end_date BETWEEN current_date AND current_date+180
-	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
+	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`, &raised)
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
+	err = a.insertRaised(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
 	 SELECT d.uploaded_by,d.supplier_id,'document_expiry',CASE WHEN d.expires_at<=current_date+7 THEN '문서 만료 7일 이내' ELSE '문서 만료 30일 이내' END,
 	 d.name||' 문서가 '||to_char(d.expires_at,'YYYY-MM-DD')||' 만료됩니다.','warning','document',d.id
 	 FROM documents d WHERE d.status IN('active','approved') AND d.uploaded_by IS NOT NULL AND d.expires_at BETWEEN current_date AND current_date+30
-	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
+	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`, &raised)
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
+	err = a.insertRaised(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
 	 SELECT o.owner_id,o.supplier_id,'sla_breach','SLA 위반 즉시 조치',o.title||' ('||o.number||') SLA 위반이 등록되었습니다.','critical','issue',o.id
 	 FROM business_objects o WHERE o.object_type='issue' AND o.deleted_at IS NULL AND o.owner_id IS NOT NULL AND o.status NOT IN('closed','resolved') AND lower(COALESCE(o.data->>'issueType',o.data->>'type','')) IN ('sla 위반','sla_violation','sla breach')
-	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
+	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`, &raised)
 	if err != nil {
 		return err
 	}
@@ -110,22 +113,23 @@ func (a *App) scheduleNotifications(ctx context.Context) error {
 	// alone let an order placed with a different supplier inflate the total, and
 	// parent_id is caller-supplied, so a critical overrun alert could be raised
 	// on a contract the sender has nothing to do with.
-	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
+	err = a.insertRaised(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
 	 SELECT c.owner_id,c.supplier_id,'contract_amount_exceeded','계약금액 초과',c.title||' 계약금액 '||COALESCE(c.amount,0)||' 대비 발주 누계 '||sum(po.amount)||' 입니다.','critical','contract',c.id
 	 FROM business_objects c JOIN business_objects po ON po.parent_id=c.id AND po.object_type='purchase_order' AND po.deleted_at IS NULL AND po.supplier_id IS NOT DISTINCT FROM c.supplier_id
 	 WHERE c.object_type='contract' AND c.deleted_at IS NULL AND c.owner_id IS NOT NULL AND c.amount IS NOT NULL
 	 GROUP BY c.id HAVING sum(COALESCE(po.amount,0))>c.amount
-	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
+	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`, &raised)
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
+	err = a.insertRaised(ctx, `INSERT INTO notifications(user_id,supplier_id,kind,title,body,severity,object_type,object_id)
 	 SELECT s.owner_id,s.id,'evaluation_due','공급업체 평가 예정',s.name||' 공급업체 평가기간이 시작됩니다.','info','supplier',s.id
 	 FROM suppliers s WHERE s.deleted_at IS NULL AND s.owner_id IS NOT NULL AND `+jsonDate("s.metadata", "nextEvaluationDate")+` BETWEEN current_date AND current_date+30
-	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`)
+	 ON CONFLICT(user_id,kind,object_type,object_id,title) DO NOTHING`, &raised)
 	if err != nil {
 		return err
 	}
+	a.mailDigests(ctx, raised)
 	adapters, err := a.notificationAdapters(ctx)
 	if err != nil {
 		return err

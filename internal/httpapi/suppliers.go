@@ -469,14 +469,16 @@ func (a *App) updateSupplier(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 409, "bank_workflow_missing", "계좌 변경 승인 Workflow가 필요합니다")
 			return
 		}
+		var instanceID string
 		err = a.db.QueryRow(r.Context(), `INSERT INTO business_objects(object_type,number,supplier_id,title,status,owner_id,organization_id,data,created_by) VALUES('supplier_bank_change',$1,$2,'계좌정보 변경','pending_approval',$3,$4,$5,$3) RETURNING id`, `BANK-`+strings.ToUpper(timeNowID()), id, p.ID, before.OrganizationID, raw(map[string]any{"supplierId": id, "bankAccountCipher": bankCipher})).Scan(&changeID)
 		if err == nil {
-			_, err = a.db.Exec(r.Context(), `INSERT INTO workflow_instances(definition_id,object_type,object_id,requested_by,context) VALUES($1,'supplier_bank_change',$2,$3,$4)`, definitionID, changeID, p.ID, raw(map[string]any{"steps": json.RawMessage(steps)}))
+			err = a.db.QueryRow(r.Context(), `INSERT INTO workflow_instances(definition_id,object_type,object_id,requested_by,context) VALUES($1,'supplier_bank_change',$2,$3,$4) RETURNING id`, definitionID, changeID, p.ID, raw(map[string]any{"steps": json.RawMessage(steps)})).Scan(&instanceID)
 		}
 		if err != nil {
 			writeError(w, 500, "workflow_failed", "계좌 변경 승인을 시작하지 못했습니다")
 			return
 		}
+		a.notifyApprovalRequested(r.Context(), instanceID, firstStep(steps), p.ID)
 		bankCipher = nil
 	}
 	// business_number, corporate_number, trading_since and annual_spend used to
