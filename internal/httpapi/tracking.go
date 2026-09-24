@@ -34,7 +34,7 @@ const (
 // isPagePath reports whether a request path is served by the single page
 // application rather than by an API, health, metrics or proxy handler.
 func isPagePath(path string) bool {
-	for _, prefix := range []string{"/api/", "/mcp", "/health/", "/metrics", tracking.ProxyPath + "/"} {
+	for _, prefix := range []string{"/api/", "/mcp", "/health/", "/metrics", "/.well-known/", tracking.ProxyPath + "/"} {
 		if strings.HasPrefix(path, prefix) {
 			return false
 		}

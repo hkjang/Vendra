@@ -23,6 +23,9 @@ const sessionCookie = "vendra_session"
 type authService struct {
 	db    *pgxpool.Pool
 	audit auditor
+	// oauth caches the discovery of the authorization server that signs the
+	// SSO access tokens /mcp accepts (mcpoauth.go). Nil is uncached, not off.
+	oauth *oauthProviders
 }
 
 type sessionSettings struct {
@@ -89,6 +92,10 @@ func (a authService) middleware(required bool, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
 		case errors.Is(err, errNoCredentials):
 			if required {
+				if isMCPPath(r.URL.Path) {
+					a.mcpChallenge(w, r, err)
+					return
+				}
 				writeError(w, http.StatusUnauthorized, "unauthenticated", "로그인이 필요합니다")
 				return
 			}
@@ -106,6 +113,12 @@ func (a authService) authenticate(r *http.Request) (Principal, error) {
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer vnd_") {
 		token := strings.TrimPrefix(auth, "Bearer ")
 		return a.fromAPIKey(ctx, token)
+	} else if token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")); strings.HasPrefix(auth, "Bearer ") && isMCPPath(r.URL.Path) && looksLikeJWT(token) {
+		// Not a personal key. On the MCP path the other thing a bearer can be
+		// is an access token from the SSO server, which MCP clients obtain
+		// through OAuth — mcpoauth.go, which also says why when it refuses.
+		// Anywhere else a bearer that is not a key is ignored, as it always was.
+		return a.fromOAuthToken(ctx, r, token)
 	}
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil || cookie.Value == "" {
@@ -191,18 +204,8 @@ func (a authService) fromAPIKey(ctx context.Context, token string) (Principal, e
 		return Principal{}, credentialError(err)
 	}
 	_ = json.Unmarshal(perms, &p.Permissions)
-	var rolePermissionsJSON []byte
-	if a.db.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(DISTINCT permission) FILTER(WHERE permission IS NOT NULL),'[]') FROM user_roles ur JOIN roles r ON r.id=ur.role_id LEFT JOIN LATERAL jsonb_array_elements_text(r.permissions) permission ON true WHERE ur.user_id=$1`, p.ID).Scan(&rolePermissionsJSON) == nil {
-		var rolePermissions []string
-		_ = json.Unmarshal(rolePermissionsJSON, &rolePermissions)
-		current := Principal{Permissions: rolePermissions}
-		allowedScopes := make([]string, 0, len(p.Permissions))
-		for _, scope := range p.Permissions {
-			if hasPermission(current, scope) {
-				allowedScopes = append(allowedScopes, scope)
-			}
-		}
-		p.Permissions = allowedScopes
+	if err := a.limitToRolePermissions(ctx, &p); err != nil {
+		logDB(err)
 	}
 	if _, err := a.db.Exec(ctx, `UPDATE api_keys SET last_used_at=now() WHERE key_hash=$1`, security.TokenHash(token)); err != nil {
 		logDB(err)

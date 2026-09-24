@@ -48,7 +48,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, staticDir s
 	if err := bootstrapAdmin(ctx, pool, cfg.BootstrapAdmin, cfg.BootstrapAdminPassword); err != nil {
 		return nil, fmt.Errorf("bootstrap administrator: %w", err)
 	}
-	app := &App{db: pool, vault: vault, auth: authService{db: pool, audit: auditor{db: pool}}, audit: auditor{db: pool}, logs: observability.DefaultStore(), staticDir: staticDir, violations: tracking.NewRecorder()}
+	app := &App{db: pool, vault: vault, auth: authService{db: pool, audit: auditor{db: pool}, oauth: &oauthProviders{}}, audit: auditor{db: pool}, logs: observability.DefaultStore(), staticDir: staticDir, violations: tracking.NewRecorder()}
 	go app.runBackground(ctx)
 	return app, nil
 }
@@ -68,6 +68,10 @@ func (a *App) Handler() http.Handler {
 	root.HandleFunc("GET /api/auth/oidc/callback", a.oidcCallback)
 	root.HandleFunc("POST "+cspReportPath, a.receiveCSPReport)
 	root.HandleFunc(tracking.ProxyPath+"/", a.momentoProxy)
+	// RFC 9728, read by MCP clients before they sign in: no authentication,
+	// and both spellings because clients try both (mcpoauth.go).
+	root.HandleFunc("GET "+protectedResourcePath, a.protectedResourceMetadata)
+	root.HandleFunc("GET "+protectedResourcePath+mcpPath, a.protectedResourceMetadata)
 
 	api := http.NewServeMux()
 	a.registerAPI(&guardedMux{mux: api})
