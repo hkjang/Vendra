@@ -420,7 +420,7 @@ var mcpTools = []map[string]any{
 	{"name": "analyze_spend", "description": "공급업체별 지출과 의존도를 분석합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}}},
 	{"name": "search_purchase_orders", "description": "발주서를 검색합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "supplierId": map[string]any{"type": "string"}}}},
 	{"name": "get_supplier_issues", "description": "공급업체 이슈를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
-	{"name": "recommend_suppliers", "description": "품목, 최소 점수, 최대 위험 등급으로 공급업체 후보를 추천합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"category": map[string]any{"type": "string"}, "minScore": map[string]any{"type": "number"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}}}},
+	{"name": "recommend_suppliers", "description": "품목, 최소 점수, 최대 위험 등급으로 공급업체 후보를 추천합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"category": map[string]any{"type": "string"}, "minScore": map[string]any{"type": "number"}, "maxRisk": map[string]any{"type": "string", "enum": mcpRiskCeilings}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}}}},
 }
 
 func (a *App) mcp(w http.ResponseWriter, r *http.Request) {
@@ -605,8 +605,27 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'annualSpend',annual_spend,'share',round(100*annual_spend/NULLIF(sum(annual_spend) OVER(),0),2),'riskLevel',risk_level,'score',score) FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT $4`, p.DataScope, organizationID, p.ID, intNumber(args["limit"], 100, 100))
 	case "recommend_suppliers":
 		category := stringValue(args, "category")
-		minScore, _ := args["minScore"].(float64)
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'categories',categories,'score',score,'grade',grade,'riskLevel',risk_level,'annualSpend',CASE WHEN $6 THEN annual_spend END) FROM suppliers WHERE deleted_at IS NULL AND status IN('active','approved') AND ($1='' OR categories ? $1) AND COALESCE(score,0)>=$2 AND risk_level NOT IN('CRITICAL') AND (`+orgInScope("organization_id", "$3", "$4")+` OR ($3='own' AND owner_id=$5::uuid)) ORDER BY score DESC NULLS LAST,risk_level LIMIT $7`, category, minScore, p.DataScope, organizationID, p.ID, showSpend, intNumber(args["limit"], 50, 50))
+		minScore, err := numberArg(args, "minScore")
+		if err != nil {
+			return nil, err
+		}
+		grades, err := riskCeilingArg(args, "maxRisk")
+		if err != nil {
+			return nil, err
+		}
+		// The ceiling is an extra condition rather than a replacement for
+		// `risk_level NOT IN('CRITICAL')`. risk_level is a plain text column
+		// with no constraint behind it, so selecting the grades at or below the
+		// ceiling as the only rule would drop every supplier carrying something
+		// the vocabulary does not name — an empty string, or whatever an older
+		// form or an import wrote — from calls that never asked for a cap.
+		ceiling := ""
+		params := []any{category, minScore, p.DataScope, organizationID, p.ID, showSpend, intNumber(args["limit"], 50, 50)}
+		if len(grades) > 0 {
+			ceiling = ` AND risk_level = ANY($8::text[])`
+			params = append(params, grades)
+		}
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'categories',categories,'score',score,'grade',grade,'riskLevel',risk_level,'annualSpend',CASE WHEN $6 THEN annual_spend END) FROM suppliers WHERE deleted_at IS NULL AND status IN('active','approved') AND ($1='' OR categories ? $1) AND COALESCE(score,0)>=$2 AND risk_level NOT IN('CRITICAL')`+ceiling+` AND (`+orgInScope("organization_id", "$3", "$4")+` OR ($3='own' AND owner_id=$5::uuid)) ORDER BY score DESC NULLS LAST,risk_level LIMIT $7`, params...)
 	default:
 		return nil, mcpToolError("unknown tool: %s", name)
 	}
@@ -711,6 +730,75 @@ func stringSlice(v any) []string {
 		}
 	}
 	return out
+}
+
+// numberArg reads a numeric tool argument, refusing a value that is not a
+// number instead of reading it as zero.
+//
+// The contract chosen here is (a) refuse, not (b) parse a number out of text,
+// for the reason supplierIDArg refuses a name: a model that sent
+// `minScore:"80"` made a mistake it can fix, and the mistake has to reach it.
+// The previous `args["minScore"].(float64)` turned that string into 0, which
+// made the filter `COALESCE(score,0)>=0` and answered 200 with every supplier
+// in scope — a shortlist that had silently dropped the floor it was given, and
+// nothing in the answer to say so. Absent and null stay 0, because that is the
+// call every caller makes that asks for no floor at all.
+func numberArg(args map[string]any, key string) (float64, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return 0, nil
+	}
+	if s, text := v.(string); text {
+		return 0, mcpToolError("%s must be a number, not text: %q", key, s)
+	}
+	f, ok := v.(float64)
+	if !ok {
+		// Naming the value is what lets the caller see which argument it got
+		// wrong; json.Marshal keeps a boolean or an object readable.
+		b, _ := json.Marshal(v)
+		return 0, mcpToolError("%s must be a number: %s", key, b)
+	}
+	return f, nil
+}
+
+// riskCeilingArg reads the 최대 위험 등급 a tool advertises and returns the grades
+// at or below it, or nil when the caller asked for no cap.
+//
+// recommend_suppliers described this argument — and 사용자 가이드 4.6 documents
+// it — while its schema carried no such property and its query was fixed at
+// `risk_level NOT IN('CRITICAL')`. A model that believed the description and
+// capped the grade at MEDIUM got HIGH suppliers in the shortlist anyway, with
+// no sign the argument had been thrown away.
+//
+// riskGrades is the ranking, because the grades do not rank as text: sorted as
+// strings they read "CRITICAL" < "HIGH" < "LOW" < "MEDIUM".
+//
+// A grade outside the vocabulary is refused rather than ignored. A lower-case
+// "low" or a Korean "매우높음" silently dropping the cap is exactly the defect
+// this argument exists to remove, and supplierIDArg already set the direction:
+// answer in words the model can act on.
+func riskCeilingArg(args map[string]any, key string) ([]string, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	grade, text := v.(string)
+	if !text {
+		b, _ := json.Marshal(v)
+		return nil, mcpToolError("%s must be a risk grade, one of %s: %s", key, strings.Join(mcpRiskCeilings, ", "), b)
+	}
+	// An empty grade is the argument being left out, not a filter matching
+	// nothing: a model filling a template writes "" for what it has no value
+	// for, and refusing that would make the tool harder to call than before.
+	if grade = strings.TrimSpace(grade); grade == "" {
+		return nil, nil
+	}
+	for i, g := range mcpRiskCeilings {
+		if g == grade {
+			return mcpRiskCeilings[:i+1], nil
+		}
+	}
+	return nil, mcpToolError("%s must be one of %s: %q", key, strings.Join(mcpRiskCeilings, ", "), grade)
 }
 
 // intNumber reads a caller-supplied number, keeping it inside a range. Every
