@@ -592,6 +592,15 @@ func validRecordID(w http.ResponseWriter, value, label string) bool {
 // The forms offer exactly these four, upper case, everywhere they offer any.
 var riskGrades = []string{"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 
+// mcpRiskCeilings is the vocabulary the recommendation tool offers as a 최대
+// 위험 등급: every grade below the top one, in riskGrades order.
+//
+// CRITICAL is left out on purpose. The tool has never shortlisted one
+// (`risk_level NOT IN('CRITICAL')`), so offering it as a ceiling would only
+// restate the default and invite a caller to believe a cap was applied where
+// none was.
+var mcpRiskCeilings = riskGrades[:len(riskGrades)-1]
+
 // enumField names a request-body field whose value has to be one of a fixed
 // set, with the label to use when telling the caller it is not.
 type enumField struct {
