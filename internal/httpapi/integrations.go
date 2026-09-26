@@ -533,14 +533,25 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		}
 		return items, nil
 	case "get_supplier":
-		supplierID := supplierArg(args, "supplierId", "id")
+		supplierID, err := supplierArg(name, args, "supplierId", "id")
+		if err != nil {
+			return nil, err
+		}
 		if supplierID == "" {
 			return nil, mcpToolError("get_supplier requires supplierId")
 		}
+		// Checked before the query, like the three sibling tools that take this
+		// argument. A name reaches PostgreSQL as a failed uuid cast, so the
+		// lookup below errors and the answer became "supplier not found" — which
+		// the model relays to the person who asked as the company not existing
+		// rather than as its own mistake about which field it was filling in.
+		if !validUUID(supplierID) {
+			return nil, mcpToolError("supplierId must be a record id, not a name: %q", supplierID)
+		}
 		s, err := scanSupplier(a.db.QueryRow(ctx, supplierSelect+` WHERE id=$1 AND deleted_at IS NULL`, supplierID))
 		if err != nil {
-			// A bad id reaches here as a cast error; either way the caller only
-			// needs to know the supplier is not available to them.
+			// The id is a well-formed uuid by here, so nothing matching it is
+			// the only thing left this can mean.
 			return nil, mcpToolError("supplier not found")
 		}
 		if !a.canAccessSupplier(ctx, p, s) {
@@ -548,7 +559,10 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		}
 		return redactSupplier(p, s), nil
 	case "compare_suppliers":
-		ids := supplierListArg(args, "supplierIds", "ids")
+		ids, err := supplierListArg(name, args, "supplierIds", "ids")
+		if err != nil {
+			return nil, err
+		}
 		if len(ids) == 0 {
 			return nil, mcpToolError("compare_suppliers requires supplierIds")
 		}
@@ -707,13 +721,34 @@ func (a *App) mcpObjects(r *http.Request, tool, typ string, args map[string]any)
 // asked as "that supplier does not exist", rather than as its own mistake. The
 // schema now advertises the consistent name and the old one is still accepted,
 // so a client that hardcoded it keeps working.
-func supplierArg(args map[string]any, names ...string) string {
-	for _, name := range names {
-		if v := stringValue(args, name); v != "" {
-			return v
+//
+// A value that is not text is refused rather than read as absent. This helper
+// used to be built on stringValue, which answers "" for anything that is not a
+// string, so `{"supplierId":42}` came back as the argument having been left out
+// and the tool answered "get_supplier requires supplierId" — a message that
+// sends the model looking for a mistake it did not make while the one it did
+// make goes unnamed. stringArg draws the same line for the text filters.
+func supplierArg(tool string, args map[string]any, names ...string) (string, error) {
+	for _, key := range names {
+		v, ok := args[key]
+		if !ok || v == nil {
+			continue
+		}
+		s, text := v.(string)
+		if !text {
+			// Naming the value is what lets the caller see which argument it got
+			// wrong; json.Marshal keeps a number, a boolean or an object readable.
+			b, _ := json.Marshal(v)
+			return "", mcpToolError("%s %s must be text: %s", tool, key, b)
+		}
+		// A blank value falls through to the next name rather than ending the
+		// search: {"supplierId":"   ","id":"<uuid>"} is a client that sends both
+		// and fills in one, and it worked before this helper refused anything.
+		if s = strings.TrimSpace(s); s != "" {
+			return s, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // supplierIDArg reads the supplier id a tool was given, naming whichever
@@ -738,24 +773,61 @@ func supplierIDArg(tool string, args map[string]any) (string, error) {
 }
 
 // supplierListArg is supplierArg for the tool that takes several.
-func supplierListArg(args map[string]any, names ...string) []string {
-	for _, name := range names {
-		if v := stringSlice(args[name]); len(v) > 0 {
-			return v
+//
+// An empty list falls through to the next name for the reason a blank string
+// does in supplierArg: {"supplierIds":[],"ids":[...]} is a client that sends
+// both names and fills in one.
+func supplierListArg(tool string, args map[string]any, names ...string) ([]string, error) {
+	for _, key := range names {
+		v, ok := args[key]
+		if !ok || v == nil {
+			continue
+		}
+		ids, err := stringSlice(tool, key, v)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) > 0 {
+			return ids, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
-func stringSlice(v any) []string {
-	xs, _ := v.([]any)
+// stringSlice reads a list of text, refusing the whole list if any part of it is
+// not text instead of quietly keeping the parts that are.
+//
+// Dropping an element was the worse of the two failures this file has fixed.
+// compare_suppliers publishes minItems 2, so {"supplierIds":["<uuid>",42]}
+// compared one supplier and returned that as a comparison — and the model,
+// having nothing in the answer to say a subject went missing, reports the
+// absent company to the person who asked as one that does not exist or cannot
+// be seen. A list of nothing but numbers emptied out entirely and landed on
+// "compare_suppliers requires supplierIds", which is a claim about a call that
+// did supply the argument.
+//
+// A value that is not a list at all is refused for the same reason rather than
+// read as absent: {"supplierIds":"<uuid>"} is a model sending one id where the
+// schema asks for an array, which is a mistake it can correct once it is told,
+// and "requires supplierIds" does not tell it.
+func stringSlice(tool, key string, v any) ([]string, error) {
+	xs, list := v.([]any)
+	if !list {
+		b, _ := json.Marshal(v)
+		return nil, mcpToolError("%s %s must be a list of text: %s", tool, key, b)
+	}
 	out := []string{}
 	for _, x := range xs {
-		if s, ok := x.(string); ok {
-			out = append(out, s)
+		s, text := x.(string)
+		if !text {
+			// The offending element, not the whole list: that is what the caller
+			// has to change, and a long list would bury it.
+			b, _ := json.Marshal(x)
+			return nil, mcpToolError("%s %s must be a list of text: %s", tool, key, b)
 		}
+		out = append(out, s)
 	}
-	return out
+	return out, nil
 }
 
 // numberArg reads a numeric tool argument, refusing a value that is not a
