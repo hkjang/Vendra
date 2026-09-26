@@ -518,7 +518,10 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 	showSpend := hasPermission(p, "spend.read") || hasPermission(p, "analytics.read") || hasPermission(p, "*")
 	switch name {
 	case "search_suppliers":
-		q := stringValue(args, "query")
+		q, err := stringArg(name, args, "query")
+		if err != nil {
+			return nil, err
+		}
 		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT $6`, q, p.DataScope, organizationID, p.ID, showSpend, intNumber(args["limit"], 100, 100))
 		if err != nil {
 			return nil, err
@@ -588,11 +591,22 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		}
 		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'type',evaluation_type,'status',status,'score',total_score,'grade',grade,'scores',scores,'createdAt',created_at) FROM evaluations WHERE supplier_id=$1 ORDER BY created_at DESC LIMIT 100`, supplierID)
 	case "search_contracts":
-		return a.mcpObjects(r, "contract", args)
+		return a.mcpObjects(r, name, "contract", args)
 	case "search_purchase_orders":
-		return a.mcpObjects(r, "purchase_order", args)
+		return a.mcpObjects(r, name, "purchase_order", args)
 	case "get_supplier_issues":
-		return a.mcpObjects(r, "issue", map[string]any{"supplierId": stringValue(args, "supplierId")})
+		// The schema publishes supplierId as required, but the tool used to
+		// build its own argument map out of stringValue, so a missing or
+		// numeric id became "" — the object query's "no supplier filter" — and
+		// the answer was every issue in scope attributed to the one supplier
+		// the caller had asked about. Checked here with the same helper as the
+		// two sibling tools that take this argument, so all three say the same
+		// thing about the same mistake.
+		supplierID, err := supplierIDArg(name, args)
+		if err != nil {
+			return nil, err
+		}
+		return a.mcpObjects(r, name, "issue", map[string]any{"supplierId": supplierID})
 	case "get_expiring_contracts":
 		// PostgreSQL cannot resolve "date + $1" on its own — date plus an
 		// untyped parameter is ambiguous — so the cast below is what makes this
@@ -653,22 +667,34 @@ func (a *App) mcpJSONRows(ctx context.Context, query string, args ...any) ([]any
 	defer rows.Close()
 	return scanJSONRows(rows)
 }
-func (a *App) mcpObjects(r *http.Request, typ string, args map[string]any) ([]any, error) {
+func (a *App) mcpObjects(r *http.Request, tool, typ string, args map[string]any) ([]any, error) {
 	p, _ := principalFrom(r.Context())
 	organizationID := ""
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
 	showAmount := hasPermission(p, typ+".amount.read")
+	// Both filters are read once, here, rather than again inside the call
+	// below: `$2=''` and `$3=''` are what this query means by "not filtered on
+	// that", so an argument that stringValue could not read as text used to
+	// widen the answer to everything in scope without saying so.
+	supplierID, err := stringArg(tool, args, "supplierId")
+	if err != nil {
+		return nil, err
+	}
+	query, err := stringArg(tool, args, "query")
+	if err != nil {
+		return nil, err
+	}
 	// The filter reaches the query as `$2::uuid`, so a model that passes a name
 	// where an id belongs failed the statement — and a failure that is not an
 	// errMCPTool is logged and relayed as "도구를 실행하지 못했습니다", which
 	// tells the model nothing it can correct and leaves it retrying the same
 	// call. get_supplier already said so in words; these say it too.
-	if supplierID := stringValue(args, "supplierId"); supplierID != "" && !validUUID(supplierID) {
+	if supplierID != "" && !validUUID(supplierID) {
 		return nil, mcpToolError("supplierId must be a record id, not a name")
 	}
-	return a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'status',o.status,'supplierId',o.supplier_id,'supplierName',s.name,'amount',CASE WHEN $7 THEN o.amount END,'dueDate',o.due_date,'endDate',o.end_date,'riskLevel',o.risk_level,'data',o.data) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.supplier_id=$2::uuid) AND ($3='' OR o.title ILIKE '%'||$3||'%' OR o.number ILIKE '%'||$3||'%') AND (`+orgInScope("o.organization_id", "$4", "$5")+` OR ($4='own' AND o.owner_id=$6::uuid)) ORDER BY o.updated_at DESC LIMIT 100`, typ, stringValue(args, "supplierId"), stringValue(args, "query"), p.DataScope, organizationID, p.ID, showAmount)
+	return a.mcpJSONRows(r.Context(), `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'status',o.status,'supplierId',o.supplier_id,'supplierName',s.name,'amount',CASE WHEN $7 THEN o.amount END,'dueDate',o.due_date,'endDate',o.end_date,'riskLevel',o.risk_level,'data',o.data) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.supplier_id=$2::uuid) AND ($3='' OR o.title ILIKE '%'||$3||'%' OR o.number ILIKE '%'||$3||'%') AND (`+orgInScope("o.organization_id", "$4", "$5")+` OR ($4='own' AND o.owner_id=$6::uuid)) ORDER BY o.updated_at DESC LIMIT 100`, typ, supplierID, query, p.DataScope, organizationID, p.ID, showAmount)
 }
 
 // supplierArg reads a supplier id from a tool call under any of the names it
@@ -799,6 +825,38 @@ func riskCeilingArg(args map[string]any, key string) ([]string, error) {
 		}
 	}
 	return nil, mcpToolError("%s must be one of %s: %q", key, strings.Join(mcpRiskCeilings, ", "), grade)
+}
+
+// stringArg reads a text tool argument, refusing a value that is not text
+// instead of reading it as the absence of a filter.
+//
+// stringValue answers "" for anything that is not a string, and in the search
+// and object tools "" is the argument being left out: the query runs without
+// that filter. So `query:1001` on search_suppliers — whose description says
+// 공급업체 번호로 검색, which is an invitation to send a number — became
+// `name ILIKE '%%'` and answered with the first hundred suppliers by name as
+// though they were the search result. A tool that answers nothing is
+// recoverable; a tool that answers everything is not, because the model has no
+// way to tell that answer from a real one and relays it to a person as fact.
+//
+// An empty string is deliberately still "no filter" rather than a refusal. A
+// model filling in a template writes "" for what it has no value for, the
+// existing callers rely on `{"query":""}` meaning 전부, and narrowing that
+// would be a change to the tools' contract rather than a fix to this defect —
+// the same line riskCeilingArg draws.
+func stringArg(tool string, args map[string]any, key string) (string, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return "", nil
+	}
+	s, text := v.(string)
+	if !text {
+		// Naming the value is what lets the caller see which argument it got
+		// wrong; json.Marshal keeps a number, a boolean or an object readable.
+		b, _ := json.Marshal(v)
+		return "", mcpToolError("%s %s must be text: %s", tool, key, b)
+	}
+	return strings.TrimSpace(s), nil
 }
 
 // intNumber reads a caller-supplied number, keeping it inside a range. Every
