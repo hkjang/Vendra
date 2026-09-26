@@ -1,6 +1,10 @@
 package httpapi
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestSupplierArgAcceptsEitherName(t *testing.T) {
 	// Nine of eleven tools spell it supplierId; get_supplier spelled it id.
@@ -64,6 +68,59 @@ func TestMCPToolSchemasNameTheSupplierConsistently(t *testing.T) {
 			if _, found := props[banned]; found {
 				t.Errorf("%s advertises %q; use supplierId/supplierIds so the surface reads the same way throughout", name, banned)
 			}
+		}
+	}
+}
+
+func TestStringArgPassesTextAndRefusesTheRest(t *testing.T) {
+	// "" has to keep meaning "no filter". Three test files already call the
+	// search tools with {"query":""} to mean 전부, and a model filling in a
+	// template writes "" for what it has no value for — refusing it would be a
+	// change to the tools' contract, not a fix to the defect this helper is
+	// for.
+	for _, tc := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{}, ""},
+		{map[string]any{"query": nil}, ""},
+		{map[string]any{"query": ""}, ""},
+		{map[string]any{"query": "   "}, ""},
+		{map[string]any{"query": "  1001  "}, "1001"},
+		{map[string]any{"other": 1001}, ""},
+	} {
+		got, err := stringArg("search_suppliers", tc.args, "query")
+		if err != nil {
+			t.Errorf("stringArg(%v) refused: %v", tc.args, err)
+		} else if got != tc.want {
+			t.Errorf("stringArg(%v) = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+	// A value that is not text used to arrive as "", which these tools read as
+	// the filter being left out — so the answer widened to everything in scope
+	// with nothing saying so. The refusal has to name the argument and the
+	// value, because that is what the model needs to correct the call.
+	for _, tc := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"query": float64(1001)}, "search_suppliers query must be text: 1001"},
+		{map[string]any{"query": true}, "search_suppliers query must be text: true"},
+		{map[string]any{"query": []any{"a"}}, `search_suppliers query must be text: ["a"]`},
+		{map[string]any{"query": map[string]any{"name": "a"}}, `search_suppliers query must be text: {"name":"a"}`},
+	} {
+		got, err := stringArg("search_suppliers", tc.args, "query")
+		if got != "" {
+			t.Errorf("stringArg(%v) = %q, want \"\" alongside the refusal", tc.args, got)
+		}
+		if err == nil {
+			t.Fatalf("stringArg(%v) was accepted", tc.args)
+		}
+		if !errors.Is(err, errMCPTool) {
+			t.Errorf("stringArg(%v) refused with %v, which is not relayed to the caller", tc.args, err)
+		}
+		if !strings.HasSuffix(err.Error(), tc.want) {
+			t.Errorf("stringArg(%v) said %q, want it to end with %q", tc.args, err, tc.want)
 		}
 	}
 }
