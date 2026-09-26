@@ -18,18 +18,52 @@ func TestSupplierArgAcceptsEitherName(t *testing.T) {
 		{"supplierId": want, "id": "ignored"},
 		{"supplierId": "   ", "id": want},
 	} {
-		if got := supplierArg(args, "supplierId", "id"); got != want {
+		got, err := supplierArg("get_supplier", args, "supplierId", "id")
+		if err != nil {
+			t.Errorf("supplierArg(%v) refused: %v", args, err)
+		} else if got != want {
 			t.Errorf("supplierArg(%v) = %q, want %q", args, got, want)
 		}
 	}
+	// Absent, null and blank all still mean the argument was left out, which is
+	// the message get_supplier answers with.
 	for _, args := range []map[string]any{
 		{},
 		{"supplierId": ""},
+		{"supplierId": nil},
+		{"supplierId": "   "},
 		{"other": want},
-		{"supplierId": 42},
 	} {
-		if got := supplierArg(args, "supplierId", "id"); got != "" {
+		got, err := supplierArg("get_supplier", args, "supplierId", "id")
+		if err != nil {
+			t.Errorf("supplierArg(%v) refused: %v", args, err)
+		} else if got != "" {
 			t.Errorf("supplierArg(%v) = %q, want \"\"", args, got)
+		}
+	}
+	// A value that is not text used to arrive as "", so the tool answered
+	// "requires supplierId" about a call that had supplied one.
+	for _, tc := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"supplierId": float64(42)}, "get_supplier supplierId must be text: 42"},
+		{map[string]any{"supplierId": true}, "get_supplier supplierId must be text: true"},
+		{map[string]any{"id": float64(42)}, "get_supplier id must be text: 42"},
+		{map[string]any{"supplierId": map[string]any{"name": "a"}}, `get_supplier supplierId must be text: {"name":"a"}`},
+	} {
+		got, err := supplierArg("get_supplier", tc.args, "supplierId", "id")
+		if got != "" {
+			t.Errorf("supplierArg(%v) = %q, want \"\" alongside the refusal", tc.args, got)
+		}
+		if err == nil {
+			t.Fatalf("supplierArg(%v) was accepted", tc.args)
+		}
+		if !errors.Is(err, errMCPTool) {
+			t.Errorf("supplierArg(%v) refused with %v, which is not relayed to the caller", tc.args, err)
+		}
+		if !strings.HasSuffix(err.Error(), tc.want) {
+			t.Errorf("supplierArg(%v) said %q, want it to end with %q", tc.args, err, tc.want)
 		}
 	}
 }
@@ -40,19 +74,53 @@ func TestSupplierListArgAcceptsEitherName(t *testing.T) {
 		{"supplierIds": []any{a, b}},
 		{"ids": []any{a, b}},
 		{"supplierIds": []any{}, "ids": []any{a, b}},
+		{"supplierIds": nil, "ids": []any{a, b}},
 	} {
-		got := supplierListArg(args, "supplierIds", "ids")
-		if len(got) != 2 || got[0] != a || got[1] != b {
+		got, err := supplierListArg("compare_suppliers", args, "supplierIds", "ids")
+		if err != nil {
+			t.Errorf("supplierListArg(%v) refused: %v", args, err)
+		} else if len(got) != 2 || got[0] != a || got[1] != b {
 			t.Errorf("supplierListArg(%v) = %v, want [%s %s]", args, got, a, b)
 		}
 	}
 	for _, args := range []map[string]any{
 		{},
 		{"supplierIds": []any{}},
-		{"supplierIds": "not a list"},
+		{"supplierIds": nil},
 	} {
-		if got := supplierListArg(args, "supplierIds", "ids"); len(got) != 0 {
+		got, err := supplierListArg("compare_suppliers", args, "supplierIds", "ids")
+		if err != nil {
+			t.Errorf("supplierListArg(%v) refused: %v", args, err)
+		} else if len(got) != 0 {
 			t.Errorf("supplierListArg(%v) = %v, want empty", args, got)
+		}
+	}
+	// An element that is not text used to be dropped, which turned a two-way
+	// comparison into a one-way one that was returned as a normal answer; a list
+	// with nothing left in it fell through to "requires supplierIds". Neither
+	// tells the caller which value to fix, so both are refused by the value.
+	for _, tc := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"supplierIds": []any{a, float64(42)}}, "compare_suppliers supplierIds must be a list of text: 42"},
+		{map[string]any{"supplierIds": []any{float64(1), float64(2)}}, "compare_suppliers supplierIds must be a list of text: 1"},
+		{map[string]any{"supplierIds": []any{a, nil}}, "compare_suppliers supplierIds must be a list of text: null"},
+		{map[string]any{"supplierIds": "not a list"}, `compare_suppliers supplierIds must be a list of text: "not a list"`},
+		{map[string]any{"ids": []any{a, true}}, "compare_suppliers ids must be a list of text: true"},
+	} {
+		got, err := supplierListArg("compare_suppliers", tc.args, "supplierIds", "ids")
+		if len(got) != 0 {
+			t.Errorf("supplierListArg(%v) = %v, want nothing alongside the refusal", tc.args, got)
+		}
+		if err == nil {
+			t.Fatalf("supplierListArg(%v) was accepted", tc.args)
+		}
+		if !errors.Is(err, errMCPTool) {
+			t.Errorf("supplierListArg(%v) refused with %v, which is not relayed to the caller", tc.args, err)
+		}
+		if !strings.HasSuffix(err.Error(), tc.want) {
+			t.Errorf("supplierListArg(%v) said %q, want it to end with %q", tc.args, err, tc.want)
 		}
 	}
 }
