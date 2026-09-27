@@ -522,7 +522,11 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		if err != nil {
 			return nil, err
 		}
-		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT $6`, q, p.DataScope, organizationID, p.ID, showSpend, intNumber(args["limit"], 100, 100))
+		limit, err := intArg(name, args, "limit", 100, 100)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT $6`, q, p.DataScope, organizationID, p.ID, showSpend, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -627,10 +631,17 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		// tool run at all. The window is bounded because a caller asking for ten
 		// thousand years would otherwise pull the whole contract table into one
 		// answer for a model to read.
-		days := intNumber(args["days"], 180, 3650)
+		days, err := intArg(name, args, "days", 180, 3650)
+		if err != nil {
+			return nil, err
+		}
 		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',o.id,'number',o.number,'title',o.title,'supplierId',o.supplier_id,'supplierName',s.name,'endDate',o.end_date,'amount',CASE WHEN $5 THEN o.amount END,'status',o.status) FROM business_objects o LEFT JOIN suppliers s ON s.id=o.supplier_id WHERE o.object_type='contract' AND o.deleted_at IS NULL AND o.end_date BETWEEN current_date AND current_date+($1::int) AND (`+orgInScope("o.organization_id", "$2", "$3")+` OR ($2='own' AND o.owner_id=$4::uuid)) ORDER BY o.end_date LIMIT 100`, days, p.DataScope, organizationID, p.ID, hasPermission(p, "contract.amount.read"))
 	case "analyze_spend":
-		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'annualSpend',annual_spend,'share',round(100*annual_spend/NULLIF(sum(annual_spend) OVER(),0),2),'riskLevel',risk_level,'score',score) FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT $4`, p.DataScope, organizationID, p.ID, intNumber(args["limit"], 100, 100))
+		limit, err := intArg(name, args, "limit", 100, 100)
+		if err != nil {
+			return nil, err
+		}
+		return a.mcpJSONRows(ctx, `SELECT jsonb_build_object('id',id,'name',name,'annualSpend',annual_spend,'share',round(100*annual_spend/NULLIF(sum(annual_spend) OVER(),0),2),'riskLevel',risk_level,'score',score) FROM suppliers WHERE deleted_at IS NULL AND (`+orgInScope("organization_id", "$1", "$2")+` OR ($1='own' AND owner_id=$3::uuid)) ORDER BY annual_spend DESC LIMIT $4`, p.DataScope, organizationID, p.ID, limit)
 	case "recommend_suppliers":
 		category := stringValue(args, "category")
 		minScore, err := numberArg(args, "minScore")
@@ -641,6 +652,10 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		if err != nil {
 			return nil, err
 		}
+		limit, err := intArg(name, args, "limit", 50, 50)
+		if err != nil {
+			return nil, err
+		}
 		// The ceiling is an extra condition rather than a replacement for
 		// `risk_level NOT IN('CRITICAL')`. risk_level is a plain text column
 		// with no constraint behind it, so selecting the grades at or below the
@@ -648,7 +663,7 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		// the vocabulary does not name — an empty string, or whatever an older
 		// form or an import wrote — from calls that never asked for a cap.
 		ceiling := ""
-		params := []any{category, minScore, p.DataScope, organizationID, p.ID, showSpend, intNumber(args["limit"], 50, 50)}
+		params := []any{category, minScore, p.DataScope, organizationID, p.ID, showSpend, limit}
 		if len(grades) > 0 {
 			ceiling = ` AND risk_level = ANY($8::text[])`
 			params = append(params, grades)
@@ -931,17 +946,47 @@ func stringArg(tool string, args map[string]any, key string) (string, error) {
 	return strings.TrimSpace(s), nil
 }
 
-// intNumber reads a caller-supplied number, keeping it inside a range. Every
+// intArg reads a caller-supplied count, keeping it inside a range and refusing
+// a value that is not a number instead of standing the default in for it. Every
 // MCP answer becomes part of a model's prompt, so an unbounded argument is an
-// unbounded response.
-func intNumber(v any, def, max int) int {
+// unbounded response — and a default that replaced an argument the caller did
+// supply is an answer to a question the caller did not ask.
+//
+// This was the last argument reading `v.(float64)` and treating the failure as
+// absence, and the tool it cost the most is get_expiring_contracts. A model
+// quoting a number — the `minScore:"80"` mistake numberArg already refuses —
+// sent `{"days":"30"}` and got the 180일 기본값 window back, so contracts
+// expiring four months out arrived in the answer to a question about the month
+// ahead, with nothing in the response saying the window was widened. The model
+// relays them as expiring within the month. `{"limit":"5"}` is the same shape
+// one step milder: a hundred rows returned as the five that were asked for.
+//
+// A number outside the advertised range keeps falling back to the default or to
+// the ceiling rather than failing. That is a bound this file puts on its own
+// answers, not a misread argument: `1e100` and `0.5` have a reading here — as
+// much as this tool will give, and less than it will bother to cut — where
+// "30" has none.
+func intArg(tool string, args map[string]any, key string, def, max int) (int, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return def, nil
+	}
+	if s, text := v.(string); text {
+		return 0, mcpToolError("%s %s must be a number, not text: %q", tool, key, s)
+	}
 	f, ok := v.(float64)
-	if !ok || f < 1 {
-		return def
+	if !ok {
+		// Naming the value is what lets the caller see which argument it got
+		// wrong; json.Marshal keeps a boolean, a list or an object readable.
+		b, _ := json.Marshal(v)
+		return 0, mcpToolError("%s %s must be a number: %s", tool, key, b)
+	}
+	if f < 1 {
+		return def, nil
 	}
 	// Clamp before converting: large JSON numbers can overflow int.
 	if f >= float64(max) {
-		return max
+		return max, nil
 	}
-	return int(f)
+	return int(f), nil
 }

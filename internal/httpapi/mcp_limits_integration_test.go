@@ -96,7 +96,12 @@ func TestMCPAdvertisedLimitsAreApplied(t *testing.T) {
 						want        int
 					}{
 						{"one", "1", 1}, {"two", "2", 2}, {"omitted", "", max}, {"ceiling", fmt.Sprint(max), max}, {"above", fmt.Sprint(max + 1), max},
-						{"null", "null", max}, {"string", `"2"`, max}, {"zero", "0", max}, {"negative", "-1", max}, {"fraction below one", "0.5", max}, {"huge", "1e100", max}, {"fraction", "2.9", 2},
+						// A limit that is not a number is now refused rather than
+						// answered with the ceiling — see
+						// TestMCPCountArgumentsRefuseValuesThatAreNotNumbers, which
+						// reads the message. The numbers the advertised range does
+						// not hold still fall back here.
+						{"null", "null", max}, {"zero", "0", max}, {"negative", "-1", max}, {"fraction below one", "0.5", max}, {"huge", "1e100", max}, {"fraction", "2.9", 2},
 					} {
 						t.Run(tc.name, func(t *testing.T) {
 							args := `{"query":"","category":"limits","minScore":80`
