@@ -152,14 +152,16 @@ func TestMCPToolAnswersAreBounded(t *testing.T) {
 	}
 }
 
-func TestIntNumberStaysInRange(t *testing.T) {
+// A value that is not a number is refused rather than read as absent — see
+// intArg — so the cases here are the ones that do have a reading: a missing
+// argument, and a number the advertised range does not hold.
+func TestIntArgStaysInRange(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		value          any
 		def, max, want int
 	}{
 		{"absent", nil, 180, 3650, 180},
-		{"not a number", "180", 180, 3650, 180},
 		{"zero", float64(0), 180, 3650, 180},
 		{"negative", float64(-5), 180, 3650, 180},
 		{"below one", float64(0.5), 180, 3650, 180},
@@ -170,8 +172,12 @@ func TestIntNumberStaysInRange(t *testing.T) {
 		{"past the ceiling", float64(3650000), 180, 3650, 3650},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := intNumber(tc.value, tc.def, tc.max); got != tc.want {
-				t.Errorf("intNumber(%v) = %d, want %d", tc.value, got, tc.want)
+			got, err := intArg("tool", map[string]any{"days": tc.value}, "days", tc.def, tc.max)
+			if err != nil {
+				t.Fatalf("intArg(%v) refused a number it should read: %v", tc.value, err)
+			}
+			if got != tc.want {
+				t.Errorf("intArg(%v) = %d, want %d", tc.value, got, tc.want)
 			}
 		})
 	}
