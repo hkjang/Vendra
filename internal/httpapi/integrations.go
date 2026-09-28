@@ -416,7 +416,7 @@ var mcpTools = []map[string]any{
 	{"name": "get_supplier_risk", "description": "공급업체 리스크를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
 	{"name": "get_supplier_score", "description": "공급업체 평가 점수와 이력을 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
 	{"name": "search_contracts", "description": "계약을 검색합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "supplierId": map[string]any{"type": "string"}}}},
-	{"name": "get_expiring_contracts", "description": "지정 일수 내 만료되는 계약을 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"days": map[string]any{"type": "integer", "minimum": 1, "maximum": 730}}}},
+	{"name": "get_expiring_contracts", "description": "지정 일수 내 만료되는 계약을 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"days": map[string]any{"type": "integer", "minimum": 1, "maximum": 3650}}}},
 	{"name": "analyze_spend", "description": "공급업체별 지출과 의존도를 분석합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}}},
 	{"name": "search_purchase_orders", "description": "발주서를 검색합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "supplierId": map[string]any{"type": "string"}}}},
 	{"name": "get_supplier_issues", "description": "공급업체 이슈를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
@@ -631,6 +631,17 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		// tool run at all. The window is bounded because a caller asking for ten
 		// thousand years would otherwise pull the whole contract table into one
 		// answer for a model to read.
+		//
+		// The 3650 here is the ceiling, and the schema was moved up to meet it
+		// rather than this being moved down to the 730 the schema used to
+		// publish: 730 was a number nothing applied, and a client that validates
+		// arguments against the schema was refusing `days:1095` before the call
+		// ever arrived — so the model could not learn the server answers a
+		// ten-year question. Widening the published window costs little because
+		// the answer is capped twice over regardless of it: `ORDER BY end_date`
+		// with `LIMIT 100` means a wider window only ever adds rows behind the
+		// hundred nearest expiries, which are the ones a caller asking "what is
+		// expiring" wanted first.
 		days, err := intArg(name, args, "days", 180, 3650)
 		if err != nil {
 			return nil, err

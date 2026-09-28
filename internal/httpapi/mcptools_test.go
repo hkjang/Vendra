@@ -183,6 +183,64 @@ func TestIntArgStaysInRange(t *testing.T) {
 	}
 }
 
+// The schema in mcpTools is the only account of a numeric argument a caller ever
+// gets: a client that validates arguments against it refuses a value outside the
+// published range before the call leaves the model, so a maximum below the
+// ceiling runMCPTool enforces makes the tool permanently less capable than it is
+// — and nothing in the refusal tells the model the server would have answered.
+// get_expiring_contracts published 730 while intArg allowed 3650, a number no
+// code applied, and the mismatch outlived six rounds because the two constants
+// sit in different halves of the file with nothing reading both.
+//
+// This table is that reader. It is checked in both directions so a numeric
+// argument cannot be added to a schema, or quietly lose its bound, without being
+// listed here next to the ceiling its intArg call passes. Only `maximum` is
+// compared: `minimum` is deliberately out of step with intArg's `f < 1 → def`
+// (see the comment on intArg), and TestIntArgStaysInRange fixes that as the
+// contract.
+func TestMCPNumericSchemaMaximumsMatchEnforcedCeilings(t *testing.T) {
+	enforced := map[string]struct {
+		arg string
+		max int
+	}{
+		"search_suppliers":       {"limit", 100},
+		"analyze_spend":          {"limit", 100},
+		"recommend_suppliers":    {"limit", 50},
+		"get_expiring_contracts": {"days", 3650},
+	}
+	found := map[string]bool{}
+	for _, tool := range mcpTools {
+		name, _ := tool["name"].(string)
+		schema, ok := tool["inputSchema"].(map[string]any)
+		if !ok {
+			t.Errorf("%s publishes no inputSchema", name)
+			continue
+		}
+		props, _ := schema["properties"].(map[string]any)
+		for arg, raw := range props {
+			prop, _ := raw.(map[string]any)
+			published, bounded := prop["maximum"]
+			if !bounded {
+				continue
+			}
+			want, listed := enforced[name]
+			if !listed || want.arg != arg {
+				t.Errorf("%s.%s publishes maximum %v with no enforced ceiling listed for it: add it here beside the intArg call that reads it", name, arg, published)
+				continue
+			}
+			found[name] = true
+			if got, ok := published.(int); !ok || got != want.max {
+				t.Errorf("%s.%s publishes maximum %v, but runMCPTool enforces %d, so a validating client refuses values the server would answer", name, arg, published, want.max)
+			}
+		}
+	}
+	for name, want := range enforced {
+		if !found[name] {
+			t.Errorf("%s.%s publishes no maximum, so nothing tells a caller about the %d ceiling runMCPTool enforces", name, want.arg, want.max)
+		}
+	}
+}
+
 // TestMCPToolResultsAreBounded covers the two tool queries that had no LIMIT.
 // A tool result is dropped whole into a model's context, so an unbounded one is
 // not a slow query, it is a call the caller cannot afford: 502 risks on a single
