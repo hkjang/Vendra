@@ -409,10 +409,23 @@ func rpcError(w http.ResponseWriter, id any, code int, message string) {
 	writeJSON(w, 200, map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": code, "message": message}})
 }
 
+// mcpTools is the whole of what a caller is ever told about this surface. A
+// model reads these eleven descriptions once, before any call, and chooses a
+// tool by them — so a description is a promise about the answer, not a summary
+// of an ambition. compare_suppliers named 계약 and 이슈 among the dimensions it
+// compares and answered with neither: a model asked which of two suppliers has
+// more open issues picked it, received eight supplier fields with no issue among
+// them, and had nowhere to go but "neither has any". Nothing in the answer says
+// a dimension was never gathered, so the description is the only place the
+// mistake can be prevented, and it is narrowed here to what the rows carry —
+// contracts and issues have their own per-supplier tools, which is where a
+// caller after them has to go. A guard test calls the tool through a real
+// session and fails if a dimension named here is absent from the row it answers
+// with, and a second one holds the user guide's tool table to this description.
 var mcpTools = []map[string]any{
 	{"name": "search_suppliers", "description": "이름, 사업자번호 또는 공급업체 번호로 공급업체를 검색합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}, "required": []string{"query"}}},
 	{"name": "get_supplier", "description": "Supplier 360 핵심 정보를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
-	{"name": "compare_suppliers", "description": "여러 공급업체의 비용, 평가, 위험, 계약 및 이슈를 비교합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 2}}, "required": []string{"supplierIds"}}},
+	{"name": "compare_suppliers", "description": "여러 공급업체의 비용, 평가 점수, 위험 등급을 나란히 비교합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 2}}, "required": []string{"supplierIds"}}},
 	{"name": "get_supplier_risk", "description": "공급업체 리스크를 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
 	{"name": "get_supplier_score", "description": "공급업체 평가 점수와 이력을 조회합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"supplierId": map[string]any{"type": "string"}}, "required": []string{"supplierId"}}},
 	{"name": "search_contracts", "description": "계약을 검색합니다.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "supplierId": map[string]any{"type": "string"}}}},
