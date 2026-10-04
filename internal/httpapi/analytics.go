@@ -660,7 +660,7 @@ func (a *App) createSpendTransaction(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) supplierNetwork(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
-	showSpend := hasPermission(p, "spend.read") || hasPermission(p, "analytics.read") || hasPermission(p, "*")
+	showSpend := canReadSupplierSpend(p)
 	organizationID := ""
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID

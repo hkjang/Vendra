@@ -157,7 +157,7 @@ func (a *App) aiAnalyze(w http.ResponseWriter, r *http.Request) {
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
-	showSpend := hasPermission(p, "spend.read") || hasPermission(p, "analytics.read") || hasPermission(p, "*")
+	showSpend := canReadSupplierSpend(p)
 	contextData := []map[string]any{}
 	for _, id := range in.SupplierIDs {
 		supplier, err := scanSupplier(a.db.QueryRow(r.Context(), supplierSelect+` WHERE id=$1 AND deleted_at IS NULL`, id))
@@ -528,7 +528,7 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
 	}
-	showSpend := hasPermission(p, "spend.read") || hasPermission(p, "analytics.read") || hasPermission(p, "*")
+	showSpend := canReadSupplierSpend(p)
 	switch name {
 	case "search_suppliers":
 		q, err := stringArg(name, args, "query")
