@@ -11,7 +11,20 @@ import (
 
 func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
-	showAmounts := hasPermission(p, "spend.read") || hasPermission(p, "analytics.read") || hasPermission(p, "*")
+	// One flag used to cover two different columns here, which is why only one
+	// of them is moving. annualSpend and topSuppliers[].annualSpend are both
+	// suppliers.annual_spend, so they answer canReadSupplierSpend like every
+	// other surface carrying that column: a role holding supplier.financial.read
+	// reads the real per-supplier figure from /api/v1/suppliers, and the
+	// dashboard card rendering ₩0 puts a 「전체 보기」 link to that list directly
+	// beside the zero it contradicts.
+	//
+	// activeContractValue is business_objects.amount — a different column with
+	// its own door, which this keeps where it was rather than widening by
+	// association. Separate variables because sharing one is how they came to be
+	// gated together in the first place.
+	showSpend := canReadSupplierSpend(p)
+	showContractValue := hasPermission(p, "spend.read") || hasPermission(p, "analytics.read") || hasPermission(p, "*")
 	organizationID := ""
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
@@ -23,7 +36,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
 		return
 	}
-	if !showAmounts {
+	if !showSpend {
 		spend = 0
 	}
 	// deliveredAt lives in the free-form data blob, which any client can PATCH.
@@ -40,7 +53,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
 		return
 	}
-	if !showAmounts {
+	if !showContractValue {
 		contractValue = 0
 	}
 	if err := a.db.QueryRow(r.Context(), `SELECT count(*) FROM workflow_instances wi JOIN business_objects o ON o.id=wi.object_id WHERE wi.status='pending' AND (`+orgInScope("o.organization_id", "$1", "$2")+` OR ($1='own' AND o.owner_id=$3::uuid))`, p.DataScope, organizationID, p.ID).Scan(&pendingApprovals); err != nil {
@@ -70,7 +83,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "database_error", "대시보드를 조회하지 못했습니다")
 			return
 		}
-		if !showAmounts {
+		if !showSpend {
 			amount = 0
 		}
 		top = append(top, map[string]any{"id": id, "name": name, "annualSpend": amount, "riskLevel": risk, "score": score})
@@ -660,7 +673,7 @@ func (a *App) createSpendTransaction(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) supplierNetwork(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
-	showSpend := hasPermission(p, "spend.read") || hasPermission(p, "analytics.read") || hasPermission(p, "*")
+	showSpend := canReadSupplierSpend(p)
 	organizationID := ""
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID

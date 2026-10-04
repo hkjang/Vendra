@@ -325,8 +325,43 @@ func (a *App) getSupplier(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"supplier": redactSupplier(p, s), "metrics": map[string]any{"activeContracts": activeContracts, "openIssues": openIssues, "deliveryPerformance": delivery, "qualityPerformance": quality}})
 }
 
+// canReadSupplierSpend answers the one question every surface carrying
+// suppliers.annual_spend has to ask, in one place, because it used to be asked
+// twice with two different answers.
+//
+// redactSupplier — the detail, the list, the portal, get_supplier and the AI
+// context's per-supplier records — accepted all three wordings below. The
+// summary queries beside them (search_suppliers, compare_suppliers,
+// recommend_suppliers, the AI context's own supplier summary, the supply
+// network and the dashboard's annualSpend KPI and top-five card) accepted the
+// first two and had never heard of supplier.financial.read, which is the
+// permission the catalogue offers an administrator as the supplier-money door
+// in exactly those words. So a role granted it read the real figure from
+// get_supplier and a zero from search_suppliers for the same supplier in the
+// same session.
+//
+// A zero is the damaging half of that. On the MCP surface the caller is a
+// language model with no second source to check against and nothing in the
+// answer saying a figure was withheld, so it relays "annualSpend 0" as a
+// supplier the company spends nothing with — a figure it could have had
+// correctly from the tool listed next to the one it chose. On the dashboard a
+// person sees it: the ₩0 card links straight to the list that answers the real
+// figure. Asking here means the next surface to carry the column inherits the
+// answer instead of restating two thirds of it.
+//
+// Scope: this is suppliers.annual_spend and nothing else. Dashboard callers in
+// particular should note that activeContractValue is business_objects.amount,
+// which keeps its own reading — see analytics.go's dashboard, where both used
+// to share one flag.
+//
+// "*" is not tested for separately: permissionMatches already answers true for
+// a principal holding it, whatever is wanted.
+func canReadSupplierSpend(p Principal) bool {
+	return hasPermission(p, "spend.read") || hasPermission(p, "analytics.read") || hasPermission(p, "supplier.financial.read")
+}
+
 func redactSupplier(p Principal, s supplier) supplier {
-	if !hasPermission(p, "spend.read") && !hasPermission(p, "analytics.read") && !hasPermission(p, "supplier.financial.read") {
+	if !canReadSupplierSpend(p) {
 		s.AnnualSpend = 0
 		s.Financials = map[string]any{}
 	}
