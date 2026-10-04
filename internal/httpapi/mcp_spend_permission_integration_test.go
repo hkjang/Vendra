@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 )
 
@@ -120,6 +122,98 @@ func TestEverySupplierSpendPermissionIsReadTheSameWay(t *testing.T) {
 				t.Errorf("%s: %s answered annualSpend %v for SC-MINE while get_supplier answered %v, want both to say %v",
 					tc.permissions, tool.name, summary, got, tc.want)
 			}
+		}
+	}
+}
+
+// The dashboard is the fifth surface carrying suppliers.annual_spend, and the
+// one where the contradiction is visible without leaving the screen: the
+// "구매금액 Top 공급업체" card renders topSuppliers[].annualSpend next to a
+// 「전체 보기」 link onto /suppliers, which answers the same column through
+// redactSupplier. A role holding only supplier.financial.read used to read ₩0 on
+// the card and the real figure one click away, from the same column, in the same
+// session.
+//
+// activeContractValue is asserted in the same breath because it sat behind the
+// very same flag and is *not* this column — it is business_objects.amount, whose
+// door this change deliberately leaves where it was. Pinning it here is what
+// stops the next reader from collapsing the two flags back into one.
+func TestDashboardReadsTheSameSupplierSpendDoor(t *testing.T) {
+	w := newScopeWorld(t)
+	second := seedSecondOwnSupplier(t, w)
+	const mineSpend, secondSpend, contractAmount = 12345678.0, 87654321.0, 555000.0
+	seedAnnualSpend(t, w, w.mySupplier, mineSpend)
+	seedAnnualSpend(t, w, second, secondSpend)
+	if _, err := w.pool.Exec(context.Background(),
+		`UPDATE business_objects SET amount=$2,status='active' WHERE id=$1`, w.myContract, contractAmount); err != nil {
+		t.Fatalf("seed contract amount: %v", err)
+	}
+
+	for _, tc := range []struct {
+		permissions       string
+		wantSpend         float64
+		wantContractValue float64
+	}{
+		// Each wording of the supplier-money door, one at a time, so a single
+		// one quietly falling out of the dashboard is a failure rather than
+		// something the others cover for.
+		{`["supplier.read","dashboard.read","spend.read"]`, mineSpend, contractAmount},
+		{`["supplier.read","dashboard.read","analytics.read"]`, mineSpend, contractAmount},
+		// The one that used to be missing here. It opens annual_spend — the
+		// column redactSupplier already hands this role in full — and must not
+		// open business_objects.amount, which it never named.
+		{`["supplier.read","dashboard.read","supplier.financial.read"]`, mineSpend, 0},
+		{`["*"]`, mineSpend, contractAmount},
+		{`["supplier.read","dashboard.read"]`, 0, 0},
+	} {
+		grantOnly(t, w, tc.permissions)
+		rec := doRequest(t, w.handler, http.MethodGet, "/api/v1/dashboard", w.deptToken)
+		if rec.Code != 200 {
+			t.Fatalf("%s: dashboard answered %d: %s", tc.permissions, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			KPIs struct {
+				AnnualSpend         float64 `json:"annualSpend"`
+				ActiveContractValue float64 `json:"activeContractValue"`
+			} `json:"kpis"`
+			TopSuppliers []struct {
+				Name        string  `json:"name"`
+				AnnualSpend float64 `json:"annualSpend"`
+			} `json:"topSuppliers"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s: decode dashboard: %v\n  body: %s", tc.permissions, err, rec.Body.String())
+		}
+		// The KPI sums both own suppliers; the card lists them one by one. Both
+		// read the same column, so both answer or neither does.
+		if want := tc.wantSpend; want == 0 {
+			if body.KPIs.AnnualSpend != 0 {
+				t.Errorf("%s: kpis.annualSpend %v for a role with no money permission at all", tc.permissions, body.KPIs.AnnualSpend)
+			}
+		} else if body.KPIs.AnnualSpend != mineSpend+secondSpend {
+			t.Errorf("%s: kpis.annualSpend %v, want %v", tc.permissions, body.KPIs.AnnualSpend, mineSpend+secondSpend)
+		}
+		named := 0
+		for _, row := range body.TopSuppliers {
+			want, ok := map[string]float64{"SC-MINE": mineSpend, "SC-MINE-2": secondSpend}[row.Name]
+			if !ok {
+				continue
+			}
+			named++
+			if tc.wantSpend == 0 {
+				want = 0
+			}
+			if row.AnnualSpend != want {
+				t.Errorf("%s: topSuppliers %s annualSpend %v, want %v — /api/v1/suppliers answers %v for the same column one call away",
+					tc.permissions, row.Name, row.AnnualSpend, want, want)
+			}
+		}
+		if named != 2 {
+			t.Fatalf("%s: dashboard named %d of the 2 seeded suppliers, so this proves nothing: %s", tc.permissions, named, rec.Body.String())
+		}
+		if body.KPIs.ActiveContractValue != tc.wantContractValue {
+			t.Errorf("%s: kpis.activeContractValue %v, want %v — business_objects.amount has its own door and this change does not move it",
+				tc.permissions, body.KPIs.ActiveContractValue, tc.wantContractValue)
 		}
 	}
 }
