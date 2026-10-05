@@ -351,8 +351,11 @@ func (a *App) getSupplier(w http.ResponseWriter, r *http.Request) {
 //
 // Scope: this is suppliers.annual_spend and nothing else. Dashboard callers in
 // particular should note that activeContractValue is business_objects.amount,
-// which keeps its own reading — see analytics.go's dashboard, where both used
-// to share one flag.
+// which has its own door and its own reading — see analytics.go's dashboard,
+// where both used to share one flag. That one now reads contract.amount.read,
+// the name the rest of the product already opens that column with; the two
+// questions are still separate, and answering one of them with this function
+// would re-make the mistake both readings were untangled from.
 //
 // "*" is not tested for separately: permissionMatches already answers true for
 // a principal holding it, whatever is wanted.
