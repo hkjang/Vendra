@@ -88,6 +88,9 @@ func (a *App) listObjects(objectType string) http.HandlerFunc {
 		if p.OrganizationID != nil {
 			organizationID = *p.OrganizationID
 		}
+		// The applied sort is computed once and used for both the SQL and the
+		// response, so the list cannot name one sort while running another.
+		applied := objectOrderApplied(order, hasPermission(p, objectType+".amount.read"))
 		orderBy := objectOrderBy(order, hasPermission(p, objectType+".amount.read"))
 		query := objectSelect + ` WHERE o.object_type=$1 AND o.deleted_at IS NULL AND ($2='' OR o.status=$2) AND ($3='' OR o.supplier_id=$3::uuid) AND ($4='' OR o.title ILIKE '%'||$4||'%' OR o.number ILIKE '%'||$4||'%') AND (` + orgInScope("o.organization_id", "$6", "$7") + ` OR ($6='own' AND o.owner_id=$8::uuid)) ORDER BY ` + orderBy + ` LIMIT $5`
 		rows, err := a.db.Query(r.Context(), query, objectType, status, supplierID, q, limit+1, p.DataScope, organizationID, p.ID)
@@ -112,18 +115,43 @@ func (a *App) listObjects(objectType string) http.HandlerFunc {
 			return
 		}
 		items, truncated := truncate(items, limit)
-		writeJSON(w, 200, map[string]any{"items": items, "count": len(items), "limit": limit, "truncated": truncated})
+		writeJSON(w, 200, map[string]any{"items": items, "count": len(items), "limit": limit, "truncated": truncated, "order": applied})
 	}
 }
 
-func objectOrderBy(order string, amountVisible bool) string {
+// objectOrderApplied names the sort the list will really run, which is not
+// always the one that was asked for: amount_desc falls back for a caller without
+// <type>.amount.read, and so does anything unrecognised. The request is not
+// refused, because the web list paints its dropdown from the URL parameter and
+// sends that value straight back — rejecting it would empty the whole screen
+// instead of correcting one control. So the response names the applied sort
+// instead, for the same reason it carries `truncated`: a list that quietly
+// ignores what it was asked reads as a list that honoured it, and the top row of
+// a newest-first list gets read as the largest contract.
+//
+// objectOrderBy reads this rather than deciding again, so the sort the response
+// names and the sort the SQL runs cannot drift apart.
+func objectOrderApplied(order string, amountVisible bool) string {
 	switch order {
+	case "due_asc", "title_asc":
+		return order
+	case "amount_desc":
+		if amountVisible {
+			return order
+		}
+	}
+	return "updated_desc"
+}
+
+func objectOrderBy(order string, amountVisible bool) string {
+	switch objectOrderApplied(order, amountVisible) {
 	case "due_asc":
 		return "COALESCE(o.due_date,o.end_date) ASC NULLS LAST, o.updated_at DESC"
 	case "amount_desc":
-		if amountVisible {
-			return "o.amount DESC NULLS LAST, o.updated_at DESC"
-		}
+		// The amountVisible check is not repeated here: objectOrderApplied has
+		// already answered it, and asking twice is how the two would come to
+		// disagree.
+		return "o.amount DESC NULLS LAST, o.updated_at DESC"
 	case "title_asc":
 		return "o.title ASC, o.updated_at DESC"
 	}
