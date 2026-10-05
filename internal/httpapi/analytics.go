@@ -20,11 +20,27 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	// beside the zero it contradicts.
 	//
 	// activeContractValue is business_objects.amount — a different column with
-	// its own door, which this keeps where it was rather than widening by
-	// association. Separate variables because sharing one is how they came to be
-	// gated together in the first place.
+	// its own door, so it gets its own reading and its own variable. Sharing one
+	// is how the two came to be gated together in the first place.
+	//
+	// That second door is named contract.amount.read everywhere else the column
+	// is carried: the contract detail and list drop amount without it
+	// (redactObject), the amount sort order refuses without it, and both MCP's
+	// get_expiring_contracts and the AI context's expiring contracts ask for it
+	// by that name. Only this sum had never heard of it, so a role holding
+	// contract.read + contract.amount.read read the real amount from
+	// /api/v1/contracts/<id> and ₩0 here, in the same session. The zero is the
+	// damaging half — it says the company holds no active contract value rather
+	// than that a figure was withheld, and the card rendering it links straight
+	// to the list that answers the real amounts.
+	//
+	// contract.read is not required alongside, for the same reason
+	// canReadSupplierSpend does not require supplier.read: the gate on the route
+	// already decided who may be here, and this flag only decides which column
+	// they read. "*" is not tested for separately either — permissionMatches
+	// answers true for a principal holding it whatever is wanted.
 	showSpend := canReadSupplierSpend(p)
-	showContractValue := hasPermission(p, "spend.read") || hasPermission(p, "analytics.read") || hasPermission(p, "*")
+	showContractValue := hasPermission(p, "spend.read") || hasPermission(p, "analytics.read") || hasPermission(p, "contract.amount.read")
 	organizationID := ""
 	if p.OrganizationID != nil {
 		organizationID = *p.OrganizationID
