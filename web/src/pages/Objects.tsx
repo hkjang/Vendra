@@ -44,6 +44,18 @@ import {
 import { BusinessObject, Supplier } from "../types";
 
 const defaultObjectColumns = ["supplier", "status", "amount", "risk", "start", "due"];
+// The server decides which sort it could actually run and answers the list with
+// it (objectOrderApplied): without <type>.amount.read it drops amount_desc back
+// to updated_desc so the ranking of a redacted column cannot leak. These four
+// values are the ones it answers with, so the label of the applied sort is read
+// from this one table — the screen never re-decides what was applied.
+const objectOrderOptions = [
+  { value: "updated_desc", label: "최근 수정순" },
+  { value: "due_asc", label: "기한 임박순" },
+  { value: "amount_desc", label: "금액 높은순" },
+  { value: "title_asc", label: "제목 가나다순" },
+];
+
 const objectColumnOptions = [
   { key: "supplier", label: "공급업체" },
   { key: "status", label: "상태" },
@@ -179,6 +191,7 @@ function ObjectList({ type }: { type: string }) {
     key: string;
     items: BusinessObject[];
     truncated: boolean;
+    order?: string;
   }>({ key: "", items: [], truncated: false });
   const [modal, setModal] = useState(false);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -195,7 +208,7 @@ function ObjectList({ type }: { type: string }) {
   const viewContext = `object:${type}`;
   const load = useCallback(() => {
     const sequence = ++loadSequence.current;
-    return api<{ items: BusinessObject[]; truncated?: boolean }>(
+    return api<{ items: BusinessObject[]; truncated?: boolean; order?: string }>(
       `${c.endpoint}?q=${encodeURIComponent(q)}&status=${status}&order=${order}`,
     ).then((response) => {
       if (sequence === loadSequence.current)
@@ -203,6 +216,9 @@ function ObjectList({ type }: { type: string }) {
           key: requestKey,
           items: response.items,
           truncated: Boolean(response.truncated),
+          // Read optionally: a server that does not answer with an applied sort
+          // leaves the screen exactly as it was.
+          order: response.order,
         });
     });
   }, [c.endpoint, order, q, requestKey, status]);
@@ -282,6 +298,15 @@ function ObjectList({ type }: { type: string }) {
   const loading = result.key !== requestKey;
   const items = loading ? [] : result.items;
   const truncated = !loading && result.truncated;
+  // Until the answer is in there is nothing to compare against, so the screen
+  // keeps showing what was asked for rather than flickering a notice. An answer
+  // without an order (an older server) or with one this dropdown cannot name is
+  // the same case: say nothing and leave the control on the requested value,
+  // because a value with no matching option would blank the dropdown instead.
+  const answeredOrder = loading
+    ? undefined
+    : objectOrderOptions.find((option) => option.value === result.order);
+  const appliedOrder = answeredOrder?.value ?? order;
   return (
     <div className="page">
       <PageHeader
@@ -299,6 +324,13 @@ function ObjectList({ type }: { type: string }) {
         <p className="form-error warning list-truncated" role="status">
           <AlertCircle />
           결과가 많아 일부만 표시했습니다. 검색이나 필터로 범위를 좁히세요.
+        </p>
+      )}
+      {answeredOrder && answeredOrder.value !== order && (
+        <p className="form-error warning list-order-dropped" role="status">
+          <AlertCircle />
+          요청한 정렬을 적용할 수 없어 {answeredOrder.label}으로 표시했습니다.
+          {order === "amount_desc" && " 금액을 볼 수 없는 목록은 금액순으로 정렬되지 않습니다."}
         </p>
       )}
       <div className="toolbar object-toolbar">
@@ -323,11 +355,19 @@ function ObjectList({ type }: { type: string }) {
             </option>
           ))}
         </select>
-        <select value={order} onChange={(event) => set("order", event.target.value)} aria-label="정렬 기준">
-          <option value="updated_desc">최근 수정순</option>
-          <option value="due_asc">기한 임박순</option>
-          <option value="amount_desc">금액 높은순</option>
-          <option value="title_asc">제목 가나다순</option>
+        {/* The URL stays the request and the dropdown shows what was applied, so
+            picking a sort the server will not run snaps back with the notice
+            above instead of leaving a sort selected that the rows are not in. */}
+        <select
+          value={appliedOrder}
+          onChange={(event) => set("order", event.target.value)}
+          aria-label="정렬 기준"
+        >
+          {objectOrderOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
         </select>
         <div className="saved-view-tools">
           <select
