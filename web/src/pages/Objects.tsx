@@ -18,6 +18,7 @@ import {
   FileSearch,
   Filter,
   Plus,
+  RefreshCw,
   Search,
   Send,
   Share2,
@@ -193,6 +194,11 @@ function ObjectList({ type }: { type: string }) {
     truncated: boolean;
     order?: string;
   }>({ key: "", items: [], truncated: false });
+  // Held against the requestKey it belongs to, exactly as `result` is: that way
+  // changing a filter stops the old refusal from applying without anyone having
+  // to clear it, and clearing it at the top of `load` instead would land one
+  // frame late and flash the previous failure over the new request.
+  const [failure, setFailure] = useState({ key: "", message: "" });
   const [modal, setModal] = useState(false);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [views, setViews] = useState<SavedView[]>([]);
@@ -210,8 +216,9 @@ function ObjectList({ type }: { type: string }) {
     const sequence = ++loadSequence.current;
     return api<{ items: BusinessObject[]; truncated?: boolean; order?: string }>(
       `${c.endpoint}?q=${encodeURIComponent(q)}&status=${status}&order=${order}`,
-    ).then((response) => {
-      if (sequence === loadSequence.current)
+    )
+      .then((response) => {
+        if (sequence !== loadSequence.current) return;
         setResult({
           key: requestKey,
           items: response.items,
@@ -220,7 +227,33 @@ function ObjectList({ type }: { type: string }) {
           // leaves the screen exactly as it was.
           order: response.order,
         });
-    });
+        // An answer supersedes whatever the last attempt was refused for. The
+        // functional form leaves the state object untouched when there was no
+        // failure, so a healthy load still renders exactly once.
+        setFailure((current) => (current.message ? { key: "", message: "" } : current));
+      })
+      .catch((cause: unknown) => {
+        // Without this branch the rejection went nowhere: `loading` is derived
+        // from `result.key !== requestKey`, which a request that never answered
+        // can never satisfy, so the screen claimed "불러오는 중" about a refusal it
+        // was already holding and then guessed at the cause twelve seconds later
+        // — "연결이 끊겼거나 서비스가 재시작 중일 수 있습니다" for a 403 the server
+        // had explained in words. The same sequence guard as the branch above:
+        // a refusal that arrives after the reader asked something else is not an
+        // answer about the new question.
+        if (sequence !== loadSequence.current) return;
+        setFailure({
+          key: requestKey,
+          // Worded apart from the <Empty> title below on purpose, the way
+          // WorkInbox words its fallback apart from its own: a rejection with
+          // nothing to say still has to say something, and reusing the title
+          // verbatim prints the same sentence to the reader twice.
+          message:
+            cause instanceof Error && cause.message
+              ? cause.message
+              : "목록을 조회하지 못했습니다",
+        });
+      });
   }, [c.endpoint, order, q, requestKey, status]);
   useEffect(() => {
     void load();
@@ -296,6 +329,7 @@ function ObjectList({ type }: { type: string }) {
     }
   }
   const loading = result.key !== requestKey;
+  const failed = failure.key === requestKey ? failure.message : "";
   const items = loading ? [] : result.items;
   const truncated = !loading && result.truncated;
   // Until the answer is in there is nothing to compare against, so the screen
@@ -396,7 +430,28 @@ function ObjectList({ type }: { type: string }) {
         </div>
       </div>
       {viewError && !viewModal && <div className="form-error"><AlertCircle />{viewError}</div>}
-      {loading ? (
+      {/* Rows are already up and only the refresh was refused (onSaved, or a
+          submit from the table): a failed refresh keeps the rows the reader is
+          looking at — they are still the last thing the server actually said —
+          and reports itself here in the same shape as viewError above. */}
+      {!loading && failed && (
+        <div className="form-error list-load-failed" role="status">
+          <AlertCircle />
+          {failed}
+        </div>
+      )}
+      {loading && failed ? (
+        <Empty
+          title="목록을 불러오지 못했습니다"
+          description={failed}
+          action={
+            <button className="button secondary" onClick={() => void load()}>
+              <RefreshCw />
+              다시 시도
+            </button>
+          }
+        />
+      ) : loading ? (
         <Loading />
       ) : (
         <ObjectTable
