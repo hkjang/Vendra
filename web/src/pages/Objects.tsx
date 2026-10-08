@@ -779,14 +779,15 @@ function NewObject({
   }
   async function save(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (submitted.current) return;
     // Snapshot before awaiting: React clears currentTarget, and inputs may change.
     const d = new FormData(e.currentTarget);
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     submitted.current = true;
-    if (draftRequest.current) await draftRequest.current;
     setBusy(true);
     setError("");
     try {
+      if (draftRequest.current) await draftRequest.current;
       await post(config.endpoint, {
         title: d.get("title"),
         supplierId: d.get("supplierId"),

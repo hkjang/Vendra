@@ -81,6 +81,92 @@ afterEach(() => {
 });
 
 describe("NewObject draft submission", () => {
+  it("disables the save button immediately while autosave is still pending", async () => {
+    const net = network();
+    const title = await openContract();
+    fireEvent.change(title, { target: { value: "저장 대기" } });
+    await waitFor(() => expect(net.calls("PUT", draftPath)).toHaveLength(1), { timeout: 2000 });
+    const button = screen.getByRole("button", { name: "초안 저장" });
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("저장 중…");
+    expect(net.calls("POST", contractPath)).toHaveLength(0);
+    await act(async () => net.draft.resolve(json({})));
+    await waitFor(() => expect(net.calls("POST", contractPath)).toHaveLength(1));
+    await act(async () => net.saved.resolve(json({ id: "contract-1" }, 201)));
+    await finishDeletion(net);
+  });
+
+  it("ignores repeated clicks and form submissions throughout PUT, POST and DELETE using the first snapshot", async () => {
+    const net = network();
+    const title = await openContract();
+    fireEvent.change(title, { target: { value: "자동 저장 제목" } });
+    await waitFor(() => expect(net.calls("PUT", draftPath)).toHaveLength(1), { timeout: 2000 });
+    fireEvent.change(title, { target: { value: "첫 제출 제목" } });
+    fireEvent.change(screen.getByLabelText("금액"), { target: { value: "15000" } });
+    fireEvent.change(screen.getByLabelText("설명"), { target: { value: "첫 제출 설명" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /사용/ }));
+    const button = screen.getByRole("button", { name: "초안 저장" });
+    const form = title.closest("form")!;
+    expect(form).toBeInstanceOf(HTMLFormElement);
+    // Keep consecutive submit events in one batch: a state-only guard is insufficient.
+    act(() => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    expect(net.calls("POST", contractPath)).toHaveLength(0);
+    expect(net.calls("DELETE", draftPath)).toHaveLength(0);
+    fireEvent.change(title, { target: { value: "나중 제목" } });
+    fireEvent.change(screen.getByLabelText("금액"), { target: { value: "25000" } });
+    fireEvent.change(screen.getByLabelText("설명"), { target: { value: "나중 설명" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /사용/ }));
+    fireEvent.click(button);
+    fireEvent.submit(form);
+    await act(async () => net.draft.resolve(json({})));
+    expect(net.calls("POST", contractPath)).toHaveLength(1);
+    expect(JSON.parse(String(net.calls("POST", contractPath)[0][1]?.body))).toMatchObject({
+      title: "첫 제출 제목", amount: 15000,
+      data: { description: "첫 제출 설명", autoRenewal: true },
+    });
+    expect(button).toBeDisabled();
+    await act(async () => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    expect(net.calls("POST", contractPath)).toHaveLength(1);
+    expect(net.calls("DELETE", draftPath)).toHaveLength(0);
+    await act(async () => net.saved.resolve(json({ id: "contract-1" }, 201)));
+    expect(net.calls("DELETE", draftPath)).toHaveLength(1);
+    expect(button).toBeDisabled();
+    await act(async () => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    expect(net.calls("POST", contractPath)).toHaveLength(1);
+    expect(net.calls("DELETE", draftPath)).toHaveLength(1);
+    await finishDeletion(net);
+    expect(net.calls("POST", contractPath)).toHaveLength(1);
+    expect(net.calls("DELETE", draftPath)).toHaveLength(1);
+    expect(net.calls("PUT", draftPath)).toHaveLength(1);
+  });
+
+  it("keeps a successful save successful when draft deletion fails", async () => {
+    const net = network();
+    const title = await openContract();
+    fireEvent.change(title, { target: { value: "초안 삭제 실패" } });
+    submit();
+    await act(async () => net.saved.resolve(json({ id: "contract-1" }, 201)));
+    await waitFor(() => expect(net.calls("DELETE", draftPath)).toHaveLength(1));
+    await act(async () => net.deleted.resolve(json({ error: { message: "초안 삭제 실패" } }, 500)));
+    await waitFor(() => expect(screen.queryByPlaceholderText("계약 제목")).not.toBeInTheDocument());
+    expect(net.calls("POST", contractPath)).toHaveLength(1);
+    expect(net.calls("DELETE", draftPath)).toHaveLength(1);
+    expect(net.calls("GET", contractPath)).toHaveLength(2);
+    expect(screen.getByText("계약 데이터가 없습니다")).toBeInTheDocument();
+  });
+
   it("waits for autosave and posts the values captured at submission before deleting the draft and reloading", async () => {
     const net = network();
     const title = await openContract();
