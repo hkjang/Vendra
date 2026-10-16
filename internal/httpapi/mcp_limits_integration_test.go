@@ -187,7 +187,14 @@ func TestMCPAdvertisedLimitsAreApplied(t *testing.T) {
 						t.Fatalf("%s: got %d rows", tool, len(got))
 					}
 					amount := got[0].(map[string]any)["annualSpend"]
-					if tool == "search_suppliers" && amount != float64(0) || tool == "recommend_suppliers" && amount != nil {
+					// The seeded rows carry annual_spend=1000-g, so what is being
+					// checked is that the real figure does not appear. The two
+					// tools used to withhold it in different shapes — 0 here and
+					// null there — and this line recorded that difference; both
+					// now answer null, because annual_spend is NOT NULL DEFAULT 0
+					// and a 0 is a figure rather than a refusal. See
+					// TestWithheldSupplierSpendIsNullNotZeroOnEveryTool.
+					if amount != nil {
 						t.Fatalf("%s leaked amount %v", tool, amount)
 					}
 				}
