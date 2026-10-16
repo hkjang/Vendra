@@ -539,7 +539,7 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 		if err != nil {
 			return nil, err
 		}
-		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT $6`, q, p.DataScope, organizationID, p.ID, showSpend, limit)
+		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend END FROM suppliers WHERE deleted_at IS NULL AND (name ILIKE '%'||$1||'%' OR business_number ILIKE '%'||$1||'%' OR supplier_number ILIKE '%'||$1||'%') AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name LIMIT $6`, q, p.DataScope, organizationID, p.ID, showSpend, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -588,7 +588,7 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 				return nil, mcpToolError("supplierIds must be record ids, not names: %q", id)
 			}
 		}
-		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend ELSE 0 END FROM suppliers WHERE id=ANY($1::uuid[]) AND deleted_at IS NULL AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name`, ids, p.DataScope, organizationID, p.ID, showSpend)
+		rows, err := a.db.Query(ctx, `SELECT id,supplier_number,name,status,grade,risk_level,score,CASE WHEN $5 THEN annual_spend END FROM suppliers WHERE id=ANY($1::uuid[]) AND deleted_at IS NULL AND (`+orgInScope("organization_id", "$2", "$3")+` OR ($2='own' AND owner_id=$4::uuid)) ORDER BY name`, ids, p.DataScope, organizationID, p.ID, showSpend)
 		if err != nil {
 			return nil, err
 		}
@@ -698,13 +698,24 @@ func (a *App) runMCPTool(r *http.Request, name string, args map[string]any) (any
 	}
 }
 
+// supplierSummaryRows reads the rows search_suppliers and compare_suppliers
+// answer with, and nothing else does.
+//
+// spend is a pointer for the same reason grade and score are: the query can
+// withhold it, and a withheld figure has to arrive as null rather than as a
+// number. suppliers.annual_spend is `numeric(20,2) NOT NULL DEFAULT 0`, so a
+// null out of that column can only have come from the withholding — which is
+// what lets null mean "not shown to you" and 0 mean "a supplier we spend
+// nothing with". These two tools used to select `ELSE 0` and collapse the two
+// into one answer a model has no way to tell apart; they now carry the same
+// shape as the siblings withholding the same column behind the same flag,
+// recommend_suppliers and the AI context.
 func supplierSummaryRows(rows rowScanner) ([]map[string]any, error) {
 	items := []map[string]any{}
 	for rows.Next() {
 		var id, num, name, status, risk string
 		var grade *string
-		var score *float64
-		var spend float64
+		var score, spend *float64
 		if err := rows.Scan(&id, &num, &name, &status, &grade, &risk, &score, &spend); err != nil {
 			return nil, err
 		}
