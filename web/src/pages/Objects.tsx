@@ -210,6 +210,12 @@ function ObjectList({ type }: { type: string }) {
   const [shareView, setShareView] = useState(false);
   const [canShareViews, setCanShareViews] = useState(false);
   const [viewError, setViewError] = useState("");
+  // Kept apart from `viewError` on purpose. That one is the seat of a failed
+  // save or delete: `saveView` empties it every time it starts and it only
+  // renders while the modal is closed, so a refused *query* parked there would
+  // hide itself for as long as the modal is open and be wiped by the next
+  // attempt to save.
+  const [viewsFailure, setViewsFailure] = useState("");
   const loadSequence = useRef(0);
   const viewContext = `object:${type}`;
   const load = useCallback(() => {
@@ -270,8 +276,28 @@ function ObjectList({ type }: { type: string }) {
       .then((response) => {
         setViews(response.items);
         setCanShareViews(response.canShare);
+        // An answer supersedes the last refusal, the same way `load` above
+        // handles it; the functional form leaves the state alone when there was
+        // no failure so a healthy query still renders exactly once.
+        setViewsFailure((current) => (current ? "" : current));
       })
-      .catch(() => setViews([]));
+      .catch((cause: unknown) => {
+        // This used to be `.catch(() => setViews([]))`, which answered every
+        // refusal with the same screen the empty register produces: a 500 the
+        // server had explained in a sentence, or an expired session, left a
+        // dropdown holding nothing but 기본 보기 and said nothing at all.
+        // `saveView` and `removeView` both await this after they succeed, so a
+        // stored view also vanished the moment the refresh behind it was
+        // refused — with the modal already closed and `viewError` empty, which
+        // read as "the save did not happen" and got the same view saved twice.
+        // Nothing is cleared here: the rows the reader is looking at are still
+        // the last thing the server actually said.
+        setViewsFailure(
+          cause instanceof Error && cause.message
+            ? cause.message
+            : "저장된 보기를 불러오지 못했습니다",
+        );
+      });
   }, [viewContext]);
   useEffect(() => {
     void loadViews();
@@ -429,6 +455,20 @@ function ObjectList({ type }: { type: string }) {
           )}
         </div>
       </div>
+      {viewsFailure && (
+        <div className="form-error saved-views-load-failed" role="status">
+          <AlertCircle />
+          <span>{viewsFailure}</span>
+          <button
+            className="button secondary"
+            onClick={() => void loadViews()}
+            aria-label="저장된 보기 다시 시도"
+          >
+            <RefreshCw />
+            다시 시도
+          </button>
+        </div>
+      )}
       {viewError && !viewModal && <div className="form-error"><AlertCircle />{viewError}</div>}
       {/* Rows are already up and only the refresh was refused (onSaved, or a
           submit from the table): a failed refresh keeps the rows the reader is
